@@ -1,0 +1,15 @@
+# Zephyr and native build output
+build/
+build-*/
+
+# Editor and operating-system files
+.cache/
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Python tooling
+__pycache__/
+*.py[cod]
