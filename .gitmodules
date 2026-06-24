@@ -1,0 +1,3 @@
+[submodule "contracts"]
+	path = contracts
+	url = git@bitbucket.org:techfusionwksp/atletec-contracts.git

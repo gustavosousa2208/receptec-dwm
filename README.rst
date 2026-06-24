@@ -24,8 +24,8 @@ Pending:
 * hardware TX/RX and deterministic slot scheduler;
 * hardware interoperability testing with COLETEC.
 
-The shared implementation contract is in
-``COLETEC-RECEPTEC-HANDOFF.md``.
+The shared implementation contract is in the ``contracts`` submodule at
+``contracts/protocol/uwb-receptec-coletec/HANDOFF.md``.
 
 Build
 *****
