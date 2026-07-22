@@ -159,7 +159,7 @@ Done when:
 
 ## M5 — Addressed SYNC/ACK
 
-Status: `[~]` In progress
+Status: `[x]` Complete
 
 Required work:
 
@@ -205,7 +205,14 @@ Implementation state:
   second request at offset 5,000 us with the same sequence. Firmware counters
   at transaction 100 reported 100 completed, 101 attempts, one response
   timeout, zero retry exhaustion, zero late schedules, and zero invalid frames.
-- The formal 1,000-consecutive-exchange qualification remains pending.
+- Formal qualification completed 1,000 consecutive transactions in 1,025.6 s
+  with zero transaction failures. Of the completed transactions, 955 used
+  attempt 1, 43 used attempt 2, and 2 used attempt 3.
+- Final firmware counters were 1,000/1,000 transactions, 1,047 transmitted
+  attempts, 11 response timeouts, 36 radio RX errors, zero retry exhaustion,
+  zero late schedules, and zero invalid length/FCF/type/address/sequence.
+- The complete capture is retained locally as
+  `logs/m5-formal-1000-20260722.log` (ignored by Git with other UART logs).
 
 ## M6 — DATA_REQ/DATA and duplicate requests
 
