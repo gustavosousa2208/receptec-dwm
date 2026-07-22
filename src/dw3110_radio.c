@@ -317,6 +317,7 @@ static int run_receptec_sync(void)
 {
 	struct received_protocol_frame received;
 	uint8_t sequence = 0U;
+	uint32_t successful_exchanges = 0U;
 	int status;
 
 	printk("Protocol test: RECEPTEC delayed SYNC initiator\n");
@@ -338,11 +339,22 @@ static int run_receptec_sync(void)
 		}
 
 		if (status == 0) {
+			successful_exchanges++;
 			printk("SYNC/ACK OK: seq=%u FCS=valid addressed=ok\n",
 			       sequence);
+			if ((successful_exchanges % 100U) == 0U) {
+				printk("M5 qualification progress: %u/1000\n",
+				       successful_exchanges < 1000U ?
+				       successful_exchanges : 1000U);
+			}
+			if (successful_exchanges == 1000U) {
+				printk("M5 qualification complete: 1000 consecutive SYNC/ACK\n");
+			}
 		} else {
+			successful_exchanges = 0U;
 			printk("SYNC/ACK failed: seq=%u error=%d\n", sequence,
 			       status);
+			printk("M5 qualification reset: consecutive successes=0\n");
 			dwt_forcetrxoff();
 		}
 		k_msleep(DW3110_SYNC_PERIOD_MS);
