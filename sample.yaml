@@ -1,11 +1,11 @@
 sample:
-  description: RECEPTEC UWB protocol application for the Qorvo DWM3001C
-  name: RECEPTEC DWM3001C
+  description: DWM3001C identity and UWB hardware bring-up application
+  name: DWM3001C identity bring-up
 tests:
   application.receptec.build:
     build_only: true
     platform_allow:
-      - decawave_dwm3001cdk
+      - decawave_dwm3001cdk/nrf52833
     tags:
       - uwb
       - protocol

@@ -1,3 +1,5 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
 #include <receptec/protocol.h>
 
 #include <string.h>
@@ -6,7 +8,8 @@
 #define SOURCE_OFFSET 11U
 #define TYPE_OFFSET 19U
 
-static int validate_payload(enum receptec_packet_type type, size_t payload_length)
+static int validate_payload(enum receptec_packet_type type,
+			    size_t payload_length)
 {
 	switch (type) {
 	case RECEPTEC_PACKET_DATA_REQ:
@@ -43,7 +46,6 @@ int receptec_protocol_encode(uint8_t *output, size_t output_capacity,
 	if (status != RECEPTEC_PROTOCOL_OK) {
 		return status;
 	}
-
 	if (frame->payload_length > 0U && frame->payload == NULL) {
 		return RECEPTEC_PROTOCOL_ERR_ARGUMENT;
 	}
@@ -80,12 +82,10 @@ int receptec_protocol_decode(const uint8_t *input, size_t input_length,
 	if (input == NULL || frame == NULL) {
 		return RECEPTEC_PROTOCOL_ERR_ARGUMENT;
 	}
-
 	if (input_length < RECEPTEC_PROTOCOL_HEADER_SIZE ||
 	    input_length > RECEPTEC_PROTOCOL_MAX_LOGICAL_SIZE) {
 		return RECEPTEC_PROTOCOL_ERR_LENGTH;
 	}
-
 	if (input[0] != RECEPTEC_PROTOCOL_FCF_LSB ||
 	    input[1] != RECEPTEC_PROTOCOL_FCF_MSB) {
 		return RECEPTEC_PROTOCOL_ERR_FCF;
@@ -111,7 +111,6 @@ int receptec_protocol_decode(const uint8_t *input, size_t input_length,
 	frame->type = (enum receptec_packet_type)type_byte;
 	frame->payload = &input[RECEPTEC_PROTOCOL_HEADER_SIZE];
 	frame->payload_length = payload_length;
-
 	return RECEPTEC_PROTOCOL_OK;
 }
 
@@ -149,8 +148,9 @@ int receptec_protocol_expected_response(enum receptec_packet_type request,
 	}
 }
 
-void receptec_protocol_encode_dt_sampling(uint16_t dt_sampling_us,
-					 uint8_t output[RECEPTEC_PROTOCOL_DT_SAMPLING_SIZE])
+void receptec_protocol_encode_dt_sampling(
+	uint16_t dt_sampling_us,
+	uint8_t output[RECEPTEC_PROTOCOL_DT_SAMPLING_SIZE])
 {
 	output[0] = (uint8_t)(dt_sampling_us & 0xFFU);
 	output[1] = (uint8_t)(dt_sampling_us >> 8);

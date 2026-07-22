@@ -1,27 +1,25 @@
 RECEPTEC DWM3001C
 #################
 
-This application implements the RECEPTEC side of the RECEPTEC–COLETEC UWB
-protocol on the Qorvo DWM3001C.
+This application is the hardware bring-up foundation for the RECEPTEC–COLETEC
+UWB protocol on the Qorvo DWM3001C.
 
 Current status
 **************
 
-Implemented:
+Current milestone:
 
-* byte-exact protocol frame encoder and decoder;
-* opaque DATA payloads up to 105 bytes;
-* DATA_REQ, SYNC, DATA, ACK, STOP, and STOP_ACK types;
-* 16-bit little-endian ``DT_sampling`` encoding;
-* initial timing profile and configuration validation;
-* host-side protocol tests;
-* successful Zephyr build for ``decawave_dwm3001cdk``.
+* retrieve the nRF52833 factory device ID through Zephyr's hardware-info API;
+* print the complete eight-byte ID in a stable hexadecimal format;
+* assign RECEPTEC to device ID ``3E:C6:F3:82:06:A8:16:41``;
+* assign every other device ID to COLETEC;
+* compile and link the pinned Qorvo DW3XXX 08.19.02 driver;
+* initialize the application-owned SPI/reset/IRQ adapter and matched PHY.
 
 Pending:
 
-* import of an explicitly versioned Qorvo ``dwt_uwb_driver`` release;
-* Zephyr SPI/GPIO/IRQ adapter for the DW3110;
-* hardware TX/RX and deterministic slot scheduler;
+* verify the DW3110 probe and initialization diagnostics on both boards;
+* hardware TX/RX and the deterministic slot scheduler;
 * hardware interoperability testing with COLETEC.
 
 The shared implementation contract is in the ``contracts`` submodule at
@@ -32,16 +30,16 @@ Build
 
 .. code-block:: console
 
-   west build -b decawave_dwm3001cdk -d build-zephyr .
+   west build -b decawave_dwm3001cdk .
 
-Run portable protocol tests
-***************************
+Flash both experimental boards
+******************************
+
+Build once and flash both configured J-Link probes concurrently:
 
 .. code-block:: console
 
-   cmake -S tests -B build-host
-   cmake --build build-host
-   ctest --test-dir build-host --output-on-failure
+   ./scripts/flash-both.sh
 
 UWB driver dependency
 *********************
@@ -49,4 +47,6 @@ UWB driver dependency
 Upstream Zephyr supports the DWM3001CDK's nRF52833 board resources but does
 not currently provide the DW3110 UWB driver required by this application. The
 board's existing ``zephyr,ieee802154`` choice is the Nordic 2.4 GHz radio and
-is not used by this protocol.
+is not used by this protocol. This application pins Qorvo DW3XXX driver
+08.19.02 under ``vendor/qorvo``; see its README for provenance and proprietary
+license information.

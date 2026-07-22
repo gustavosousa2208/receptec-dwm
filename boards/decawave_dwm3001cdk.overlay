@@ -1,0 +1,16 @@
+/*
+ * DWM3001C internal DW3110 connections.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+&spi3 {
+	dw3110: dw3110@0 {
+		compatible = "qorvo,dw3110";
+		reg = <0>;
+		spi-max-frequency = <32000000>;
+		irq-gpios = <&gpio1 2 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio0 25 GPIO_ACTIVE_LOW>;
+		status = "okay";
+	};
+};

@@ -1,0 +1,16 @@
+description: Qorvo DW3110 ultra-wideband transceiver
+
+compatible: "qorvo,dw3110"
+
+include: spi-device.yaml
+
+properties:
+  irq-gpios:
+    type: phandle-array
+    required: true
+    description: Active-high DW3110 interrupt signal
+
+  reset-gpios:
+    type: phandle-array
+    required: true
+    description: Active-low open-drain DW3110 reset signal

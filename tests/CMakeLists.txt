@@ -4,7 +4,6 @@ project(receptec_protocol_tests C)
 add_executable(receptec_protocol_tests
     protocol_test.c
     ../src/protocol.c
-    ../src/timing.c
 )
 
 target_include_directories(receptec_protocol_tests PRIVATE ../include)

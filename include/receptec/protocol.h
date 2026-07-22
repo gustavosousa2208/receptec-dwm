@@ -1,13 +1,11 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
 #ifndef RECEPTEC_PROTOCOL_H_
 #define RECEPTEC_PROTOCOL_H_
 
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 #define RECEPTEC_PROTOCOL_FCF_LSB 0x41U
 #define RECEPTEC_PROTOCOL_FCF_MSB 0xECU
@@ -49,32 +47,23 @@ struct receptec_frame {
 	size_t payload_length;
 };
 
-/*
- * EUI-64 arrays use IEEE 802.15.4 on-air order (least-significant octet
- * first). The codec handles logical bytes only; the hardware FCS is excluded.
- */
+/* EUI-64 arrays are always stored in IEEE 802.15.4 on-air order. */
 int receptec_protocol_encode(uint8_t *output, size_t output_capacity,
 			     const struct receptec_frame *frame,
 			     size_t *encoded_length);
 
-/* The decoded payload points into input and remains valid only while input is. */
+/* The decoded payload points into input and is valid only while input is. */
 int receptec_protocol_decode(const uint8_t *input, size_t input_length,
 			     struct receptec_frame *frame);
 
 bool receptec_protocol_type_is_request(enum receptec_packet_type type);
 bool receptec_protocol_type_is_response(enum receptec_packet_type type);
-
 int receptec_protocol_expected_response(enum receptec_packet_type request,
 					enum receptec_packet_type *response);
-
-void receptec_protocol_encode_dt_sampling(uint16_t dt_sampling_us,
-					 uint8_t output[RECEPTEC_PROTOCOL_DT_SAMPLING_SIZE]);
-
+void receptec_protocol_encode_dt_sampling(
+	uint16_t dt_sampling_us,
+	uint8_t output[RECEPTEC_PROTOCOL_DT_SAMPLING_SIZE]);
 uint16_t receptec_protocol_decode_dt_sampling(
 	const uint8_t input[RECEPTEC_PROTOCOL_DT_SAMPLING_SIZE]);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* RECEPTEC_PROTOCOL_H_ */
