@@ -28,6 +28,9 @@
 #define DW3110_ATTEMPT_COUNT 3U
 #define DW3110_UUS_TO_DTU 65536ULL
 #define DW3110_TIMESTAMP_MASK ((1ULL << 40) - 1ULL)
+#define DIAGNOSTIC_SAMPLE_OFFSET RECEPTEC_PROTOCOL_EUI64_SIZE
+#define DIAGNOSTIC_FIXED_SIZE (RECEPTEC_PROTOCOL_EUI64_SIZE + sizeof(uint32_t))
+#define FRAME_SEQUENCE_OFFSET 2U
 
 struct protocol_counters {
 	uint32_t transactions_started;
@@ -40,6 +43,8 @@ struct protocol_counters {
 	uint32_t invalid_type;
 	uint32_t invalid_address;
 	uint32_t invalid_sequence;
+	uint32_t invalid_payload;
+	uint32_t duplicate_payload_mismatch;
 	uint32_t radio_rx_errors;
 	uint32_t late_schedules;
 };
@@ -54,6 +59,11 @@ static const uint8_t receptec_eui[RECEPTEC_PROTOCOL_EUI64_SIZE] = {
 static const uint8_t coletec_eui[RECEPTEC_PROTOCOL_EUI64_SIZE] = {
 	0x31, 0x5D, 0x02, 0xD5, 0x15, 0x8C, 0xFA, 0x40,
 };
+static uint8_t protocol_rx_bytes[RECEPTEC_PROTOCOL_MAX_LOGICAL_SIZE];
+static uint8_t transaction_payload[RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE];
+static size_t payload_mismatch_offset;
+static uint8_t payload_mismatch_expected;
+static uint8_t payload_mismatch_received;
 
 extern const struct dwt_driver_s dw3000_driver;
 
@@ -150,18 +160,47 @@ static bool frame_is_for(const struct receptec_frame *frame,
 	       memcmp(frame->source, source, RECEPTEC_PROTOCOL_EUI64_SIZE) == 0;
 }
 
-static int preload_coletec_ack(void)
+static void encode_u32_le(uint32_t value, uint8_t output[sizeof(uint32_t)])
 {
-	struct receptec_frame ack = {
+	output[0] = (uint8_t)value;
+	output[1] = (uint8_t)(value >> 8);
+	output[2] = (uint8_t)(value >> 16);
+	output[3] = (uint8_t)(value >> 24);
+}
+
+static uint32_t decode_u32_le(const uint8_t input[sizeof(uint32_t)])
+{
+	return (uint32_t)input[0] |
+	       ((uint32_t)input[1] << 8) |
+	       ((uint32_t)input[2] << 16) |
+	       ((uint32_t)input[3] << 24);
+}
+
+static void initialize_diagnostic_payload(
+	uint8_t payload[RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE], uint32_t sample_counter)
+{
+	memcpy(payload, coletec_eui, sizeof(coletec_eui));
+	encode_u32_le(sample_counter, &payload[DIAGNOSTIC_SAMPLE_OFFSET]);
+	for (size_t i = DIAGNOSTIC_FIXED_SIZE; i <
+	     RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE; ++i) {
+		payload[i] = (uint8_t)i;
+	}
+}
+
+static int preload_coletec_data(void)
+{
+	static uint8_t payload[RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE];
+	struct receptec_frame data = {
 		.sequence = 0U,
-		.type = RECEPTEC_PACKET_ACK,
-		.payload = NULL,
-		.payload_length = 0U,
+		.type = RECEPTEC_PACKET_DATA,
+		.payload = payload,
+		.payload_length = sizeof(payload),
 	};
 
-	memcpy(ack.destination, receptec_eui, sizeof(receptec_eui));
-	memcpy(ack.source, coletec_eui, sizeof(coletec_eui));
-	return load_protocol_frame(&ack);
+	initialize_diagnostic_payload(payload, 1U);
+	memcpy(data.destination, receptec_eui, sizeof(receptec_eui));
+	memcpy(data.source, coletec_eui, sizeof(coletec_eui));
+	return load_protocol_frame(&data);
 }
 
 static bool is_valid_attempt_offset(uint16_t dt_sampling_us)
@@ -172,6 +211,28 @@ static bool is_valid_attempt_offset(uint16_t dt_sampling_us)
 		}
 	}
 	return false;
+}
+
+static int64_t update_nominal_slot(uint64_t request_rx_timestamp,
+				   uint16_t dt_sampling_us,
+				   bool duplicate_request,
+				   uint64_t *previous_nominal_slot)
+{
+	uint64_t next_nominal_slot = (request_rx_timestamp +
+		(uint64_t)DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DTU -
+		(uint64_t)dt_sampling_us * DW3110_UUS_TO_DTU) &
+		DW3110_TIMESTAMP_MASK;
+	uint64_t delta;
+
+	if (!duplicate_request) {
+		*previous_nominal_slot = next_nominal_slot;
+		return 0;
+	}
+	delta = (next_nominal_slot - *previous_nominal_slot) &
+		DW3110_TIMESTAMP_MASK;
+	return delta > (DW3110_TIMESTAMP_MASK >> 1) ?
+		(int64_t)(delta - (DW3110_TIMESTAMP_MASK + 1ULL)) :
+		(int64_t)delta;
 }
 
 static void count_codec_rejection(struct protocol_counters *counters,
@@ -186,27 +247,26 @@ static void count_codec_rejection(struct protocol_counters *counters,
 	}
 }
 
-static int send_delayed_sync_attempt(uint8_t sequence,
-				     uint16_t dt_sampling_us,
-				     uint32_t cycle_epoch,
-				     struct protocol_counters *counters)
+static int send_delayed_data_request_attempt(
+	uint8_t sequence, uint16_t dt_sampling_us, uint32_t cycle_epoch,
+	struct protocol_counters *counters)
 {
 	uint8_t dt_sampling[RECEPTEC_PROTOCOL_DT_SAMPLING_SIZE];
-	const struct receptec_frame sync = {
+	const struct receptec_frame request = {
 		.sequence = sequence,
 		.destination = { 0 },
 		.source = { 0 },
-		.type = RECEPTEC_PACKET_SYNC,
+		.type = RECEPTEC_PACKET_DATA_REQ,
 		.payload = dt_sampling,
 		.payload_length = sizeof(dt_sampling),
 	};
-	struct receptec_frame addressed_sync = sync;
+	struct receptec_frame addressed_request = request;
 	int status;
 
-	memcpy(addressed_sync.destination, coletec_eui, sizeof(coletec_eui));
-	memcpy(addressed_sync.source, receptec_eui, sizeof(receptec_eui));
+	memcpy(addressed_request.destination, coletec_eui, sizeof(coletec_eui));
+	memcpy(addressed_request.source, receptec_eui, sizeof(receptec_eui));
 	receptec_protocol_encode_dt_sampling(dt_sampling_us, dt_sampling);
-	status = load_protocol_frame(&addressed_sync);
+	status = load_protocol_frame(&addressed_request);
 	if (status < 0) {
 		return status;
 	}
@@ -229,12 +289,13 @@ static int send_delayed_sync_attempt(uint8_t sequence,
 	return 0;
 }
 
-static int poll_for_matching_ack(uint8_t sequence,
-				 struct protocol_counters *counters,
-				 uint32_t *final_radio_status)
+static int poll_for_matching_data(
+	uint8_t sequence, struct protocol_counters *counters,
+	uint32_t *final_radio_status,
+	uint8_t frozen_payload[RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE],
+	bool *payload_frozen, uint32_t *sample_counter)
 {
-	uint8_t bytes[RECEPTEC_PROTOCOL_MAX_LOGICAL_SIZE];
-	struct receptec_frame ack;
+	struct receptec_frame data;
 	uint32_t radio_status;
 	uint16_t frame_length;
 	uint16_t logical_length;
@@ -269,25 +330,58 @@ static int poll_for_matching_ack(uint8_t sequence,
 	}
 
 	logical_length = frame_length - RECEPTEC_PROTOCOL_FCS_SIZE;
-	dwt_readrxdata(bytes, logical_length, 0U);
-	status = receptec_protocol_decode(bytes, logical_length, &ack);
+	dwt_readrxdata(protocol_rx_bytes, logical_length, 0U);
+	status = receptec_protocol_decode(protocol_rx_bytes, logical_length, &data);
 	if (status != RECEPTEC_PROTOCOL_OK) {
 		count_codec_rejection(counters, status);
 		status = -EBADMSG;
 		goto out;
 	}
-	if (ack.type != RECEPTEC_PACKET_ACK) {
+	if (data.type != RECEPTEC_PACKET_DATA) {
 		counters->invalid_type++;
 		status = -EBADMSG;
 		goto out;
 	}
-	if (memcmp(ack.destination, receptec_eui, sizeof(receptec_eui)) != 0 ||
-	    memcmp(ack.source, coletec_eui, sizeof(coletec_eui)) != 0) {
+	if (memcmp(data.destination, receptec_eui, sizeof(receptec_eui)) != 0 ||
+	    memcmp(data.source, coletec_eui, sizeof(coletec_eui)) != 0) {
 		counters->invalid_address++;
 		status = -EBADMSG;
 		goto out;
 	}
-	if (ack.sequence != sequence) {
+	if (data.payload_length != RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE ||
+	    memcmp(data.payload, coletec_eui, sizeof(coletec_eui)) != 0) {
+		counters->invalid_payload++;
+		status = -EBADMSG;
+		goto out;
+	}
+	for (size_t i = DIAGNOSTIC_FIXED_SIZE; i < data.payload_length; ++i) {
+		if (data.payload[i] != (uint8_t)i) {
+			counters->invalid_payload++;
+			status = -EBADMSG;
+			goto out;
+		}
+	}
+	if (*payload_frozen &&
+	    memcmp(data.payload, frozen_payload, data.payload_length) != 0) {
+		for (size_t i = 0U; i < data.payload_length; ++i) {
+			if (data.payload[i] != frozen_payload[i]) {
+				payload_mismatch_offset = i;
+				payload_mismatch_expected = frozen_payload[i];
+				payload_mismatch_received = data.payload[i];
+				break;
+			}
+		}
+		counters->duplicate_payload_mismatch++;
+		status = -EBADMSG;
+		goto out;
+	}
+	if (!*payload_frozen) {
+		memcpy(frozen_payload, data.payload, data.payload_length);
+		*payload_frozen = true;
+	}
+	*sample_counter = decode_u32_le(
+		&data.payload[DIAGNOSTIC_SAMPLE_OFFSET]);
+	if (data.sequence != sequence) {
 		counters->invalid_sequence++;
 		status = -EBADMSG;
 		goto out;
@@ -306,7 +400,8 @@ out:
 static void print_protocol_counters(const struct protocol_counters *counters)
 {
 	printk("Protocol counters: txns=%u/%u attempts=%u timeouts=%u "
-	       "rx_errors=%u exhausted=%u late=%u invalid=%u/%u/%u/%u/%u\n",
+	       "rx_errors=%u exhausted=%u late=%u "
+	       "invalid=%u/%u/%u/%u/%u/%u duplicate_payload=%u\n",
 	       counters->transactions_completed,
 	       counters->transactions_started,
 	       counters->attempts_transmitted,
@@ -318,10 +413,12 @@ static void print_protocol_counters(const struct protocol_counters *counters)
 	       counters->invalid_fcf,
 	       counters->invalid_type,
 	       counters->invalid_address,
-	       counters->invalid_sequence);
+	       counters->invalid_sequence,
+	       counters->invalid_payload,
+	       counters->duplicate_payload_mismatch);
 }
 
-static int run_receptec_sync(void)
+static int run_receptec_data(void)
 {
 	struct protocol_counters counters = { 0 };
 	uint8_t sequence = 0U;
@@ -329,7 +426,7 @@ static int run_receptec_sync(void)
 	uint32_t cycle_epoch;
 	int status = 0;
 
-	printk("Protocol test: RECEPTEC polled SYNC initiator "
+	printk("Protocol test: RECEPTEC polled DATA_REQ initiator "
 	       "with deterministic retries\n");
 	status = dw3110_port_irq_enable(false);
 	if (status < 0) {
@@ -343,6 +440,8 @@ static int run_receptec_sync(void)
 		uint32_t successful_attempt = 0U;
 		uint32_t attempts_run = 0U;
 		uint32_t attempt_radio_status[DW3110_ATTEMPT_COUNT] = { 0 };
+		uint32_t sample_counter = 0U;
+		bool payload_frozen = false;
 		int attempt_status[DW3110_ATTEMPT_COUNT] = { 0 };
 
 		sequence++;
@@ -351,13 +450,14 @@ static int run_receptec_sync(void)
 		for (size_t attempt = 0U; attempt < ARRAY_SIZE(attempt_offsets_us);
 		     ++attempt) {
 			attempts_run = (uint32_t)attempt + 1U;
-			attempt_status[attempt] = send_delayed_sync_attempt(sequence,
+			attempt_status[attempt] = send_delayed_data_request_attempt(sequence,
 					attempt_offsets_us[attempt], cycle_epoch,
 					&counters);
 			if (attempt_status[attempt] == 0) {
-				attempt_status[attempt] = poll_for_matching_ack(
+				attempt_status[attempt] = poll_for_matching_data(
 					sequence, &counters,
-					&attempt_radio_status[attempt]);
+					&attempt_radio_status[attempt], transaction_payload,
+					&payload_frozen, &sample_counter);
 			}
 			status = attempt_status[attempt];
 			if (attempt_status[attempt] == 0) {
@@ -371,7 +471,7 @@ static int run_receptec_sync(void)
 			if (attempt_status[attempt] == 0) {
 				continue;
 			}
-			printk("SYNC attempt failed: seq=%u attempt=%u offset=%u "
+			printk("DATA_REQ attempt failed: seq=%u attempt=%u offset=%u "
 			       "error=%d radio=0x%08X%s\n",
 			       sequence, attempt + 1U,
 			       attempt_offsets_us[attempt], attempt_status[attempt],
@@ -383,24 +483,32 @@ static int run_receptec_sync(void)
 		if (status == 0) {
 			counters.transactions_completed++;
 			successful_exchanges++;
-			printk("SYNC/ACK OK: seq=%u attempt=%u offset=%u "
-			       "FCS=valid addressed=ok\n",
-			       sequence, successful_attempt,
+			printk("DATA_REQ/DATA OK: seq=%u sample=%u bytes=%u "
+			       "attempt=%u offset=%u FCS=valid addressed=ok\n",
+			       sequence, sample_counter,
+			       RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE, successful_attempt,
 			       attempt_offsets_us[successful_attempt - 1U]);
 			if ((successful_exchanges % 100U) == 0U) {
-				printk("M5 qualification progress: %u/1000\n",
-				       successful_exchanges < 1000U ?
-				       successful_exchanges : 1000U);
+				printk("M6 qualification progress: %u\n",
+				       successful_exchanges);
 			}
 			if (successful_exchanges == 1000U) {
-				printk("M5 qualification complete: 1000 consecutive SYNC/ACK\n");
+				printk("M6 qualification checkpoint: 1000 consecutive DATA transactions\n");
 			}
 		} else {
 			counters.retry_exhaustion++;
 			successful_exchanges = 0U;
-			printk("SYNC/ACK failed: seq=%u error=%d\n", sequence,
+			printk("DATA_REQ/DATA failed: seq=%u error=%d\n", sequence,
 			       status);
-			printk("M5 qualification reset: consecutive successes=0\n");
+			printk("M6 qualification reset: consecutive successes=0\n");
+			print_protocol_counters(&counters);
+			if (counters.duplicate_payload_mismatch > 0U) {
+				printk("Last duplicate payload mismatch: offset=%u "
+				       "expected=0x%02X received=0x%02X\n",
+				       (uint32_t)payload_mismatch_offset,
+				       payload_mismatch_expected,
+				       payload_mismatch_received);
+			}
 		}
 		if ((counters.transactions_started % 100U) == 0U) {
 			print_protocol_counters(&counters);
@@ -411,7 +519,7 @@ static int run_receptec_sync(void)
 	return 0;
 }
 
-static int run_coletec_sync(void)
+static int run_coletec_data(void)
 {
 	uint8_t bytes[RECEPTEC_PROTOCOL_MAX_LOGICAL_SIZE];
 	struct receptec_frame request;
@@ -419,7 +527,6 @@ static int run_coletec_sync(void)
 	uint64_t response_tx_timestamp;
 	uint64_t response_delay_dtu;
 	uint64_t scheduled_tx_timestamp;
-	uint64_t next_nominal_slot = 0U;
 	uint64_t previous_nominal_slot = 0U;
 	uint32_t radio_status;
 	uint16_t frame_length;
@@ -429,18 +536,19 @@ static int run_coletec_sync(void)
 	uint8_t previous_sequence = 0U;
 	uint8_t fault_drop_count = 0U;
 	uint8_t fault_bad_ack_count = 0U;
-	uint8_t ack_sequence;
+	uint8_t response_sequence;
+	const uint32_t sample_counter = 1U;
 	bool have_previous_request = false;
 	bool duplicate_request;
 	int64_t nominal_slot_delta = 0;
 	int status;
 
-	printk("Protocol test: COLETEC polled addressed SYNC responder\n");
+	printk("Protocol test: COLETEC polled addressed DATA responder\n");
 	printk("Protocol fault injection: drop ACKs=%u\n",
 	       CONFIG_RECEPTEC_TEST_DROP_ACKS);
 	printk("Protocol fault injection: bad ACKs=%u\n",
 	       CONFIG_RECEPTEC_TEST_BAD_ACKS);
-	status = preload_coletec_ack();
+	status = preload_coletec_data();
 	if (status < 0) {
 		return status;
 	}
@@ -486,46 +594,36 @@ static int run_coletec_sync(void)
 			receptec_protocol_decode_dt_sampling(request.payload) : 0U;
 		if (status != RECEPTEC_PROTOCOL_OK ||
 		    !frame_is_for(&request, coletec_eui, receptec_eui,
-				  RECEPTEC_PACKET_SYNC) ||
+				  RECEPTEC_PACKET_DATA_REQ) ||
 		    !is_valid_attempt_offset(dt_sampling_us)) {
 			printk("COLETEC rejected request: codec=%d\n", status);
 			continue;
 		}
 
 		request_rx_timestamp = read_rx_timestamp();
-		next_nominal_slot = (request_rx_timestamp +
-			(uint64_t)DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DTU -
-			(uint64_t)dt_sampling_us * DW3110_UUS_TO_DTU) &
-			DW3110_TIMESTAMP_MASK;
 		duplicate_request = have_previous_request &&
 				    request.sequence == previous_sequence;
-		if (duplicate_request) {
-			uint64_t delta = (next_nominal_slot - previous_nominal_slot) &
-					 DW3110_TIMESTAMP_MASK;
-
-			nominal_slot_delta = delta > (DW3110_TIMESTAMP_MASK >> 1) ?
-				(int64_t)(delta - (DW3110_TIMESTAMP_MASK + 1ULL)) :
-				(int64_t)delta;
-		} else {
+		if (!duplicate_request) {
 			previous_sequence = request.sequence;
-			previous_nominal_slot = next_nominal_slot;
 			fault_drop_count = 0U;
 			fault_bad_ack_count = 0U;
-			nominal_slot_delta = 0;
 			have_previous_request = true;
 		}
 		if (fault_drop_count < CONFIG_RECEPTEC_TEST_DROP_ACKS) {
+			nominal_slot_delta = update_nominal_slot(
+				request_rx_timestamp, dt_sampling_us,
+				duplicate_request, &previous_nominal_slot);
 			fault_drop_count++;
 			continue;
 		}
 
-		ack_sequence = request.sequence;
+		response_sequence = request.sequence;
 		if (fault_bad_ack_count < CONFIG_RECEPTEC_TEST_BAD_ACKS) {
-			ack_sequence++;
+			response_sequence++;
 			fault_bad_ack_count++;
 		}
-		if (dwt_writetxdata(1U, &ack_sequence, 2U) != DWT_SUCCESS) {
-			printk("COLETEC ACK sequence write failed\n");
+		if (dwt_writetxdata(1U, &response_sequence,
+				    FRAME_SEQUENCE_OFFSET) != DWT_SUCCESS) {
 			continue;
 		}
 		scheduled_tx_timestamp = request_rx_timestamp +
@@ -535,6 +633,9 @@ static int run_coletec_sync(void)
 		if (dwt_starttx(DWT_START_TX_DELAYED) != DWT_SUCCESS) {
 			continue;
 		}
+		nominal_slot_delta = update_nominal_slot(
+			request_rx_timestamp, dt_sampling_us, duplicate_request,
+			&previous_nominal_slot);
 
 		do {
 			radio_status = dwt_readsysstatuslo();
@@ -545,10 +646,12 @@ static int run_coletec_sync(void)
 			(response_tx_timestamp - request_rx_timestamp) &
 			DW3110_TIMESTAMP_MASK;
 		if (dt_sampling_us == attempt_offsets_us[DW3110_ATTEMPT_COUNT - 1U]) {
-			printk("Final-slot ACK: request-seq=%u ack-seq=%u dt=%u "
+			printk("Final-slot DATA: request-seq=%u response-seq=%u "
+			       "sample=%u bytes=%u dt=%u "
 			       "RX-to-TX=%llu us duplicate=%u "
 			       "nominal-delta=%lld dtu FCS=valid\n",
-			       request.sequence, ack_sequence, dt_sampling_us,
+			       request.sequence, response_sequence, sample_counter,
+			       RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE, dt_sampling_us,
 			       (response_delay_dtu + 32768U) / DW3110_UUS_TO_DTU,
 			       duplicate_request, nominal_slot_delta);
 		}
@@ -622,7 +725,7 @@ int dw3110_radio_init(void)
 	return 0;
 }
 
-int dw3110_radio_run_sync_test(bool is_receptec)
+int dw3110_radio_run_protocol_test(bool is_receptec)
 {
-	return is_receptec ? run_receptec_sync() : run_coletec_sync();
+	return is_receptec ? run_receptec_data() : run_coletec_data();
 }

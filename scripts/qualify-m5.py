@@ -14,6 +14,9 @@ def main():
     parser.add_argument("--receptec", required=True)
     parser.add_argument("--coletec", required=True)
     parser.add_argument("--target", type=int, default=1000)
+    parser.add_argument("--success-marker", default="SYNC/ACK OK:")
+    parser.add_argument("--failure-marker", default="SYNC/ACK failed:")
+    parser.add_argument("--attempt-marker", default="SYNC attempt failed:")
     parser.add_argument("--log", default=None,
                         help="log path (default: logs/m5-qualification-<timestamp>.log)")
     args = parser.parse_args()
@@ -57,7 +60,7 @@ def main():
                     if not line:
                         continue
                     report(f"{role}: {line}")
-                    if role == "RECEPTEC" and "SYNC/ACK OK:" in line:
+                    if role == "RECEPTEC" and args.success_marker in line:
                         with lock:
                             state["successes"] += 1
                             state["total"] += 1
@@ -67,12 +70,12 @@ def main():
                                 report(f"progress: {count}/{args.target} ({elapsed:.1f}s)")
                             if count >= args.target:
                                 stop.set()
-                    elif role == "RECEPTEC" and "SYNC/ACK failed:" in line:
+                    elif role == "RECEPTEC" and args.failure_marker in line:
                         with lock:
                             state["errors"] += 1
                             state["successes"] = 0
                             report(f"{role}: {line} -- consecutive count reset")
-                    elif role == "RECEPTEC" and "SYNC attempt failed:" in line:
+                    elif role == "RECEPTEC" and args.attempt_marker in line:
                         with lock:
                             state["attempt_failures"] += 1
                     elif role == "COLETEC" and "ACK delayed TX was scheduled too late" in line:

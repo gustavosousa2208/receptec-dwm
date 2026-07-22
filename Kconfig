@@ -1,21 +1,21 @@
 mainmenu "RECEPTEC DWM3001C firmware"
 
 config RECEPTEC_TEST_DROP_ACKS
-	int "ACKs to drop at the start of each SYNC transaction"
+	int "Responses to drop at the start of each transaction"
 	range 0 2
 	default 0
 	help
 	  Test-only fault injection. A value of 1 or 2 makes the COLETEC skip
-	  that many valid SYNC responses per new sequence so deterministic retry
+	  that many valid responses per new sequence so deterministic retry
 	  offsets can be verified. Production and normal bench builds use zero.
 
 config RECEPTEC_TEST_BAD_ACKS
-	int "Wrong-sequence ACKs at the start of each SYNC transaction"
+	int "Wrong-sequence responses at the start of each transaction"
 	range 0 2
 	default 0
 	help
 	  Test-only stale-frame injection. A value of 1 or 2 makes the COLETEC
-	  return that many hardware-FCS-valid ACKs with sequence + 1 before using
-	  the request sequence. Production and normal bench builds use zero.
+	  return that many hardware-FCS-valid responses with sequence + 1 before
+	  using the request sequence. Production and normal bench builds use zero.
 
 source "Kconfig.zephyr"

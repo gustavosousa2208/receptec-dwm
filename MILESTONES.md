@@ -216,7 +216,7 @@ Implementation state:
 
 ## M6 — DATA_REQ/DATA and duplicate requests
 
-Status: `[ ]` Not started
+Status: `[x]` Complete
 
 Required work:
 
@@ -231,6 +231,44 @@ Done when:
 
 - Normal and maximum-length DATA frames pass host tests and hardware exchange.
 - Forced duplicate requests return byte-identical DATA responses.
+
+Implementation state:
+
+- The runtime exchange now uses addressed `DATA_REQ`/`DATA` frames while
+  retaining M7's delayed hardware-time requests, response timing, retry
+  offsets, sequence handling, and absolute receive timeout.
+- The diagnostic application snapshot fills the maximum 105-byte DATA payload:
+  bytes 0–7 contain the COLETEC EUI in on-air order, bytes 8–11 contain the
+  little-endian sample counter, and the remaining bytes use a deterministic
+  pattern. The resulting PSDU is the maximum 127 bytes including FCS.
+- The current bring-up application selects the immutable sample snapshot
+  `sample=1`. This safely satisfies the contract's duplicate requirement; a
+  future application-data provider may select a newer snapshot at the start of
+  a new transaction, but newer data is not required by the wire contract.
+- COLETEC preloads the complete snapshot and changes only the sequence byte
+  before each delayed response. RECEPTEC freezes the first payload observed in
+  a transaction—even when its sequence is intentionally wrong—and compares
+  every later duplicate byte-for-byte.
+- RECEPTEC validates the diagnostic application's payload length, COLETEC ID,
+  and deterministic fill separately from the opaque wire codec. Dedicated
+  counters report invalid payloads and duplicate-payload mismatches.
+- Maximum-size receive and frozen-payload buffers are static, and the Zephyr
+  main stack is 2,048 bytes. This removed the MPU stacking fault exposed by
+  maximum-length DATA frames.
+- The host codec suite passes normal, maximum-length, and malformed DATA cases.
+- A normal hardware capture completed 20/20 transactions in 20.4 s. Every
+  response contained 105 payload bytes and completed on attempt 1 with zero
+  final errors or attempt failures. The local ignored capture is
+  `logs/m6-normal-final-20260722.log`.
+- A forced-duplicate capture intentionally returned the wrong sequence on the
+  first two responses of each transaction. Five of five transactions rejected
+  those responses, retried with the same request sequence at 5,000 and 10,000
+  us, and accepted the third response. All duplicate payload comparisons were
+  byte-identical, all frames carried `sample=1` and 105 bytes, and no
+  transaction exhausted its retries. The local ignored capture is
+  `logs/m6-constant-snapshot-duplicates-20260722.log`.
+- Both boards were rebuilt and reflashed with fault injection disabled after
+  the duplicate test.
 
 ## M7 — Hardware-time slots, retries, and `DT_sampling`
 
@@ -360,6 +398,10 @@ Add dated entries here as hardware milestones are exercised.
 | 2026-07-22 | M0 | Pass | Both Nordic IDs retrieved; Zephyr build passed. |
 | 2026-07-22 | M1 | Pass | Same image selected the intended roles; user confirmed setup. |
 | 2026-07-22 | M2 | Pass | Qorvo 08.19.02 snapshot pinned, checksummed, compiled, and linked. |
+| 2026-07-22 | M3–M4 | Pass | Both DW3110s probed and exchanged hardware-FCS-qualified frames on the matched PHY. |
+| 2026-07-22 | M5 | Pass | 1,000/1,000 addressed SYNC/ACK transactions; retries recovered all attempt-level faults. |
+| 2026-07-22 | M6 | Pass | Maximum 105-byte DATA passed normal and forced-duplicate hardware captures. |
+| 2026-07-22 | M7 | Pass | Absolute cadence plus dropped and wrong-sequence response tests exercised all retry offsets. |
 
 ## Resume checklist
 

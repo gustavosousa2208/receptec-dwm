@@ -67,5 +67,5 @@ int main(void)
 		return -1;
 	}
 
-	return dw3110_radio_run_sync_test(role == DEVICE_ROLE_RECEPTEC);
+	return dw3110_radio_run_protocol_test(role == DEVICE_ROLE_RECEPTEC);
 }
