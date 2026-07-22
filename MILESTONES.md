@@ -227,7 +227,7 @@ Done when:
 
 ## M7 — Hardware-time slots, retries, and `DT_sampling`
 
-Status: `[~]` In progress
+Status: `[x]` Complete
 
 Initial timing profile:
 
@@ -275,7 +275,14 @@ Implementation state:
 - After fault testing, both boards were rebuilt and reflashed with the normal
   `drop ACKs=0` image. A normal-cadence smoke run recovered all three observed
   attempt-level faults without transaction failure.
-- Invalid/unrelated traffic against the absolute timeout remains to be tested.
+- A second test mode returned valid-FCS ACKs with the wrong sequence on the
+  first two attempts. Five consecutive transactions rejected both stale ACKs,
+  still transmitted at offsets 0, 5,000, and 10,000 us, and accepted the third
+  correct ACK without any final transaction failure.
+- COLETEC emits no UART diagnostics between attempts. This was required to
+  re-enable RX before the next fixed retry; final-slot diagnostics remain safe.
+- Both fault options default to zero, and both boards were rebuilt and
+  reflashed with `drop ACKs=0` and `bad ACKs=0` after testing.
 
 Done when:
 

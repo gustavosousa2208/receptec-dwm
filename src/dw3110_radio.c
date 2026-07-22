@@ -428,6 +428,8 @@ static int run_coletec_sync(void)
 	uint8_t ranging;
 	uint8_t previous_sequence = 0U;
 	uint8_t fault_drop_count = 0U;
+	uint8_t fault_bad_ack_count = 0U;
+	uint8_t ack_sequence;
 	bool have_previous_request = false;
 	bool duplicate_request;
 	int64_t nominal_slot_delta = 0;
@@ -436,6 +438,8 @@ static int run_coletec_sync(void)
 	printk("Protocol test: COLETEC polled addressed SYNC responder\n");
 	printk("Protocol fault injection: drop ACKs=%u\n",
 	       CONFIG_RECEPTEC_TEST_DROP_ACKS);
+	printk("Protocol fault injection: bad ACKs=%u\n",
+	       CONFIG_RECEPTEC_TEST_BAD_ACKS);
 	status = preload_coletec_ack();
 	if (status < 0) {
 		return status;
@@ -506,6 +510,7 @@ static int run_coletec_sync(void)
 			previous_sequence = request.sequence;
 			previous_nominal_slot = next_nominal_slot;
 			fault_drop_count = 0U;
+			fault_bad_ack_count = 0U;
 			nominal_slot_delta = 0;
 			have_previous_request = true;
 		}
@@ -514,7 +519,12 @@ static int run_coletec_sync(void)
 			continue;
 		}
 
-		if (dwt_writetxdata(1U, &request.sequence, 2U) != DWT_SUCCESS) {
+		ack_sequence = request.sequence;
+		if (fault_bad_ack_count < CONFIG_RECEPTEC_TEST_BAD_ACKS) {
+			ack_sequence++;
+			fault_bad_ack_count++;
+		}
+		if (dwt_writetxdata(1U, &ack_sequence, 2U) != DWT_SUCCESS) {
 			printk("COLETEC ACK sequence write failed\n");
 			continue;
 		}
@@ -523,7 +533,6 @@ static int run_coletec_sync(void)
 			DW3110_TX_ANTENNA_DELAY;
 		dwt_setdelayedtrxtime((uint32_t)(scheduled_tx_timestamp >> 8));
 		if (dwt_starttx(DWT_START_TX_DELAYED) != DWT_SUCCESS) {
-			printk("ACK delayed TX was scheduled too late\n");
 			continue;
 		}
 
@@ -535,11 +544,14 @@ static int run_coletec_sync(void)
 		response_delay_dtu =
 			(response_tx_timestamp - request_rx_timestamp) &
 			DW3110_TIMESTAMP_MASK;
-		printk("ACK sent: seq=%u dt=%u RX-to-TX=%llu us "
-		       "duplicate=%u nominal-delta=%lld dtu FCS=valid\n",
-		       request.sequence, dt_sampling_us,
-		       (response_delay_dtu + 32768U) / DW3110_UUS_TO_DTU,
-		       duplicate_request, nominal_slot_delta);
+		if (dt_sampling_us == attempt_offsets_us[DW3110_ATTEMPT_COUNT - 1U]) {
+			printk("Final-slot ACK: request-seq=%u ack-seq=%u dt=%u "
+			       "RX-to-TX=%llu us duplicate=%u "
+			       "nominal-delta=%lld dtu FCS=valid\n",
+			       request.sequence, ack_sequence, dt_sampling_us,
+			       (response_delay_dtu + 32768U) / DW3110_UUS_TO_DTU,
+			       duplicate_request, nominal_slot_delta);
+		}
 	}
 	return 0;
 }
