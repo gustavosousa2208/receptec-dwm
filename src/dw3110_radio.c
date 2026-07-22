@@ -24,8 +24,9 @@
 #define DW3110_REQUEST_SETUP_US 2000U
 #define DW3110_RESPONSE_DELAY_US 1000U
 #define DW3110_RESPONSE_TIMEOUT_US 3000U
-#define DW3110_SYNC_PERIOD_MS 1000U
+#define DW3110_SAMPLING_PERIOD_US 1000000U
 #define DW3110_ATTEMPT_COUNT 3U
+#define DW3110_UUS_TO_DTU 65536ULL
 #define DW3110_TIMESTAMP_MASK ((1ULL << 40) - 1ULL)
 
 struct protocol_counters {
@@ -325,6 +326,7 @@ static int run_receptec_sync(void)
 	struct protocol_counters counters = { 0 };
 	uint8_t sequence = 0U;
 	uint32_t successful_exchanges = 0U;
+	uint32_t cycle_epoch;
 	int status = 0;
 
 	printk("Protocol test: RECEPTEC polled SYNC initiator "
@@ -335,8 +337,9 @@ static int run_receptec_sync(void)
 	}
 	dwt_setinterrupt(0U, 0U, DWT_ENABLE_INT_ONLY);
 	k_msleep(250U);
+	cycle_epoch = dwt_readsystimestamphi32() +
+		      DW3110_REQUEST_SETUP_US * DW3110_UUS_TO_DX_TIME;
 	for (;;) {
-		uint32_t cycle_epoch;
 		uint32_t successful_attempt = 0U;
 		uint32_t attempts_run = 0U;
 		uint32_t attempt_radio_status[DW3110_ATTEMPT_COUNT] = { 0 };
@@ -344,8 +347,6 @@ static int run_receptec_sync(void)
 
 		sequence++;
 		counters.transactions_started++;
-		cycle_epoch = dwt_readsystimestamphi32() +
-			      DW3110_REQUEST_SETUP_US * DW3110_UUS_TO_DX_TIME;
 
 		for (size_t attempt = 0U; attempt < ARRAY_SIZE(attempt_offsets_us);
 		     ++attempt) {
@@ -404,7 +405,8 @@ static int run_receptec_sync(void)
 		if ((counters.transactions_started % 100U) == 0U) {
 			print_protocol_counters(&counters);
 		}
-		k_msleep(DW3110_SYNC_PERIOD_MS);
+		cycle_epoch += DW3110_SAMPLING_PERIOD_US *
+			       DW3110_UUS_TO_DX_TIME;
 	}
 	return 0;
 }
@@ -417,13 +419,23 @@ static int run_coletec_sync(void)
 	uint64_t response_tx_timestamp;
 	uint64_t response_delay_dtu;
 	uint64_t scheduled_tx_timestamp;
+	uint64_t next_nominal_slot = 0U;
+	uint64_t previous_nominal_slot = 0U;
 	uint32_t radio_status;
 	uint16_t frame_length;
 	uint16_t logical_length;
+	uint16_t dt_sampling_us;
 	uint8_t ranging;
+	uint8_t previous_sequence = 0U;
+	uint8_t fault_drop_count = 0U;
+	bool have_previous_request = false;
+	bool duplicate_request;
+	int64_t nominal_slot_delta = 0;
 	int status;
 
 	printk("Protocol test: COLETEC polled addressed SYNC responder\n");
+	printk("Protocol fault injection: drop ACKs=%u\n",
+	       CONFIG_RECEPTEC_TEST_DROP_ACKS);
 	status = preload_coletec_ack();
 	if (status < 0) {
 		return status;
@@ -466,12 +478,39 @@ static int run_coletec_sync(void)
 		logical_length = frame_length - RECEPTEC_PROTOCOL_FCS_SIZE;
 		dwt_readrxdata(bytes, logical_length, 0U);
 		status = receptec_protocol_decode(bytes, logical_length, &request);
+		dt_sampling_us = status == RECEPTEC_PROTOCOL_OK ?
+			receptec_protocol_decode_dt_sampling(request.payload) : 0U;
 		if (status != RECEPTEC_PROTOCOL_OK ||
 		    !frame_is_for(&request, coletec_eui, receptec_eui,
 				  RECEPTEC_PACKET_SYNC) ||
-		    !is_valid_attempt_offset(
-			receptec_protocol_decode_dt_sampling(request.payload))) {
+		    !is_valid_attempt_offset(dt_sampling_us)) {
 			printk("COLETEC rejected request: codec=%d\n", status);
+			continue;
+		}
+
+		request_rx_timestamp = read_rx_timestamp();
+		next_nominal_slot = (request_rx_timestamp +
+			(uint64_t)DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DTU -
+			(uint64_t)dt_sampling_us * DW3110_UUS_TO_DTU) &
+			DW3110_TIMESTAMP_MASK;
+		duplicate_request = have_previous_request &&
+				    request.sequence == previous_sequence;
+		if (duplicate_request) {
+			uint64_t delta = (next_nominal_slot - previous_nominal_slot) &
+					 DW3110_TIMESTAMP_MASK;
+
+			nominal_slot_delta = delta > (DW3110_TIMESTAMP_MASK >> 1) ?
+				(int64_t)(delta - (DW3110_TIMESTAMP_MASK + 1ULL)) :
+				(int64_t)delta;
+		} else {
+			previous_sequence = request.sequence;
+			previous_nominal_slot = next_nominal_slot;
+			fault_drop_count = 0U;
+			nominal_slot_delta = 0;
+			have_previous_request = true;
+		}
+		if (fault_drop_count < CONFIG_RECEPTEC_TEST_DROP_ACKS) {
+			fault_drop_count++;
 			continue;
 		}
 
@@ -479,7 +518,6 @@ static int run_coletec_sync(void)
 			printk("COLETEC ACK sequence write failed\n");
 			continue;
 		}
-		request_rx_timestamp = read_rx_timestamp();
 		scheduled_tx_timestamp = request_rx_timestamp +
 			(uint64_t)DW3110_RESPONSE_DELAY_US * 65536U -
 			DW3110_TX_ANTENNA_DELAY;
@@ -497,9 +535,11 @@ static int run_coletec_sync(void)
 		response_delay_dtu =
 			(response_tx_timestamp - request_rx_timestamp) &
 			DW3110_TIMESTAMP_MASK;
-		printk("ACK sent: seq=%u RX-to-TX=%llu us FCS=valid\n",
-		       request.sequence,
-		       (response_delay_dtu + 32768U) / 65536U);
+		printk("ACK sent: seq=%u dt=%u RX-to-TX=%llu us "
+		       "duplicate=%u nominal-delta=%lld dtu FCS=valid\n",
+		       request.sequence, dt_sampling_us,
+		       (response_delay_dtu + 32768U) / DW3110_UUS_TO_DTU,
+		       duplicate_request, nominal_slot_delta);
 	}
 	return 0;
 }

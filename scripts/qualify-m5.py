@@ -21,7 +21,12 @@ def main():
     lock = threading.Lock()
     report_lock = threading.Lock()
     stop = threading.Event()
-    state = {"successes": 0, "errors": 0}
+    state = {
+        "successes": 0,
+        "errors": 0,
+        "attempt_failures": 0,
+        "coletec_late_acks": 0,
+    }
     started = time.monotonic()
     log_path = Path(args.log) if args.log else Path("logs") / (
         "m5-qualification-" + datetime.now().strftime("%Y%m%d-%H%M%S") + ".log")
@@ -40,6 +45,8 @@ def main():
                 elapsed = time.monotonic() - started
                 report(f"heartbeat: consecutive={state['successes']} "
                        f"total={state['total']} errors={state['errors']} "
+                       f"attempt_failures={state['attempt_failures']} "
+                       f"coletec_late_acks={state['coletec_late_acks']} "
                        f"elapsed={elapsed:.1f}s")
 
     def read_lines(port, role):
@@ -60,11 +67,17 @@ def main():
                                 report(f"progress: {count}/{args.target} ({elapsed:.1f}s)")
                             if count >= args.target:
                                 stop.set()
-                    elif "SYNC/ACK failed:" in line or "scheduled too late" in line:
+                    elif role == "RECEPTEC" and "SYNC/ACK failed:" in line:
                         with lock:
                             state["errors"] += 1
                             state["successes"] = 0
                             report(f"{role}: {line} -- consecutive count reset")
+                    elif role == "RECEPTEC" and "SYNC attempt failed:" in line:
+                        with lock:
+                            state["attempt_failures"] += 1
+                    elif role == "COLETEC" and "ACK delayed TX was scheduled too late" in line:
+                        with lock:
+                            state["coletec_late_acks"] += 1
         except Exception as exc:
             report(f"{role} serial monitor error: {exc}")
             stop.set()
@@ -95,7 +108,10 @@ def main():
 
     elapsed = time.monotonic() - started
     report(f"qualification complete: successes={state['successes']} "
-           f"errors={state['errors']} elapsed={elapsed:.1f}s log={log_path}")
+           f"errors={state['errors']} "
+           f"attempt_failures={state['attempt_failures']} "
+           f"coletec_late_acks={state['coletec_late_acks']} "
+           f"elapsed={elapsed:.1f}s log={log_path}")
     log_file.close()
     if interrupted:
         return 130

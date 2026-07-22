@@ -262,8 +262,20 @@ Implementation state:
   timeouts, retry exhaustion, invalid length/FCF/type/address/sequence, radio
   RX errors, and late scheduling.
 - Natural packet loss on hardware exercised and verified the 5,000 us retry.
-- The 10,000 us attempt, next-slot calculation/cadence without drift, and
-  controlled fault injection remain to be verified.
+- RECEPTEC now advances the cycle epoch by exactly 1,000,000 us in modular
+  DW3110 time and arms the next delayed request directly against that epoch;
+  Zephyr sleep/wake timing does not accumulate into the sampling cadence.
+- Test-only Kconfig fault injection can drop zero, one, or two ACKs per
+  sequence and defaults to zero. With two drops configured, five consecutive
+  hardware transactions completed on attempt 3 at 10,000 us.
+- COLETEC derives `next_slot_start = request_rx_rmarker + T_sampling -
+  DT_sampling`. The forced third-attempt capture measured duplicate nominal
+  slot deltas from -984 through -1,006 DW3110 time units (about -0.015 us),
+  confirming that retry delay is removed from the next-slot estimate.
+- After fault testing, both boards were rebuilt and reflashed with the normal
+  `drop ACKs=0` image. A normal-cadence smoke run recovered all three observed
+  attempt-level faults without transaction failure.
+- Invalid/unrelated traffic against the absolute timeout remains to be tested.
 
 Done when:
 
