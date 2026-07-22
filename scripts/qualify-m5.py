@@ -78,15 +78,27 @@ def main():
     ]
     for thread in threads:
         thread.start()
-    for thread in threads:
-        thread.join()
-    stop.set()
-    heartbeat_thread.join()
+
+    interrupted = False
+    try:
+        while any(thread.is_alive() for thread in threads):
+            for thread in threads:
+                thread.join(timeout=0.2)
+    except KeyboardInterrupt:
+        interrupted = True
+        report("qualification interrupted by user")
+    finally:
+        stop.set()
+        for thread in threads:
+            thread.join()
+        heartbeat_thread.join()
 
     elapsed = time.monotonic() - started
     report(f"qualification complete: successes={state['successes']} "
            f"errors={state['errors']} elapsed={elapsed:.1f}s log={log_path}")
     log_file.close()
+    if interrupted:
+        return 130
     return 0 if state["successes"] >= args.target else 1
 
 

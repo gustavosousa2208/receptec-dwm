@@ -176,8 +176,10 @@ Required work:
 
 Done when:
 
-- At least 1,000 consecutive `SYNC`/`ACK` transactions complete without an
-  invalid frame, timeout, or late-scheduling error at normal bench distance.
+- At least 1,000 consecutive `SYNC`/`ACK` transactions complete without retry
+  exhaustion, an invalid frame, or a late-scheduling error at normal bench
+  distance. Recoverable attempt-level radio errors and timeouts remain visible
+  in diagnostic counters and do not reset the transaction qualification.
 
 Implementation state:
 
@@ -189,6 +191,20 @@ Implementation state:
   then schedules ACK from the request RX RMARKER at +1,000 UWB us.
 - Hardware capture verified consecutive sequences 13 through 19 with valid
   addressing/FCS and the expected 1,000 us adjusted-RMARKER interval.
+- Analysis of the first long qualification capture (`log.txt`, intentionally
+  untracked) found 11 final failures among 1,776 transactions in its main run.
+  The recurring `0x04000100` status means preamble detected followed by SFD
+  timeout. The longest observed single-attempt run was 490 transactions, so a
+  strict reset on every attempt error did not measure the protocol's specified
+  retry behavior.
+- The qualification monitor writes complete timestamped captures under
+  ignored `logs/` and counts completed transactions; attempt-level diagnostics
+  remain in the same capture.
+- A 100-transaction hardware smoke run completed with zero transaction
+  failures. It included one real first-attempt timeout that recovered on the
+  second request at offset 5,000 us with the same sequence. Firmware counters
+  at transaction 100 reported 100 completed, 101 attempts, one response
+  timeout, zero retry exhaustion, zero late schedules, and zero invalid frames.
 - The formal 1,000-consecutive-exchange qualification remains pending.
 
 ## M6 — DATA_REQ/DATA and duplicate requests
@@ -211,7 +227,7 @@ Done when:
 
 ## M7 — Hardware-time slots, retries, and `DT_sampling`
 
-Status: `[ ]` Not started
+Status: `[~]` In progress
 
 Initial timing profile:
 
@@ -232,6 +248,22 @@ Required work:
 - Encode `DT_sampling` as unsigned 16-bit little-endian microseconds.
 - Keep one modulo-256 sequence counter per configured COLETEC.
 - Add all diagnostic counters required by the handoff.
+
+Implementation state:
+
+- RECEPTEC schedules up to three delayed requests from one hardware-time cycle
+  epoch at offsets 0, 5,000, and 10,000 us.
+- Retries keep the same sequence and encode the matching offset as
+  `DT_sampling`; COLETEC accepts all three values and responds to duplicates.
+- Both protocol roles poll DW3110 status directly. Retry diagnostics are
+  deferred until the transaction ends so UART output cannot consume the 2 ms
+  margin between a 3,000 us timeout and the next 5,000 us attempt.
+- RECEPTEC records transactions started/completed, attempts, response
+  timeouts, retry exhaustion, invalid length/FCF/type/address/sequence, radio
+  RX errors, and late scheduling.
+- Natural packet loss on hardware exercised and verified the 5,000 us retry.
+- The 10,000 us attempt, next-slot calculation/cadence without drift, and
+  controlled fault injection remain to be verified.
 
 Done when:
 

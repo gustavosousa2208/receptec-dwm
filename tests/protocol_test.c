@@ -1,6 +1,7 @@
 #include <receptec/protocol.h>
 
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -74,6 +75,27 @@ static void test_maximum_data(void)
 	assert(memcmp(decoded.payload, payload, sizeof(payload)) == 0);
 }
 
+static void test_dt_sampling_values(void)
+{
+	static const struct {
+		uint16_t value;
+		uint8_t encoded[RECEPTEC_PROTOCOL_DT_SAMPLING_SIZE];
+	} vectors[] = {
+		{ 0U, { 0x00U, 0x00U } },
+		{ 5000U, { 0x88U, 0x13U } },
+		{ 10000U, { 0x10U, 0x27U } },
+		{ UINT16_MAX, { 0xFFU, 0xFFU } },
+	};
+	uint8_t encoded[RECEPTEC_PROTOCOL_DT_SAMPLING_SIZE];
+
+	for (size_t i = 0U; i < sizeof(vectors) / sizeof(vectors[0]); ++i) {
+		receptec_protocol_encode_dt_sampling(vectors[i].value, encoded);
+		assert(memcmp(encoded, vectors[i].encoded, sizeof(encoded)) == 0);
+		assert(receptec_protocol_decode_dt_sampling(encoded) ==
+		       vectors[i].value);
+	}
+}
+
 static void test_rejections(void)
 {
 	uint8_t dt[] = { 0U, 0U };
@@ -101,6 +123,7 @@ static void test_rejections(void)
 int main(void)
 {
 	test_sync_vector();
+	test_dt_sampling_values();
 	test_maximum_data();
 	test_rejections();
 	puts("receptec protocol tests passed");
