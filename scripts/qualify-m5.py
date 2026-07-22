@@ -19,6 +19,14 @@ def main():
     state = {"successes": 0, "errors": 0}
     started = time.monotonic()
 
+    def heartbeat():
+        while not stop.wait(10.0):
+            with lock:
+                elapsed = time.monotonic() - started
+                print(f"heartbeat: consecutive={state['successes']} "
+                      f"total={state['total']} errors={state['errors']} "
+                      f"elapsed={elapsed:.1f}s", flush=True)
+
     def read_lines(port, role):
         try:
             with serial.Serial(port, 115200, timeout=0.2) as uart:
@@ -29,6 +37,7 @@ def main():
                     if role == "RECEPTEC" and "SYNC/ACK OK:" in line:
                         with lock:
                             state["successes"] += 1
+                            state["total"] += 1
                             count = state["successes"]
                             if count % 100 == 0 or count == args.target:
                                 elapsed = time.monotonic() - started
@@ -44,6 +53,9 @@ def main():
             print(f"{role} serial monitor error: {exc}", flush=True)
             stop.set()
 
+    state["total"] = 0
+    heartbeat_thread = threading.Thread(target=heartbeat)
+    heartbeat_thread.start()
     threads = [
         threading.Thread(target=read_lines, args=(args.receptec, "RECEPTEC")),
         threading.Thread(target=read_lines, args=(args.coletec, "COLETEC")),
@@ -52,6 +64,8 @@ def main():
         thread.start()
     for thread in threads:
         thread.join()
+    stop.set()
+    heartbeat_thread.join()
 
     elapsed = time.monotonic() - started
     print(f"qualification complete: successes={state['successes']} "
