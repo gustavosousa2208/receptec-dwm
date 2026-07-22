@@ -13,3 +13,6 @@ build-*/
 # Python tooling
 __pycache__/
 *.py[cod]
+
+# Qualification logs are local test artifacts
+logs/
