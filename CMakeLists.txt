@@ -19,6 +19,7 @@ target_include_directories(app PRIVATE
 target_sources(app PRIVATE
     src/main.c
     src/protocol.c
+    src/coletec_sync.c
     src/dw3110_port.c
     src/dw3110_radio.c
     ${QORVO_DRIVER_DIR}/deca_compat.c

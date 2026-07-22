@@ -1,4 +1,5 @@
 #include <receptec/protocol.h>
+#include <receptec/coletec_sync.h>
 
 #include <assert.h>
 #include <stdint.h>
@@ -120,12 +121,69 @@ static void test_rejections(void)
 	       RECEPTEC_PROTOCOL_ERR_LENGTH);
 }
 
+static void test_coletec_synchronization_recovery(void)
+{
+	struct coletec_sync sync;
+
+	coletec_sync_init(&sync);
+	assert(sync.state == COLETEC_SYNC_INITIAL_RX);
+	assert(coletec_sync_guard_us(&sync) == 500U);
+	coletec_sync_initial_rx_expired(&sync);
+	assert(sync.state == COLETEC_SYNC_DISCOVERY);
+	assert(coletec_sync_discovery_off_ms(&sync) == 2000U);
+
+	coletec_sync_accept_request(&sync);
+	assert(sync.state == COLETEC_SYNC_SYNCHRONIZED);
+	for (uint8_t miss = 1U; miss < COLETEC_MISSES_BEFORE_DISCOVERY;
+	     ++miss) {
+		coletec_sync_miss_slot(&sync);
+		assert(sync.state == COLETEC_SYNC_SYNCHRONIZED);
+		assert(sync.missed_slots == miss);
+		assert(coletec_sync_guard_us(&sync) ==
+		       500U + (uint16_t)miss * 100U);
+	}
+	coletec_sync_miss_slot(&sync);
+	assert(sync.state == COLETEC_SYNC_DISCOVERY);
+	assert(sync.missed_slots == 0U);
+}
+
+static void test_coletec_discovery_backoff(void)
+{
+	struct coletec_sync sync;
+
+	coletec_sync_init(&sync);
+	coletec_sync_initial_rx_expired(&sync);
+	for (uint8_t multiplier = 1U;
+	     multiplier < COLETEC_DISCOVERY_MAX_OFF_MULTIPLIER;
+	     ++multiplier) {
+		assert(sync.discovery_off_multiplier == multiplier);
+		for (uint8_t cycle = 0U;
+		     cycle < COLETEC_DISCOVERY_CYCLES_PER_STEP; ++cycle) {
+			coletec_sync_discovery_on_expired(&sync);
+		}
+	}
+	assert(sync.discovery_off_multiplier ==
+	       COLETEC_DISCOVERY_MAX_OFF_MULTIPLIER);
+	assert(coletec_sync_discovery_off_ms(&sync) == 10000U);
+	for (uint8_t cycle = 0U; cycle < 6U; ++cycle) {
+		coletec_sync_discovery_on_expired(&sync);
+	}
+	assert(sync.discovery_off_multiplier ==
+	       COLETEC_DISCOVERY_MAX_OFF_MULTIPLIER);
+	coletec_sync_accept_request(&sync);
+	assert(sync.state == COLETEC_SYNC_SYNCHRONIZED);
+	assert(sync.discovery_cycle_count == 0U);
+	assert(sync.discovery_off_multiplier == 1U);
+}
+
 int main(void)
 {
 	test_sync_vector();
 	test_dt_sampling_values();
 	test_maximum_data();
 	test_rejections();
+	test_coletec_synchronization_recovery();
+	test_coletec_discovery_backoff();
 	puts("receptec protocol tests passed");
 	return 0;
 }

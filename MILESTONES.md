@@ -337,7 +337,7 @@ Done when:
 
 ## M8 — Synchronization recovery and discovery duty cycle
 
-Status: `[ ]` Not started
+Status: `[x]` Complete
 
 Required work:
 
@@ -353,6 +353,48 @@ Done when:
 
 - Controlled packet loss demonstrates each guard level, loss of sync, discovery
   duty cycling, and successful reentry.
+
+Implementation state:
+
+- A host-tested COLETEC state machine owns initial reception, synchronized
+  operation, missed-slot guard expansion, discovery counters, and discovery
+  OFF multiplier limits independently of the DW3110 adapter.
+- COLETEC starts in firmware-controlled continuous RX for up to 10 seconds. A
+  valid addressed request immediately establishes the next nominal slot from
+  its RX RMARKER and `DT_sampling`.
+- Synchronized reception uses delayed DW3110 RX against the derived hardware
+  slot timestamp. Each receive interval covers the complete 20,000 us slot
+  plus the current guard on both sides; invalid frames and radio errors can
+  rearm RX only through the original absolute window deadline.
+- After a response, RX is re-enabled through the same slot deadline so
+  duplicate requests remain legal. A valid `DATA_REQ` resets the missed-slot
+  count, while a complete window with no valid request advances the nominal
+  slot by exactly 1,000,000 us.
+- Misses 1–4 expand the next guard from 500 us to 600, 700, 800, and 900 us.
+  Miss 5 declares synchronization lost and enters firmware-controlled
+  discovery; the Qorvo hardware SNIFF feature is not used.
+- Discovery uses 2,000 ms continuous-RX ON periods and OFF periods of
+  `multiplier * 2,000 ms`. Every three unsuccessful ON periods increments the
+  multiplier through 2, 3, 4, and the capped value 5. A valid request during an
+  ON period resets the discovery counters and returns to synchronized delayed
+  slot reception.
+- Test-only RECEPTEC configuration can create one deterministic silence after
+  a selected number of completed transactions. It defaults to disabled and
+  advances the request cycle epoch by the skipped hardware-time periods.
+- Normal guarded-slot hardware operation completed 20/20 transactions with no
+  retries or errors (`logs/m8-normal-slots-20260722.log`).
+- A 100-slot silence capture exercised all discovery stages through the 10 s
+  maximum OFF period. When requests resumed during OFF, they failed without
+  altering COLETEC state; the following ON period reacquired the link and five
+  consecutive DATA transactions completed
+  (`logs/m8-discovery-reentry-20260722.log`).
+- A separate seven-slot silence capture preserved the complete guard sequence:
+  next guards 600/700/800/900 us, synchronization loss on miss 5, discovery
+  entry, two expected request failures during OFF, and automatic reentry in
+  the next ON period (`logs/m8-complete-guard-sequence-20260722.log`).
+- Both boards were rebuilt and reflashed with all fault injection disabled.
+  The restored normal image then completed 10/10 DATA transactions on attempt
+  1 with zero errors (`logs/m8-normal-restored-20260722.log`).
 
 ## M9 — Acknowledged STOP
 
@@ -402,6 +444,7 @@ Add dated entries here as hardware milestones are exercised.
 | 2026-07-22 | M5 | Pass | 1,000/1,000 addressed SYNC/ACK transactions; retries recovered all attempt-level faults. |
 | 2026-07-22 | M6 | Pass | Maximum 105-byte DATA passed normal and forced-duplicate hardware captures. |
 | 2026-07-22 | M7 | Pass | Absolute cadence plus dropped and wrong-sequence response tests exercised all retry offsets. |
+| 2026-07-22 | M8 | Pass | Guard expansion, fifth-miss loss, 2–10 s discovery backoff, and automatic reentry passed on hardware. |
 
 ## Resume checklist
 

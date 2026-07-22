@@ -13,6 +13,7 @@
 #include <deca_device_api.h>
 #include <deca_interface.h>
 
+#include <receptec/coletec_sync.h>
 #include <receptec/dw3110_port.h>
 #include <receptec/protocol.h>
 
@@ -25,6 +26,7 @@
 #define DW3110_RESPONSE_DELAY_US 1000U
 #define DW3110_RESPONSE_TIMEOUT_US 3000U
 #define DW3110_SAMPLING_PERIOD_US 1000000U
+#define DW3110_SLOT_DURATION_US 20000U
 #define DW3110_ATTEMPT_COUNT 3U
 #define DW3110_UUS_TO_DTU 65536ULL
 #define DW3110_TIMESTAMP_MASK ((1ULL << 40) - 1ULL)
@@ -424,6 +426,7 @@ static int run_receptec_data(void)
 	uint8_t sequence = 0U;
 	uint32_t successful_exchanges = 0U;
 	uint32_t cycle_epoch;
+	bool test_silence_done = false;
 	int status = 0;
 
 	printk("Protocol test: RECEPTEC polled DATA_REQ initiator "
@@ -443,6 +446,20 @@ static int run_receptec_data(void)
 		uint32_t sample_counter = 0U;
 		bool payload_frozen = false;
 		int attempt_status[DW3110_ATTEMPT_COUNT] = { 0 };
+
+		if (!test_silence_done && CONFIG_RECEPTEC_TEST_SILENCE_AFTER > 0 &&
+		    successful_exchanges >= CONFIG_RECEPTEC_TEST_SILENCE_AFTER) {
+			printk("RECEPTEC test silence: slots=%u\n",
+			       CONFIG_RECEPTEC_TEST_SILENT_SLOTS);
+			dwt_forcetrxoff();
+			k_sleep(K_MSEC((uint32_t)CONFIG_RECEPTEC_TEST_SILENT_SLOTS *
+					 1000U));
+			cycle_epoch += (uint32_t)CONFIG_RECEPTEC_TEST_SILENT_SLOTS *
+				       DW3110_SAMPLING_PERIOD_US *
+				       DW3110_UUS_TO_DX_TIME;
+			test_silence_done = true;
+			printk("RECEPTEC test silence complete\n");
+		}
 
 		sequence++;
 		counters.transactions_started++;
@@ -519,35 +536,300 @@ static int run_receptec_data(void)
 	return 0;
 }
 
-static int run_coletec_data(void)
+struct coletec_radio_runtime {
+	uint64_t previous_nominal_slot;
+	uint32_t next_slot_dx;
+	int64_t nominal_slot_delta;
+	uint8_t previous_sequence;
+	uint8_t fault_drop_count;
+	uint8_t fault_bad_response_count;
+	bool have_previous_request;
+};
+
+static uint32_t remaining_rx_us(uint32_t deadline_dx)
 {
-	uint8_t bytes[RECEPTEC_PROTOCOL_MAX_LOGICAL_SIZE];
-	struct receptec_frame request;
-	uint64_t request_rx_timestamp;
+	int32_t remaining_dx = (int32_t)(deadline_dx -
+					 dwt_readsystimestamphi32());
+
+	if (remaining_dx <= 0) {
+		return 0U;
+	}
+	return (uint32_t)remaining_dx / DW3110_UUS_TO_DX_TIME;
+}
+
+static void clear_rx_status(void)
+{
+	dwt_writesysstatuslo(SYS_STATUS_ALL_RX_GOOD |
+			     SYS_STATUS_ALL_RX_ERR |
+			     SYS_STATUS_ALL_RX_TO |
+			     DWT_INT_TXFRS_BIT_MASK);
+}
+
+static int arm_immediate_rx(uint32_t timeout_us)
+{
+	dwt_forcetrxoff();
+	clear_rx_status();
+	dwt_setrxtimeout(timeout_us);
+	return dwt_rxenable(DWT_START_RX_IMMEDIATE) == DWT_SUCCESS ? 0 : -EIO;
+}
+
+static int arm_delayed_rx(uint32_t start_dx, uint32_t timeout_us)
+{
+	dwt_forcetrxoff();
+	clear_rx_status();
+	dwt_setrxtimeout(timeout_us);
+	dwt_setdelayedtrxtime(start_dx);
+	return dwt_rxenable(DWT_START_RX_DELAYED | DWT_IDLE_ON_DLY_ERR) ==
+	       DWT_SUCCESS ? 0 : -ETIME;
+}
+
+static uint32_t wait_for_rx_event(void)
+{
+	uint32_t radio_status;
+
+	do {
+		radio_status = dwt_readsysstatuslo();
+	} while ((radio_status & (DWT_INT_RXFCG_BIT_MASK |
+				 SYS_STATUS_ALL_RX_ERR |
+				 SYS_STATUS_ALL_RX_TO)) == 0U);
+	return radio_status;
+}
+
+static uint32_t wait_for_rx_event_until(int64_t end_ms)
+{
+	uint32_t radio_status;
+
+	do {
+		radio_status = dwt_readsysstatuslo();
+		if ((radio_status & (DWT_INT_RXFCG_BIT_MASK |
+				    SYS_STATUS_ALL_RX_ERR |
+				    SYS_STATUS_ALL_RX_TO)) != 0U) {
+			return radio_status;
+		}
+	} while (k_uptime_get() < end_ms);
+	return 0U;
+}
+
+static int read_coletec_request(uint32_t radio_status,
+				 struct receptec_frame *request,
+				 uint64_t *request_rx_timestamp,
+				 uint16_t *dt_sampling_us)
+{
+	uint16_t frame_length;
+	uint16_t logical_length;
+	uint8_t ranging;
+	int status;
+
+	if ((radio_status & DWT_INT_RXFCG_BIT_MASK) == 0U) {
+		return -EIO;
+	}
+	frame_length = dwt_getframelength(&ranging);
+	if (frame_length < RECEPTEC_PROTOCOL_HEADER_SIZE +
+			   RECEPTEC_PROTOCOL_FCS_SIZE ||
+	    frame_length > RECEPTEC_PROTOCOL_MAX_PSDU_SIZE) {
+		return -EMSGSIZE;
+	}
+	logical_length = frame_length - RECEPTEC_PROTOCOL_FCS_SIZE;
+	dwt_readrxdata(protocol_rx_bytes, logical_length, 0U);
+	status = receptec_protocol_decode(protocol_rx_bytes, logical_length, request);
+	if (status != RECEPTEC_PROTOCOL_OK ||
+	    !frame_is_for(request, coletec_eui, receptec_eui,
+			  RECEPTEC_PACKET_DATA_REQ)) {
+		return -EBADMSG;
+	}
+	*dt_sampling_us = receptec_protocol_decode_dt_sampling(request->payload);
+	if (!is_valid_attempt_offset(*dt_sampling_us)) {
+		return -EBADMSG;
+	}
+	*request_rx_timestamp = read_rx_timestamp();
+	return 0;
+}
+
+static void handle_coletec_request(
+	struct coletec_radio_runtime *runtime,
+	const struct receptec_frame *request, uint64_t request_rx_timestamp,
+	uint16_t dt_sampling_us)
+{
+	uint64_t next_nominal_slot = (request_rx_timestamp +
+		(uint64_t)DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DTU -
+		(uint64_t)dt_sampling_us * DW3110_UUS_TO_DTU) &
+		DW3110_TIMESTAMP_MASK;
 	uint64_t response_tx_timestamp;
 	uint64_t response_delay_dtu;
 	uint64_t scheduled_tx_timestamp;
-	uint64_t previous_nominal_slot = 0U;
 	uint32_t radio_status;
-	uint16_t frame_length;
-	uint16_t logical_length;
-	uint16_t dt_sampling_us;
-	uint8_t ranging;
-	uint8_t previous_sequence = 0U;
-	uint8_t fault_drop_count = 0U;
-	uint8_t fault_bad_ack_count = 0U;
 	uint8_t response_sequence;
-	const uint32_t sample_counter = 1U;
-	bool have_previous_request = false;
-	bool duplicate_request;
-	int64_t nominal_slot_delta = 0;
+	bool duplicate_request = runtime->have_previous_request &&
+				 request->sequence == runtime->previous_sequence;
+
+	runtime->nominal_slot_delta = update_nominal_slot(
+		request_rx_timestamp, dt_sampling_us, duplicate_request,
+		&runtime->previous_nominal_slot);
+	runtime->next_slot_dx = (uint32_t)(next_nominal_slot >> 8);
+	if (!duplicate_request) {
+		runtime->previous_sequence = request->sequence;
+		runtime->fault_drop_count = 0U;
+		runtime->fault_bad_response_count = 0U;
+		runtime->have_previous_request = true;
+	}
+	if (runtime->fault_drop_count < CONFIG_RECEPTEC_TEST_DROP_ACKS) {
+		runtime->fault_drop_count++;
+		return;
+	}
+
+	response_sequence = request->sequence;
+	if (runtime->fault_bad_response_count < CONFIG_RECEPTEC_TEST_BAD_ACKS) {
+		response_sequence++;
+		runtime->fault_bad_response_count++;
+	}
+	if (dwt_writetxdata(1U, &response_sequence,
+			    FRAME_SEQUENCE_OFFSET) != DWT_SUCCESS) {
+		return;
+	}
+	scheduled_tx_timestamp = request_rx_timestamp +
+		(uint64_t)DW3110_RESPONSE_DELAY_US * DW3110_UUS_TO_DTU -
+		DW3110_TX_ANTENNA_DELAY;
+	dwt_setdelayedtrxtime((uint32_t)(scheduled_tx_timestamp >> 8));
+	if (dwt_starttx(DWT_START_TX_DELAYED) != DWT_SUCCESS) {
+		return;
+	}
+	do {
+		radio_status = dwt_readsysstatuslo();
+	} while ((radio_status & DWT_INT_TXFRS_BIT_MASK) == 0U);
+	dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK);
+	response_tx_timestamp = read_tx_timestamp();
+	response_delay_dtu = (response_tx_timestamp - request_rx_timestamp) &
+			     DW3110_TIMESTAMP_MASK;
+	if (dt_sampling_us == attempt_offsets_us[DW3110_ATTEMPT_COUNT - 1U]) {
+		printk("Final-slot DATA: request-seq=%u response-seq=%u "
+		       "sample=1 bytes=%u dt=%u RX-to-TX=%llu us "
+		       "duplicate=%u nominal-delta=%lld dtu FCS=valid\n",
+		       request->sequence, response_sequence,
+		       RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE, dt_sampling_us,
+		       (response_delay_dtu + 32768U) / DW3110_UUS_TO_DTU,
+		       duplicate_request, runtime->nominal_slot_delta);
+	}
+}
+
+static bool listen_until_slot_deadline(
+	struct coletec_radio_runtime *runtime, struct coletec_sync *sync,
+	uint32_t deadline_dx)
+{
+	bool valid_request_seen = false;
+
+	for (;;) {
+		struct receptec_frame request;
+		uint64_t request_rx_timestamp;
+		uint32_t remaining_us = remaining_rx_us(deadline_dx);
+		uint32_t radio_status;
+		uint16_t dt_sampling_us;
+
+		if (remaining_us == 0U || arm_immediate_rx(remaining_us) < 0) {
+			return valid_request_seen;
+		}
+		radio_status = wait_for_rx_event();
+		if (read_coletec_request(radio_status, &request,
+					 &request_rx_timestamp,
+					 &dt_sampling_us) == 0) {
+			handle_coletec_request(runtime, &request,
+					       request_rx_timestamp, dt_sampling_us);
+			coletec_sync_accept_request(sync);
+			valid_request_seen = true;
+		}
+	}
+}
+
+static bool listen_open_period(struct coletec_radio_runtime *runtime,
+			       struct coletec_sync *sync, uint32_t duration_ms)
+{
+	int64_t end_ms = k_uptime_get() + duration_ms;
+
+	if (arm_immediate_rx(0U) < 0) {
+		return false;
+	}
+	while (k_uptime_get() < end_ms) {
+		struct receptec_frame request;
+		uint64_t request_rx_timestamp;
+		uint32_t radio_status = wait_for_rx_event_until(end_ms);
+		uint32_t current_slot_deadline;
+		uint16_t dt_sampling_us;
+
+		if (radio_status == 0U) {
+			break;
+		}
+		if (read_coletec_request(radio_status, &request,
+					 &request_rx_timestamp,
+					 &dt_sampling_us) == 0) {
+			handle_coletec_request(runtime, &request,
+					       request_rx_timestamp, dt_sampling_us);
+			coletec_sync_accept_request(sync);
+			current_slot_deadline = runtime->next_slot_dx -
+				DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DX_TIME +
+				(DW3110_SLOT_DURATION_US + COLETEC_BASE_GUARD_US) *
+				DW3110_UUS_TO_DX_TIME;
+			(void)listen_until_slot_deadline(runtime, sync,
+						 current_slot_deadline);
+			return true;
+		}
+		if (arm_immediate_rx(0U) < 0) {
+			break;
+		}
+	}
+	dwt_forcetrxoff();
+	return false;
+}
+
+static void listen_synchronized_slot(struct coletec_radio_runtime *runtime,
+				     struct coletec_sync *sync)
+{
+	uint32_t guard_us = coletec_sync_guard_us(sync);
+	uint32_t window_start = runtime->next_slot_dx -
+		guard_us * DW3110_UUS_TO_DX_TIME;
+	uint32_t window_deadline = runtime->next_slot_dx +
+		(DW3110_SLOT_DURATION_US + guard_us) * DW3110_UUS_TO_DX_TIME;
+	uint32_t window_duration = DW3110_SLOT_DURATION_US + 2U * guard_us;
+	bool valid_request_seen = false;
+
+	if (arm_delayed_rx(window_start, window_duration) == 0) {
+		struct receptec_frame request;
+		uint64_t request_rx_timestamp;
+		uint32_t radio_status = wait_for_rx_event();
+		uint16_t dt_sampling_us;
+
+		if (read_coletec_request(radio_status, &request,
+					 &request_rx_timestamp,
+					 &dt_sampling_us) == 0) {
+			handle_coletec_request(runtime, &request,
+					       request_rx_timestamp, dt_sampling_us);
+			coletec_sync_accept_request(sync);
+			valid_request_seen = true;
+		}
+		valid_request_seen |= listen_until_slot_deadline(
+			runtime, sync, window_deadline);
+	}
+	if (valid_request_seen) {
+		return;
+	}
+	runtime->next_slot_dx +=
+		DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DX_TIME;
+	coletec_sync_miss_slot(sync);
+	if (sync->state == COLETEC_SYNC_DISCOVERY) {
+		printk("COLETEC synchronization lost after 5 missed slots\n");
+	} else {
+		printk("COLETEC slot missed: count=%u next-guard=%u us\n",
+		       sync->missed_slots, coletec_sync_guard_us(sync));
+	}
+}
+
+static int run_coletec_data(void)
+{
+	struct coletec_radio_runtime runtime = { 0 };
+	struct coletec_sync sync;
 	int status;
 
-	printk("Protocol test: COLETEC polled addressed DATA responder\n");
-	printk("Protocol fault injection: drop ACKs=%u\n",
-	       CONFIG_RECEPTEC_TEST_DROP_ACKS);
-	printk("Protocol fault injection: bad ACKs=%u\n",
-	       CONFIG_RECEPTEC_TEST_BAD_ACKS);
+	printk("Protocol test: COLETEC synchronized DATA responder\n");
+	printk("Protocol fault injection: drop responses=%u bad responses=%u\n",
+	       CONFIG_RECEPTEC_TEST_DROP_ACKS, CONFIG_RECEPTEC_TEST_BAD_ACKS);
 	status = preload_coletec_data();
 	if (status < 0) {
 		return status;
@@ -557,106 +839,35 @@ static int run_coletec_data(void)
 		return status;
 	}
 	dwt_setinterrupt(0U, 0U, DWT_ENABLE_INT_ONLY);
-	dwt_setrxtimeout(0U);
+	coletec_sync_init(&sync);
+	printk("COLETEC initial continuous RX: 10000 ms\n");
+	if (listen_open_period(&runtime, &sync, COLETEC_INITIAL_RX_MS)) {
+		printk("COLETEC synchronized during initial RX\n");
+	} else {
+		coletec_sync_initial_rx_expired(&sync);
+		printk("COLETEC initial RX expired; entering discovery\n");
+	}
 
 	for (;;) {
-		dwt_writesysstatuslo(SYS_STATUS_ALL_RX_GOOD |
-				     SYS_STATUS_ALL_RX_ERR |
-				     SYS_STATUS_ALL_RX_TO |
-				     DWT_INT_TXFRS_BIT_MASK);
-		if (dwt_rxenable(DWT_START_RX_IMMEDIATE) != DWT_SUCCESS) {
-			printk("COLETEC RX enable failed\n");
+		if (sync.state == COLETEC_SYNC_SYNCHRONIZED) {
+			listen_synchronized_slot(&runtime, &sync);
 			continue;
 		}
-
-		do {
-			radio_status = dwt_readsysstatuslo();
-		} while ((radio_status & (DWT_INT_RXFCG_BIT_MASK |
-					 SYS_STATUS_ALL_RX_ERR |
-					 SYS_STATUS_ALL_RX_TO)) == 0U);
-
-		if ((radio_status & DWT_INT_RXFCG_BIT_MASK) == 0U) {
-			printk("COLETEC RX hardware error: 0x%08X\n", radio_status);
+		printk("COLETEC discovery ON: 2000 ms cycle=%u multiplier=%u\n",
+		       sync.discovery_cycle_count + 1U,
+		       sync.discovery_off_multiplier);
+		if (listen_open_period(&runtime, &sync,
+				       COLETEC_DISCOVERY_ON_MS)) {
+			printk("COLETEC discovery reentry: synchronized\n");
 			continue;
 		}
-
-		frame_length = dwt_getframelength(&ranging);
-		if (frame_length < RECEPTEC_PROTOCOL_HEADER_SIZE +
-				   RECEPTEC_PROTOCOL_FCS_SIZE ||
-		    frame_length > RECEPTEC_PROTOCOL_MAX_PSDU_SIZE) {
-			printk("COLETEC invalid PSDU length: %u\n", frame_length);
-			continue;
-		}
-		logical_length = frame_length - RECEPTEC_PROTOCOL_FCS_SIZE;
-		dwt_readrxdata(bytes, logical_length, 0U);
-		status = receptec_protocol_decode(bytes, logical_length, &request);
-		dt_sampling_us = status == RECEPTEC_PROTOCOL_OK ?
-			receptec_protocol_decode_dt_sampling(request.payload) : 0U;
-		if (status != RECEPTEC_PROTOCOL_OK ||
-		    !frame_is_for(&request, coletec_eui, receptec_eui,
-				  RECEPTEC_PACKET_DATA_REQ) ||
-		    !is_valid_attempt_offset(dt_sampling_us)) {
-			printk("COLETEC rejected request: codec=%d\n", status);
-			continue;
-		}
-
-		request_rx_timestamp = read_rx_timestamp();
-		duplicate_request = have_previous_request &&
-				    request.sequence == previous_sequence;
-		if (!duplicate_request) {
-			previous_sequence = request.sequence;
-			fault_drop_count = 0U;
-			fault_bad_ack_count = 0U;
-			have_previous_request = true;
-		}
-		if (fault_drop_count < CONFIG_RECEPTEC_TEST_DROP_ACKS) {
-			nominal_slot_delta = update_nominal_slot(
-				request_rx_timestamp, dt_sampling_us,
-				duplicate_request, &previous_nominal_slot);
-			fault_drop_count++;
-			continue;
-		}
-
-		response_sequence = request.sequence;
-		if (fault_bad_ack_count < CONFIG_RECEPTEC_TEST_BAD_ACKS) {
-			response_sequence++;
-			fault_bad_ack_count++;
-		}
-		if (dwt_writetxdata(1U, &response_sequence,
-				    FRAME_SEQUENCE_OFFSET) != DWT_SUCCESS) {
-			continue;
-		}
-		scheduled_tx_timestamp = request_rx_timestamp +
-			(uint64_t)DW3110_RESPONSE_DELAY_US * 65536U -
-			DW3110_TX_ANTENNA_DELAY;
-		dwt_setdelayedtrxtime((uint32_t)(scheduled_tx_timestamp >> 8));
-		if (dwt_starttx(DWT_START_TX_DELAYED) != DWT_SUCCESS) {
-			continue;
-		}
-		nominal_slot_delta = update_nominal_slot(
-			request_rx_timestamp, dt_sampling_us, duplicate_request,
-			&previous_nominal_slot);
-
-		do {
-			radio_status = dwt_readsysstatuslo();
-		} while ((radio_status & DWT_INT_TXFRS_BIT_MASK) == 0U);
-		dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK);
-		response_tx_timestamp = read_tx_timestamp();
-		response_delay_dtu =
-			(response_tx_timestamp - request_rx_timestamp) &
-			DW3110_TIMESTAMP_MASK;
-		if (dt_sampling_us == attempt_offsets_us[DW3110_ATTEMPT_COUNT - 1U]) {
-			printk("Final-slot DATA: request-seq=%u response-seq=%u "
-			       "sample=%u bytes=%u dt=%u "
-			       "RX-to-TX=%llu us duplicate=%u "
-			       "nominal-delta=%lld dtu FCS=valid\n",
-			       request.sequence, response_sequence, sample_counter,
-			       RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE, dt_sampling_us,
-			       (response_delay_dtu + 32768U) / DW3110_UUS_TO_DTU,
-			       duplicate_request, nominal_slot_delta);
-		}
+		coletec_sync_discovery_on_expired(&sync);
+		printk("COLETEC discovery OFF: %u ms next-cycle=%u multiplier=%u\n",
+		       coletec_sync_discovery_off_ms(&sync),
+		       sync.discovery_cycle_count + 1U,
+		       sync.discovery_off_multiplier);
+		k_sleep(K_MSEC(coletec_sync_discovery_off_ms(&sync)));
 	}
-	return 0;
 }
 
 int dw3110_radio_init(void)

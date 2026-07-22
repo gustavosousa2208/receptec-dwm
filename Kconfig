@@ -18,4 +18,20 @@ config RECEPTEC_TEST_BAD_ACKS
 	  return that many hardware-FCS-valid responses with sequence + 1 before
 	  using the request sequence. Production and normal bench builds use zero.
 
+config RECEPTEC_TEST_SILENCE_AFTER
+	int "Completed transactions before a one-time request silence"
+	range 0 1000000
+	default 0
+	help
+	  Test-only synchronization fault injection. A nonzero value pauses the
+	  RECEPTEC after this many completed transactions. Normal builds use zero.
+
+config RECEPTEC_TEST_SILENT_SLOTS
+	int "Sampling periods in the one-time request silence"
+	range 0 1000
+	default 0
+	help
+	  Number of one-second sampling periods skipped by the test-only silence.
+	  This has no effect when RECEPTEC_TEST_SILENCE_AFTER is zero.
+
 source "Kconfig.zephyr"
