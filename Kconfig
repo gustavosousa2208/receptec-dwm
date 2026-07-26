@@ -34,4 +34,13 @@ config RECEPTEC_TEST_SILENT_SLOTS
 	  Number of one-second sampling periods skipped by the test-only silence.
 	  This has no effect when RECEPTEC_TEST_SILENCE_AFTER is zero.
 
+config RECEPTEC_TEST_STOP_AFTER
+	int "Completed DATA transactions before sending STOP"
+	range 0 1000000
+	default 0
+	help
+	  Test-only STOP trigger. A nonzero value makes RECEPTEC send one STOP
+	  transaction after this many completed DATA transactions. Normal builds
+	  use zero and continue DATA polling.
+
 source "Kconfig.zephyr"

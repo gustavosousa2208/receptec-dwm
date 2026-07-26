@@ -121,6 +121,31 @@ static void test_rejections(void)
 	       RECEPTEC_PROTOCOL_ERR_LENGTH);
 }
 
+static void test_stop_frames(void)
+{
+	uint8_t encoded[RECEPTEC_PROTOCOL_MAX_LOGICAL_SIZE];
+	struct receptec_frame decoded;
+	struct receptec_frame stop = frame(RECEPTEC_PACKET_STOP, NULL, 0U);
+	struct receptec_frame stop_ack = frame(RECEPTEC_PACKET_STOP_ACK, NULL, 0U);
+	size_t length = 0U;
+
+	assert(receptec_protocol_encode(encoded, sizeof(encoded), &stop,
+					&length) == RECEPTEC_PROTOCOL_OK);
+	assert(length == RECEPTEC_PROTOCOL_HEADER_SIZE);
+	assert(receptec_protocol_decode(encoded, length, &decoded) ==
+	       RECEPTEC_PROTOCOL_OK);
+	assert(decoded.type == RECEPTEC_PACKET_STOP);
+	assert(decoded.payload_length == 0U);
+
+	assert(receptec_protocol_encode(encoded, sizeof(encoded), &stop_ack,
+					&length) == RECEPTEC_PROTOCOL_OK);
+	assert(length == RECEPTEC_PROTOCOL_HEADER_SIZE);
+	assert(receptec_protocol_decode(encoded, length, &decoded) ==
+	       RECEPTEC_PROTOCOL_OK);
+	assert(decoded.type == RECEPTEC_PACKET_STOP_ACK);
+	assert(decoded.payload_length == 0U);
+}
+
 static void test_coletec_synchronization_recovery(void)
 {
 	struct coletec_sync sync;
@@ -182,6 +207,7 @@ int main(void)
 	test_dt_sampling_values();
 	test_maximum_data();
 	test_rejections();
+	test_stop_frames();
 	test_coletec_synchronization_recovery();
 	test_coletec_discovery_backoff();
 	puts("receptec protocol tests passed");

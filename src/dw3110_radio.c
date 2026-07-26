@@ -12,6 +12,9 @@
 
 #include <deca_device_api.h>
 #include <deca_interface.h>
+#include <deca_private.h>
+#include <dw3000_deca_regs.h>
+#include <dw3000_deca_vals.h>
 
 #include <receptec/coletec_sync.h>
 #include <receptec/dw3110_port.h>
@@ -23,7 +26,7 @@
 #define DW3110_RX_ANTENNA_DELAY 16385U
 #define DW3110_UUS_TO_DX_TIME 256U
 #define DW3110_REQUEST_SETUP_US 2000U
-#define DW3110_RESPONSE_DELAY_US 1000U
+#define DW3110_RESPONSE_DELAY_US 1250U
 #define DW3110_RESPONSE_TIMEOUT_US 3000U
 #define DW3110_SAMPLING_PERIOD_US 1000000U
 #define DW3110_SLOT_DURATION_US 20000U
@@ -33,6 +36,9 @@
 #define DIAGNOSTIC_SAMPLE_OFFSET RECEPTEC_PROTOCOL_EUI64_SIZE
 #define DIAGNOSTIC_FIXED_SIZE (RECEPTEC_PROTOCOL_EUI64_SIZE + sizeof(uint32_t))
 #define FRAME_SEQUENCE_OFFSET 2U
+#define COLETEC_STOP_ACK_TX_BUFFER_OFFSET 128U
+#define COLETEC_STOP_ACK_RADIO_LENGTH \
+	(RECEPTEC_PROTOCOL_HEADER_SIZE + RECEPTEC_PROTOCOL_FCS_SIZE)
 
 struct protocol_counters {
 	uint32_t transactions_started;
@@ -66,6 +72,7 @@ static uint8_t transaction_payload[RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE];
 static size_t payload_mismatch_offset;
 static uint8_t payload_mismatch_expected;
 static uint8_t payload_mismatch_received;
+static uint8_t last_stop_response_type;
 
 extern const struct dwt_driver_s dw3000_driver;
 
@@ -151,17 +158,6 @@ static int load_protocol_frame(const struct receptec_frame *frame)
 	return 0;
 }
 
-static bool frame_is_for(const struct receptec_frame *frame,
-			 const uint8_t destination[RECEPTEC_PROTOCOL_EUI64_SIZE],
-			 const uint8_t source[RECEPTEC_PROTOCOL_EUI64_SIZE],
-			 enum receptec_packet_type type)
-{
-	return frame->type == type &&
-	       memcmp(frame->destination, destination,
-		      RECEPTEC_PROTOCOL_EUI64_SIZE) == 0 &&
-	       memcmp(frame->source, source, RECEPTEC_PROTOCOL_EUI64_SIZE) == 0;
-}
-
 static void encode_u32_le(uint32_t value, uint8_t output[sizeof(uint32_t)])
 {
 	output[0] = (uint8_t)value;
@@ -193,7 +189,7 @@ static int preload_coletec_data(void)
 {
 	static uint8_t payload[RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE];
 	struct receptec_frame data = {
-		.sequence = 0U,
+		.sequence = 1U,
 		.type = RECEPTEC_PACKET_DATA,
 		.payload = payload,
 		.payload_length = sizeof(payload),
@@ -203,6 +199,87 @@ static int preload_coletec_data(void)
 	memcpy(data.destination, receptec_eui, sizeof(receptec_eui));
 	memcpy(data.source, coletec_eui, sizeof(coletec_eui));
 	return load_protocol_frame(&data);
+}
+
+static int preload_coletec_stop_ack(uint8_t sequence)
+{
+	uint8_t bytes[COLETEC_STOP_ACK_RADIO_LENGTH] = { 0 };
+	struct receptec_frame stop_ack = {
+		.sequence = sequence,
+		.type = RECEPTEC_PACKET_STOP_ACK,
+		.payload = NULL,
+		.payload_length = 0U,
+	};
+	size_t logical_length;
+	int status;
+
+	memcpy(stop_ack.destination, receptec_eui, sizeof(receptec_eui));
+	memcpy(stop_ack.source, coletec_eui, sizeof(coletec_eui));
+	status = receptec_protocol_encode(bytes, RECEPTEC_PROTOCOL_HEADER_SIZE,
+					  &stop_ack, &logical_length);
+	if (status != RECEPTEC_PROTOCOL_OK ||
+	    logical_length != RECEPTEC_PROTOCOL_HEADER_SIZE) {
+		return -EINVAL;
+	}
+	if (dwt_writetxdata(sizeof(bytes), bytes,
+			    COLETEC_STOP_ACK_TX_BUFFER_OFFSET) != DWT_SUCCESS) {
+		return -EIO;
+	}
+	return 0;
+}
+
+static int set_preloaded_stop_ack_sequence(uint8_t sequence)
+{
+	dwt_writetodevice(INDIRECT_POINTER_A_ID, 0U, 1U, &sequence);
+	return 0;
+}
+
+static void configure_coletec_stop_sequence_pointer(void)
+{
+	uint8_t bytes[sizeof(uint32_t)];
+
+	/*
+	 * Pin indirect pointer A to the preloaded STOP_ACK sequence byte. This
+	 * turns both prediction updates and duplicate corrections into one SPI
+	 * write instead of reprogramming the indirect address on the hot path.
+	 */
+	encode_u32_le(TX_BUFFER_ID >> 16U, bytes);
+	dwt_writetodevice(INDIRECT_ADDR_A_ID, 0U, sizeof(bytes), bytes);
+	encode_u32_le(COLETEC_STOP_ACK_TX_BUFFER_OFFSET +
+		      FRAME_SEQUENCE_OFFSET, bytes);
+	dwt_writetodevice(ADDR_OFFSET_A_ID, 0U, sizeof(bytes), bytes);
+}
+
+static uint32_t prepare_coletec_stop_tx_fctrl(void)
+{
+	uint8_t bytes[TX_FCTRL_LEN];
+	uint32_t tx_fctrl;
+
+	dwt_readfromdevice(TX_FCTRL_ID, 0U, sizeof(bytes), bytes);
+	tx_fctrl = decode_u32_le(bytes);
+	tx_fctrl &= ~(TX_FCTRL_TXB_OFFSET_BIT_MASK |
+		      TX_FCTRL_TR_BIT_MASK |
+		      TX_FCTRL_TXFLEN_BIT_MASK);
+	/* Qorvo encodes TX-buffer offsets above 127 with an extra 128. */
+	tx_fctrl |= COLETEC_STOP_ACK_RADIO_LENGTH |
+		((COLETEC_STOP_ACK_TX_BUFFER_OFFSET +
+		  DWT_TX_BUFF_OFFSET_ADJUST) <<
+		 TX_FCTRL_TXB_OFFSET_BIT_OFFSET);
+	return tx_fctrl;
+}
+
+static void select_preloaded_coletec_stop_ack(uint32_t tx_fctrl)
+{
+	uint8_t bytes[TX_FCTRL_LEN];
+	uint8_t sar_ctrl;
+
+	encode_u32_le(tx_fctrl, bytes);
+	/*
+	 * A full four-byte write is faster here than the driver's generic
+	 * read/modify/write. The SAR_CTRL read latches Qorvo's adjusted offset.
+	 */
+	dwt_writetodevice(TX_FCTRL_ID, 0U, sizeof(bytes), bytes);
+	dwt_readfromdevice(SAR_CTRL_ID, 0U, sizeof(sar_ctrl), &sar_ctrl);
 }
 
 static bool is_valid_attempt_offset(uint16_t dt_sampling_us)
@@ -289,6 +366,112 @@ static int send_delayed_data_request_attempt(
 	}
 	counters->attempts_transmitted++;
 	return 0;
+}
+
+static int send_delayed_stop_attempt(uint8_t sequence, uint16_t attempt_offset_us,
+				     uint32_t cycle_epoch,
+				     struct protocol_counters *counters)
+{
+	struct receptec_frame stop = {
+		.sequence = sequence,
+		.type = RECEPTEC_PACKET_STOP,
+		.payload = NULL,
+		.payload_length = 0U,
+	};
+	int status;
+
+	memcpy(stop.destination, coletec_eui, sizeof(coletec_eui));
+	memcpy(stop.source, receptec_eui, sizeof(receptec_eui));
+	status = load_protocol_frame(&stop);
+	if (status < 0) {
+		return status;
+	}
+	dwt_forcetrxoff();
+	dwt_writesysstatuslo(SYS_STATUS_ALL_RX_GOOD |
+			     SYS_STATUS_ALL_RX_ERR |
+			     SYS_STATUS_ALL_RX_TO |
+			     DWT_INT_TXFRS_BIT_MASK);
+	dwt_setrxaftertxdelay(0U);
+	dwt_setrxtimeout(DW3110_RESPONSE_TIMEOUT_US);
+	dwt_setdelayedtrxtime(cycle_epoch +
+			     (uint32_t)attempt_offset_us * DW3110_UUS_TO_DX_TIME);
+	if (dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED) !=
+	    DWT_SUCCESS) {
+		counters->late_schedules++;
+		return -ETIME;
+	}
+	counters->attempts_transmitted++;
+	return 0;
+}
+
+static int poll_for_matching_stop_ack(uint8_t sequence,
+				      struct protocol_counters *counters,
+				      uint32_t *final_radio_status)
+{
+	struct receptec_frame stop_ack;
+	uint32_t radio_status;
+	uint16_t frame_length;
+	uint16_t logical_length;
+	uint8_t ranging;
+	int status;
+
+	do {
+		radio_status = dwt_readsysstatuslo();
+	} while ((radio_status & (DWT_INT_RXFCG_BIT_MASK |
+				 SYS_STATUS_ALL_RX_ERR |
+				 SYS_STATUS_ALL_RX_TO)) == 0U);
+	*final_radio_status = radio_status;
+	if ((radio_status & DWT_INT_RXFCG_BIT_MASK) == 0U) {
+		if ((radio_status & SYS_STATUS_ALL_RX_TO) != 0U) {
+			counters->response_timeouts++;
+			status = -ETIMEDOUT;
+		} else {
+			counters->radio_rx_errors++;
+			status = -EIO;
+		}
+		goto out;
+	}
+	frame_length = dwt_getframelength(&ranging);
+	if (frame_length != RECEPTEC_PROTOCOL_HEADER_SIZE +
+			    RECEPTEC_PROTOCOL_FCS_SIZE) {
+		counters->invalid_length++;
+		status = -EMSGSIZE;
+		goto out;
+	}
+	logical_length = frame_length - RECEPTEC_PROTOCOL_FCS_SIZE;
+	dwt_readrxdata(protocol_rx_bytes, logical_length, 0U);
+	status = receptec_protocol_decode(protocol_rx_bytes, logical_length,
+					  &stop_ack);
+	if (status != RECEPTEC_PROTOCOL_OK) {
+		count_codec_rejection(counters, status);
+		status = -EBADMSG;
+		goto out;
+	}
+	if (stop_ack.type != RECEPTEC_PACKET_STOP_ACK) {
+		last_stop_response_type = (uint8_t)stop_ack.type;
+		counters->invalid_type++;
+		status = -EBADMSG;
+		goto out;
+	}
+	if (memcmp(stop_ack.destination, receptec_eui, sizeof(receptec_eui)) != 0 ||
+	    memcmp(stop_ack.source, coletec_eui, sizeof(coletec_eui)) != 0) {
+		counters->invalid_address++;
+		status = -EBADMSG;
+		goto out;
+	}
+	if (stop_ack.sequence != sequence) {
+		counters->invalid_sequence++;
+		status = -EBADMSG;
+		goto out;
+	}
+	status = 0;
+out:
+	dwt_forcetrxoff();
+	dwt_writesysstatuslo(SYS_STATUS_ALL_RX_GOOD |
+			     SYS_STATUS_ALL_RX_ERR |
+			     SYS_STATUS_ALL_RX_TO |
+			     DWT_INT_TXFRS_BIT_MASK);
+	return status;
 }
 
 static int poll_for_matching_data(
@@ -420,6 +603,50 @@ static void print_protocol_counters(const struct protocol_counters *counters)
 	       counters->duplicate_payload_mismatch);
 }
 
+static int run_receptec_stop(uint8_t sequence, uint32_t cycle_epoch,
+			     struct protocol_counters *counters)
+{
+	uint32_t attempt_radio_status[DW3110_ATTEMPT_COUNT] = { 0 };
+	int attempt_status[DW3110_ATTEMPT_COUNT] = { 0 };
+	uint32_t attempts_run = 0U;
+	int status = -ETIMEDOUT;
+
+	for (size_t attempt = 0U; attempt < ARRAY_SIZE(attempt_offsets_us);
+	     ++attempt) {
+		attempts_run = (uint32_t)attempt + 1U;
+		attempt_status[attempt] = send_delayed_stop_attempt(
+			sequence, attempt_offsets_us[attempt], cycle_epoch, counters);
+		if (attempt_status[attempt] == 0) {
+			attempt_status[attempt] = poll_for_matching_stop_ack(
+				sequence, counters, &attempt_radio_status[attempt]);
+		}
+		status = attempt_status[attempt];
+		if (status == 0) {
+			for (uint32_t failed = 0U; failed < attempt; ++failed) {
+				printk("STOP attempt failed: seq=%u attempt=%u "
+				       "offset=%u error=%d radio=0x%08X retrying\n",
+				       sequence, failed + 1U,
+				       attempt_offsets_us[failed],
+				       attempt_status[failed],
+				       attempt_radio_status[failed]);
+			}
+			printk("STOP/STOP_ACK OK: seq=%u attempt=%u offset=%u "
+			       "FCS=valid addressed=ok\n",
+			       sequence, attempt + 1U, attempt_offsets_us[attempt]);
+			return 0;
+		}
+	}
+	for (uint32_t attempt = 0U; attempt < attempts_run; ++attempt) {
+		printk("STOP attempt failed: seq=%u attempt=%u offset=%u "
+		       "error=%d radio=0x%08X%s\n",
+		       sequence, attempt + 1U, attempt_offsets_us[attempt],
+		       attempt_status[attempt], attempt_radio_status[attempt],
+		       attempt + 1U < attempts_run ? " retrying" : " exhausted");
+	}
+	printk("STOP/STOP_ACK failed: seq=%u error=%d\n", sequence, status);
+	return status;
+}
+
 static int run_receptec_data(void)
 {
 	struct protocol_counters counters = { 0 };
@@ -446,6 +673,23 @@ static int run_receptec_data(void)
 		uint32_t sample_counter = 0U;
 		bool payload_frozen = false;
 		int attempt_status[DW3110_ATTEMPT_COUNT] = { 0 };
+
+		if (CONFIG_RECEPTEC_TEST_STOP_AFTER > 0 &&
+		    successful_exchanges >= CONFIG_RECEPTEC_TEST_STOP_AFTER) {
+			sequence++;
+			printk("RECEPTEC initiating STOP after %u DATA transactions\n",
+			       successful_exchanges);
+			status = run_receptec_stop(sequence, cycle_epoch, &counters);
+			dwt_forcetrxoff();
+			if (status == 0) {
+				printk("RECEPTEC STOPPED: UWB disabled\n");
+			} else {
+				print_protocol_counters(&counters);
+				printk("Last STOP response type: %u\n",
+				       last_stop_response_type);
+			}
+			return status;
+		}
 
 		if (!test_silence_done && CONFIG_RECEPTEC_TEST_SILENCE_AFTER > 0 &&
 		    successful_exchanges >= CONFIG_RECEPTEC_TEST_SILENCE_AFTER) {
@@ -539,11 +783,20 @@ static int run_receptec_data(void)
 struct coletec_radio_runtime {
 	uint64_t previous_nominal_slot;
 	uint32_t next_slot_dx;
+	uint32_t stop_tx_fctrl;
 	int64_t nominal_slot_delta;
 	uint8_t previous_sequence;
 	uint8_t fault_drop_count;
 	uint8_t fault_bad_response_count;
+	uint8_t stop_sequence;
+	uint8_t prepared_stop_sequence;
+	uint8_t stop_requests;
+	uint8_t stop_responses;
+	uint8_t stop_sequence_write_failures;
+	uint8_t stop_late_schedules;
 	bool have_previous_request;
+	bool stop_requested;
+	bool stop_tx_selected;
 };
 
 static uint32_t remaining_rx_us(uint32_t deadline_dx)
@@ -633,12 +886,20 @@ static int read_coletec_request(uint32_t radio_status,
 	dwt_readrxdata(protocol_rx_bytes, logical_length, 0U);
 	status = receptec_protocol_decode(protocol_rx_bytes, logical_length, request);
 	if (status != RECEPTEC_PROTOCOL_OK ||
-	    !frame_is_for(request, coletec_eui, receptec_eui,
-			  RECEPTEC_PACKET_DATA_REQ)) {
+	    memcmp(request->destination, coletec_eui, sizeof(coletec_eui)) != 0 ||
+	    memcmp(request->source, receptec_eui, sizeof(receptec_eui)) != 0) {
 		return -EBADMSG;
 	}
-	*dt_sampling_us = receptec_protocol_decode_dt_sampling(request->payload);
-	if (!is_valid_attempt_offset(*dt_sampling_us)) {
+	if (request->type == RECEPTEC_PACKET_STOP) {
+		*dt_sampling_us = 0U;
+	} else if (request->type == RECEPTEC_PACKET_DATA_REQ) {
+		*dt_sampling_us =
+			receptec_protocol_decode_dt_sampling(request->payload);
+	} else {
+		return -EBADMSG;
+	}
+	if (request->type == RECEPTEC_PACKET_DATA_REQ &&
+	    !is_valid_attempt_offset(*dt_sampling_us)) {
 		return -EBADMSG;
 	}
 	*request_rx_timestamp = read_rx_timestamp();
@@ -709,6 +970,93 @@ static void handle_coletec_request(
 		       (response_delay_dtu + 32768U) / DW3110_UUS_TO_DTU,
 		       duplicate_request, runtime->nominal_slot_delta);
 	}
+	if (runtime->prepared_stop_sequence != (uint8_t)(request->sequence + 1U)) {
+		if (set_preloaded_stop_ack_sequence(request->sequence + 1U) < 0) {
+			runtime->stop_sequence_write_failures++;
+		} else {
+			runtime->prepared_stop_sequence = request->sequence + 1U;
+		}
+	}
+}
+
+static bool handle_coletec_stop(struct coletec_radio_runtime *runtime,
+				const struct receptec_frame *request,
+				uint64_t request_rx_timestamp)
+{
+	uint64_t scheduled_tx_timestamp;
+	uint32_t radio_status;
+	uint8_t response_sequence;
+	bool duplicate_request = runtime->have_previous_request &&
+				 request->sequence == runtime->previous_sequence;
+
+	if (runtime->stop_requested && request->sequence != runtime->stop_sequence) {
+		return false;
+	}
+	if (!duplicate_request) {
+		runtime->previous_sequence = request->sequence;
+		runtime->fault_drop_count = 0U;
+		runtime->fault_bad_response_count = 0U;
+		runtime->have_previous_request = true;
+	}
+	if (!runtime->stop_requested) {
+		runtime->stop_requested = true;
+		runtime->stop_sequence = request->sequence;
+	}
+	runtime->stop_requests++;
+	if (runtime->fault_drop_count < CONFIG_RECEPTEC_TEST_DROP_ACKS) {
+		runtime->fault_drop_count++;
+		return true;
+	}
+	response_sequence = request->sequence;
+	if (runtime->fault_bad_response_count < CONFIG_RECEPTEC_TEST_BAD_ACKS) {
+		response_sequence++;
+		runtime->fault_bad_response_count++;
+	}
+	if (runtime->prepared_stop_sequence != response_sequence) {
+		if (set_preloaded_stop_ack_sequence(response_sequence) < 0) {
+			runtime->stop_sequence_write_failures++;
+			return true;
+		}
+		runtime->prepared_stop_sequence = response_sequence;
+	}
+	if (!runtime->stop_tx_selected) {
+		select_preloaded_coletec_stop_ack(runtime->stop_tx_fctrl);
+		runtime->stop_tx_selected = true;
+	}
+	scheduled_tx_timestamp = request_rx_timestamp +
+		(uint64_t)DW3110_RESPONSE_DELAY_US * DW3110_UUS_TO_DTU -
+		DW3110_TX_ANTENNA_DELAY;
+	dwt_setdelayedtrxtime((uint32_t)(scheduled_tx_timestamp >> 8));
+	if (dwt_starttx(DWT_START_TX_DELAYED) != DWT_SUCCESS) {
+		runtime->stop_late_schedules++;
+		return true;
+	}
+	do {
+		radio_status = dwt_readsysstatuslo();
+	} while ((radio_status & DWT_INT_TXFRS_BIT_MASK) == 0U);
+	dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK);
+	runtime->stop_responses++;
+	return true;
+}
+
+static bool handle_valid_coletec_request(
+	struct coletec_radio_runtime *runtime, struct coletec_sync *sync,
+	const struct receptec_frame *request, uint64_t request_rx_timestamp,
+	uint16_t dt_sampling_us)
+{
+	if (request->type == RECEPTEC_PACKET_STOP) {
+		if (!handle_coletec_stop(runtime, request, request_rx_timestamp)) {
+			return false;
+		}
+	} else {
+		if (runtime->stop_requested) {
+			return false;
+		}
+		handle_coletec_request(runtime, request, request_rx_timestamp,
+					 dt_sampling_us);
+	}
+	coletec_sync_accept_request(sync);
+	return true;
 }
 
 static bool listen_until_slot_deadline(
@@ -731,10 +1079,9 @@ static bool listen_until_slot_deadline(
 		if (read_coletec_request(radio_status, &request,
 					 &request_rx_timestamp,
 					 &dt_sampling_us) == 0) {
-			handle_coletec_request(runtime, &request,
-					       request_rx_timestamp, dt_sampling_us);
-			coletec_sync_accept_request(sync);
-			valid_request_seen = true;
+			valid_request_seen |= handle_valid_coletec_request(
+				runtime, sync, &request, request_rx_timestamp,
+				dt_sampling_us);
 		}
 	}
 }
@@ -760,10 +1107,15 @@ static bool listen_open_period(struct coletec_radio_runtime *runtime,
 		if (read_coletec_request(radio_status, &request,
 					 &request_rx_timestamp,
 					 &dt_sampling_us) == 0) {
-			handle_coletec_request(runtime, &request,
-					       request_rx_timestamp, dt_sampling_us);
-			coletec_sync_accept_request(sync);
-			current_slot_deadline = runtime->next_slot_dx -
+			if (!handle_valid_coletec_request(runtime, sync, &request,
+						  request_rx_timestamp,
+						  dt_sampling_us)) {
+				continue;
+			}
+			current_slot_deadline = request.type == RECEPTEC_PACKET_STOP ?
+				(uint32_t)(request_rx_timestamp >> 8) +
+				DW3110_SLOT_DURATION_US * DW3110_UUS_TO_DX_TIME :
+				runtime->next_slot_dx -
 				DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DX_TIME +
 				(DW3110_SLOT_DURATION_US + COLETEC_BASE_GUARD_US) *
 				DW3110_UUS_TO_DX_TIME;
@@ -799,10 +1151,9 @@ static void listen_synchronized_slot(struct coletec_radio_runtime *runtime,
 		if (read_coletec_request(radio_status, &request,
 					 &request_rx_timestamp,
 					 &dt_sampling_us) == 0) {
-			handle_coletec_request(runtime, &request,
-					       request_rx_timestamp, dt_sampling_us);
-			coletec_sync_accept_request(sync);
-			valid_request_seen = true;
+			valid_request_seen = handle_valid_coletec_request(
+				runtime, sync, &request, request_rx_timestamp,
+				dt_sampling_us);
 		}
 		valid_request_seen |= listen_until_slot_deadline(
 			runtime, sync, window_deadline);
@@ -823,7 +1174,9 @@ static void listen_synchronized_slot(struct coletec_radio_runtime *runtime,
 
 static int run_coletec_data(void)
 {
-	struct coletec_radio_runtime runtime = { 0 };
+	struct coletec_radio_runtime runtime = {
+		.prepared_stop_sequence = 1U,
+	};
 	struct coletec_sync sync;
 	int status;
 
@@ -834,6 +1187,12 @@ static int run_coletec_data(void)
 	if (status < 0) {
 		return status;
 	}
+	status = preload_coletec_stop_ack(runtime.prepared_stop_sequence);
+	if (status < 0) {
+		return status;
+	}
+	configure_coletec_stop_sequence_pointer();
+	runtime.stop_tx_fctrl = prepare_coletec_stop_tx_fctrl();
 	status = dw3110_port_irq_enable(false);
 	if (status < 0) {
 		return status;
@@ -849,6 +1208,17 @@ static int run_coletec_data(void)
 	}
 
 	for (;;) {
+		if (runtime.stop_requested) {
+			dwt_forcetrxoff();
+			printk("COLETEC STOPPED: seq=%u requests=%u responses=%u "
+			       "sequence-write-fail=%u late=%u "
+			       "UWB disabled until reset\n",
+			       runtime.stop_sequence, runtime.stop_requests,
+			       runtime.stop_responses,
+			       runtime.stop_sequence_write_failures,
+			       runtime.stop_late_schedules);
+			return 0;
+		}
 		if (sync.state == COLETEC_SYNC_SYNCHRONIZED) {
 			listen_synchronized_slot(&runtime, &sync);
 			continue;
