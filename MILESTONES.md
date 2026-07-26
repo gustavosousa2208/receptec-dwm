@@ -1,6 +1,6 @@
 # RECEPTEC–COLETEC DWM3001C Bring-up Milestones
 
-Last updated: 2026-07-22
+Last updated: 2026-07-26
 
 This file is the durable implementation checkpoint for the two-DWM3001C
 interoperability experiment. Update it whenever a milestone changes state so
@@ -398,7 +398,7 @@ Implementation state:
 
 ## M9 — Acknowledged STOP
 
-Status: `[ ]` Not started
+Status: `[x]` Complete
 
 Required work:
 
@@ -412,6 +412,33 @@ Required work:
 Done when:
 
 - Normal STOP, lost STOP_ACK, duplicate STOP, and reset recovery are verified.
+
+Implementation state:
+
+- RECEPTEC sends addressed `STOP` requests at the normal deterministic attempt
+  offsets and accepts only an addressed, matching-sequence `STOP_ACK`.
+- COLETEC keeps one DATA frame preloaded at TX-buffer offset zero. Outside the
+  timing-critical response path it stages byte 19 as `STOP_ACK` and predicts
+  the next response sequence. On STOP it only shortens `TX_FCTRL` to the
+  22-byte radio length, so stale DATA payload bytes remain in TX RAM but are
+  not transmitted.
+- STOP_ACK is scheduled from the request RX RMARKER at exactly 1,000 us.
+  COLETEC remains in RX through the slot deadline, acknowledges duplicate STOP
+  requests, and disables UWB after the deadline. Reset restarts normal
+  operation.
+- Twenty normal hardware resets completed all three DATA transactions and
+  STOP_ACK on attempt 1. Every COLETEC summary reported one request, one
+  response, zero buffer-write failures, and zero late schedules.
+- Five dropped-response runs deliberately suppressed the first DATA and
+  STOP_ACK responses. Every transaction recovered on attempt 2; STOP reported
+  two requests, one transmitted response, and zero late schedules.
+- The wrong-sequence test transmitted hardware-FCS-valid invalid DATA and
+  STOP_ACK responses on attempt 1. RECEPTEC rejected each with `-EBADMSG`, and
+  the corrected duplicate response succeeded on attempt 2. COLETEC reported
+  two STOP requests, two responses, and zero late schedules.
+- Both boards were finally restored to the production-style continuous DATA
+  image with every fault-injection option disabled. Ten post-boot DATA
+  transactions completed on attempt 1 with no failures.
 
 ## M10 — Production COLETEC interoperability
 
@@ -445,6 +472,7 @@ Add dated entries here as hardware milestones are exercised.
 | 2026-07-22 | M6 | Pass | Maximum 105-byte DATA passed normal and forced-duplicate hardware captures. |
 | 2026-07-22 | M7 | Pass | Absolute cadence plus dropped and wrong-sequence response tests exercised all retry offsets. |
 | 2026-07-22 | M8 | Pass | Guard expansion, fifth-miss loss, 2–10 s discovery backoff, and automatic reentry passed on hardware. |
+| 2026-07-26 | M9 | Pass | STOP_ACK at 1,000 us passed 20 normal resets plus dropped and wrong-sequence retry tests with zero late schedules. |
 
 ## Resume checklist
 
