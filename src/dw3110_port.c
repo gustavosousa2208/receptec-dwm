@@ -34,7 +34,8 @@ static const struct gpio_dt_spec dw3110_irq =
 
 static struct spi_config active_spi_config;
 static struct gpio_callback irq_callback;
-static struct k_work irq_work;
+static K_SEM_DEFINE(irq_sem, 0, 1);
+static volatile uint32_t last_irq_cycles;
 static uint8_t spi_tx_buffer[DW3110_SPI_BUFFER_SIZE];
 static uint8_t spi_rx_buffer[DW3110_SPI_BUFFER_SIZE];
 static bool port_ready;
@@ -158,12 +159,6 @@ static struct dwt_spi_s qorvo_spi = {
 	.setfastrate = set_fast_rate,
 };
 
-static void irq_work_handler(struct k_work *work)
-{
-	ARG_UNUSED(work);
-	dwt_isr();
-}
-
 static void irq_gpio_handler(const struct device *port,
 			     struct gpio_callback *callback,
 			     gpio_port_pins_t pins)
@@ -171,7 +166,8 @@ static void irq_gpio_handler(const struct device *port,
 	ARG_UNUSED(port);
 	ARG_UNUSED(callback);
 	ARG_UNUSED(pins);
-	k_work_submit(&irq_work);
+	last_irq_cycles = k_cycle_get_32();
+	k_sem_give(&irq_sem);
 }
 
 int dw3110_port_init(void)
@@ -205,7 +201,7 @@ int dw3110_port_init(void)
 		return status;
 	}
 
-	k_work_init(&irq_work, irq_work_handler);
+	k_sem_reset(&irq_sem);
 	gpio_init_callback(&irq_callback, irq_gpio_handler,
 			   BIT(dw3110_irq.pin));
 	status = gpio_add_callback(dw3110_irq.port, &irq_callback);
@@ -249,6 +245,29 @@ int dw3110_port_irq_enable(bool enable)
 
 	return gpio_pin_interrupt_configure_dt(
 		&dw3110_irq, enable ? GPIO_INT_EDGE_TO_ACTIVE : GPIO_INT_DISABLE);
+}
+
+void dw3110_port_irq_clear(void)
+{
+	k_sem_reset(&irq_sem);
+}
+
+int dw3110_port_wait_irq(k_timeout_t timeout)
+{
+	int irq_active = gpio_pin_get_dt(&dw3110_irq);
+
+	if (irq_active < 0) {
+		return irq_active;
+	}
+	if (irq_active != 0) {
+		return 0;
+	}
+	return k_sem_take(&irq_sem, timeout);
+}
+
+uint32_t dw3110_port_last_irq_cycles(void)
+{
+	return last_irq_cycles;
 }
 
 const struct dwt_spi_s *dw3110_port_spi(void)

@@ -300,9 +300,17 @@ Implementation state:
   epoch at offsets 0, 5,000, and 10,000 us.
 - Retries keep the same sequence and encode the matching offset as
   `DT_sampling`; COLETEC accepts all three values and responds to duplicates.
-- Both protocol roles poll DW3110 status directly. Retry diagnostics are
-  deferred until the transaction ends so UART output cannot consume the 2 ms
-  margin between a 3,000 us timeout and the next 5,000 us attempt.
+- A dedicated priority-zero preemptible UWB thread owns protocol execution.
+  The DW3110 GPIO ISR only records its CPU-cycle timestamp and wakes that
+  thread through a semaphore; the thread then reads and clears radio status.
+  Retry diagnostics are deferred until the transaction ends so UART output
+  cannot consume the 2 ms margin between a 3,000 us timeout and the next
+  5,000 us attempt.
+- The DWM pre-port schedule contains four fixed 20,000 us slots at offsets
+  0/20,000/40,000/60,000 us. Slot 0 is the live DWM COLETEC, slot 1 is
+  reserved for the production COLETEC, and slots 2–3 are deliberately absent.
+  Every absent peer still consumes all three retry offsets and no later slot or
+  sampling epoch is compressed.
 - RECEPTEC records transactions started/completed, attempts, response
   timeouts, retry exhaustion, invalid length/FCF/type/address/sequence, radio
   RX errors, and late scheduling.
@@ -328,6 +336,11 @@ Implementation state:
   re-enable RX before the next fixed retry; final-slot diagnostics remain safe.
 - Both fault options default to zero, and both boards were rebuilt and
   reflashed with `drop ACKs=0` and `bad ACKs=0` after testing.
+- Hardware qualification of the four-peer schedule completed live slot-0
+  transactions on attempt 1 while all three absent peers exhausted their
+  expected retry schedules. The live COLETEC rejected the slot-1 request
+  addressed to the reserved peer during the 500 us receive-window overlap and
+  had RX disabled for the out-of-window slot-2 and slot-3 requests.
 
 Done when:
 
@@ -395,6 +408,13 @@ Implementation state:
 - Both boards were rebuilt and reflashed with all fault injection disabled.
   The restored normal image then completed 10/10 DATA transactions on attempt
   1 with zero errors (`logs/m8-normal-restored-20260722.log`).
+- The IRQ-driven four-peer schedule repeated the seven-slot silence test on
+  2026-07-26. Discovery initially exposed one late response because reentry
+  needed to patch both type and a skipped sequence before delayed TX. Staging
+  the DATA type during discovery idle time reduced the hot path to the sequence
+  byte only. The repeated run preserved guards 600/700/800/900 us, entered
+  discovery on miss 5, reentered on cycle 33 attempt 1, and measured a maximum
+  IRQ-to-arm latency of 732 us with zero late schedules.
 
 ## M9 — Acknowledged STOP
 
@@ -473,6 +493,7 @@ Add dated entries here as hardware milestones are exercised.
 | 2026-07-22 | M7 | Pass | Absolute cadence plus dropped and wrong-sequence response tests exercised all retry offsets. |
 | 2026-07-22 | M8 | Pass | Guard expansion, fifth-miss loss, 2–10 s discovery backoff, and automatic reentry passed on hardware. |
 | 2026-07-26 | M9 | Pass | STOP_ACK at 1,000 us passed 20 normal resets plus dropped and wrong-sequence retry tests with zero late schedules. |
+| 2026-07-26 | M7–M8 RWD pre-port | Pass | Dedicated IRQ thread and fixed four-peer schedule passed normal, retry, filtering, guard, discovery, and reentry tests; max IRQ-to-arm 732 us, late=0. |
 
 ## Resume checklist
 
