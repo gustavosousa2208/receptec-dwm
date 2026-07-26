@@ -12,9 +12,6 @@
 
 #include <deca_device_api.h>
 #include <deca_interface.h>
-#include <deca_private.h>
-#include <dw3000_deca_regs.h>
-#include <dw3000_deca_vals.h>
 
 #include <receptec/coletec_sync.h>
 #include <receptec/dw3110_port.h>
@@ -26,7 +23,7 @@
 #define DW3110_RX_ANTENNA_DELAY 16385U
 #define DW3110_UUS_TO_DX_TIME 256U
 #define DW3110_REQUEST_SETUP_US 2000U
-#define DW3110_RESPONSE_DELAY_US 1250U
+#define DW3110_RESPONSE_DELAY_US 1000U
 #define DW3110_RESPONSE_TIMEOUT_US 3000U
 #define DW3110_SAMPLING_PERIOD_US 1000000U
 #define DW3110_SLOT_DURATION_US 20000U
@@ -36,7 +33,7 @@
 #define DIAGNOSTIC_SAMPLE_OFFSET RECEPTEC_PROTOCOL_EUI64_SIZE
 #define DIAGNOSTIC_FIXED_SIZE (RECEPTEC_PROTOCOL_EUI64_SIZE + sizeof(uint32_t))
 #define FRAME_SEQUENCE_OFFSET 2U
-#define COLETEC_STOP_ACK_TX_BUFFER_OFFSET 128U
+#define FRAME_TYPE_OFFSET 19U
 #define COLETEC_STOP_ACK_RADIO_LENGTH \
 	(RECEPTEC_PROTOCOL_HEADER_SIZE + RECEPTEC_PROTOCOL_FCS_SIZE)
 
@@ -201,85 +198,31 @@ static int preload_coletec_data(void)
 	return load_protocol_frame(&data);
 }
 
-static int preload_coletec_stop_ack(uint8_t sequence)
+static int set_preloaded_response_sequence(uint8_t sequence)
 {
-	uint8_t bytes[COLETEC_STOP_ACK_RADIO_LENGTH] = { 0 };
-	struct receptec_frame stop_ack = {
-		.sequence = sequence,
-		.type = RECEPTEC_PACKET_STOP_ACK,
-		.payload = NULL,
-		.payload_length = 0U,
-	};
-	size_t logical_length;
-	int status;
+	return dwt_writetxdata(1U, &sequence, FRAME_SEQUENCE_OFFSET) ==
+		       DWT_SUCCESS ? 0 : -EIO;
+}
 
-	memcpy(stop_ack.destination, receptec_eui, sizeof(receptec_eui));
-	memcpy(stop_ack.source, coletec_eui, sizeof(coletec_eui));
-	status = receptec_protocol_encode(bytes, RECEPTEC_PROTOCOL_HEADER_SIZE,
-					  &stop_ack, &logical_length);
-	if (status != RECEPTEC_PROTOCOL_OK ||
-	    logical_length != RECEPTEC_PROTOCOL_HEADER_SIZE) {
-		return -EINVAL;
+static int set_preloaded_response_type(enum receptec_packet_type type)
+{
+	uint8_t encoded_type = (uint8_t)type;
+
+	return dwt_writetxdata(1U, &encoded_type, FRAME_TYPE_OFFSET) ==
+		       DWT_SUCCESS ? 0 : -EIO;
+}
+
+static uint8_t next_prepared_response_sequence(
+	uint8_t request_sequence, uint8_t response_sequence,
+	uint8_t fault_bad_response_count)
+{
+	if (response_sequence != request_sequence) {
+		return fault_bad_response_count < CONFIG_RECEPTEC_TEST_BAD_ACKS ?
+			(uint8_t)(request_sequence + 1U) : request_sequence;
 	}
-	if (dwt_writetxdata(sizeof(bytes), bytes,
-			    COLETEC_STOP_ACK_TX_BUFFER_OFFSET) != DWT_SUCCESS) {
-		return -EIO;
-	}
-	return 0;
-}
-
-static int set_preloaded_stop_ack_sequence(uint8_t sequence)
-{
-	dwt_writetodevice(INDIRECT_POINTER_A_ID, 0U, 1U, &sequence);
-	return 0;
-}
-
-static void configure_coletec_stop_sequence_pointer(void)
-{
-	uint8_t bytes[sizeof(uint32_t)];
-
-	/*
-	 * Pin indirect pointer A to the preloaded STOP_ACK sequence byte. This
-	 * turns both prediction updates and duplicate corrections into one SPI
-	 * write instead of reprogramming the indirect address on the hot path.
-	 */
-	encode_u32_le(TX_BUFFER_ID >> 16U, bytes);
-	dwt_writetodevice(INDIRECT_ADDR_A_ID, 0U, sizeof(bytes), bytes);
-	encode_u32_le(COLETEC_STOP_ACK_TX_BUFFER_OFFSET +
-		      FRAME_SEQUENCE_OFFSET, bytes);
-	dwt_writetodevice(ADDR_OFFSET_A_ID, 0U, sizeof(bytes), bytes);
-}
-
-static uint32_t prepare_coletec_stop_tx_fctrl(void)
-{
-	uint8_t bytes[TX_FCTRL_LEN];
-	uint32_t tx_fctrl;
-
-	dwt_readfromdevice(TX_FCTRL_ID, 0U, sizeof(bytes), bytes);
-	tx_fctrl = decode_u32_le(bytes);
-	tx_fctrl &= ~(TX_FCTRL_TXB_OFFSET_BIT_MASK |
-		      TX_FCTRL_TR_BIT_MASK |
-		      TX_FCTRL_TXFLEN_BIT_MASK);
-	/* Qorvo encodes TX-buffer offsets above 127 with an extra 128. */
-	tx_fctrl |= COLETEC_STOP_ACK_RADIO_LENGTH |
-		((COLETEC_STOP_ACK_TX_BUFFER_OFFSET +
-		  DWT_TX_BUFF_OFFSET_ADJUST) <<
-		 TX_FCTRL_TXB_OFFSET_BIT_OFFSET);
-	return tx_fctrl;
-}
-
-static void select_preloaded_coletec_stop_ack(uint32_t tx_fctrl)
-{
-	uint8_t bytes[TX_FCTRL_LEN];
-	uint8_t sar_ctrl;
-
-	encode_u32_le(tx_fctrl, bytes);
-	/*
-	 * A full four-byte write is faster here than the driver's generic
-	 * read/modify/write. The SAR_CTRL read latches Qorvo's adjusted offset.
-	 */
-	dwt_writetodevice(TX_FCTRL_ID, 0U, sizeof(bytes), bytes);
-	dwt_readfromdevice(SAR_CTRL_ID, 0U, sizeof(sar_ctrl), &sar_ctrl);
+	return CONFIG_RECEPTEC_TEST_BAD_ACKS > 0 ?
+		(uint8_t)(request_sequence + 2U) :
+		(uint8_t)(request_sequence + 1U);
 }
 
 static bool is_valid_attempt_offset(uint16_t dt_sampling_us)
@@ -783,16 +726,16 @@ static int run_receptec_data(void)
 struct coletec_radio_runtime {
 	uint64_t previous_nominal_slot;
 	uint32_t next_slot_dx;
-	uint32_t stop_tx_fctrl;
 	int64_t nominal_slot_delta;
 	uint8_t previous_sequence;
 	uint8_t fault_drop_count;
 	uint8_t fault_bad_response_count;
 	uint8_t stop_sequence;
-	uint8_t prepared_stop_sequence;
+	uint8_t prepared_response_sequence;
+	uint8_t prepared_response_type;
 	uint8_t stop_requests;
 	uint8_t stop_responses;
-	uint8_t stop_sequence_write_failures;
+	uint8_t stop_buffer_write_failures;
 	uint8_t stop_late_schedules;
 	bool have_previous_request;
 	bool stop_requested;
@@ -919,6 +862,7 @@ static void handle_coletec_request(
 	uint64_t response_delay_dtu;
 	uint64_t scheduled_tx_timestamp;
 	uint32_t radio_status;
+	uint8_t next_response_sequence;
 	uint8_t response_sequence;
 	bool duplicate_request = runtime->have_previous_request &&
 				 request->sequence == runtime->previous_sequence;
@@ -943,9 +887,17 @@ static void handle_coletec_request(
 		response_sequence++;
 		runtime->fault_bad_response_count++;
 	}
-	if (dwt_writetxdata(1U, &response_sequence,
-			    FRAME_SEQUENCE_OFFSET) != DWT_SUCCESS) {
-		return;
+	if (runtime->prepared_response_sequence != response_sequence) {
+		if (set_preloaded_response_sequence(response_sequence) < 0) {
+			return;
+		}
+		runtime->prepared_response_sequence = response_sequence;
+	}
+	if (runtime->prepared_response_type != RECEPTEC_PACKET_DATA) {
+		if (set_preloaded_response_type(RECEPTEC_PACKET_DATA) < 0) {
+			return;
+		}
+		runtime->prepared_response_type = RECEPTEC_PACKET_DATA;
 	}
 	scheduled_tx_timestamp = request_rx_timestamp +
 		(uint64_t)DW3110_RESPONSE_DELAY_US * DW3110_UUS_TO_DTU -
@@ -958,6 +910,9 @@ static void handle_coletec_request(
 		radio_status = dwt_readsysstatuslo();
 	} while ((radio_status & DWT_INT_TXFRS_BIT_MASK) == 0U);
 	dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK);
+	if (set_preloaded_response_type(RECEPTEC_PACKET_STOP_ACK) == 0) {
+		runtime->prepared_response_type = RECEPTEC_PACKET_STOP_ACK;
+	}
 	response_tx_timestamp = read_tx_timestamp();
 	response_delay_dtu = (response_tx_timestamp - request_rx_timestamp) &
 			     DW3110_TIMESTAMP_MASK;
@@ -970,11 +925,13 @@ static void handle_coletec_request(
 		       (response_delay_dtu + 32768U) / DW3110_UUS_TO_DTU,
 		       duplicate_request, runtime->nominal_slot_delta);
 	}
-	if (runtime->prepared_stop_sequence != (uint8_t)(request->sequence + 1U)) {
-		if (set_preloaded_stop_ack_sequence(request->sequence + 1U) < 0) {
-			runtime->stop_sequence_write_failures++;
-		} else {
-			runtime->prepared_stop_sequence = request->sequence + 1U;
+	next_response_sequence = next_prepared_response_sequence(
+		request->sequence, response_sequence,
+		runtime->fault_bad_response_count);
+	if (runtime->prepared_response_sequence != next_response_sequence) {
+		if (set_preloaded_response_sequence(next_response_sequence) == 0) {
+			runtime->prepared_response_sequence =
+				next_response_sequence;
 		}
 	}
 }
@@ -1012,15 +969,30 @@ static bool handle_coletec_stop(struct coletec_radio_runtime *runtime,
 		response_sequence++;
 		runtime->fault_bad_response_count++;
 	}
-	if (runtime->prepared_stop_sequence != response_sequence) {
-		if (set_preloaded_stop_ack_sequence(response_sequence) < 0) {
-			runtime->stop_sequence_write_failures++;
+	if (runtime->prepared_response_sequence != response_sequence) {
+		if (set_preloaded_response_sequence(response_sequence) < 0) {
+			runtime->stop_buffer_write_failures++;
 			return true;
 		}
-		runtime->prepared_stop_sequence = response_sequence;
+		runtime->prepared_response_sequence = response_sequence;
+	}
+	if (runtime->prepared_response_type != RECEPTEC_PACKET_STOP_ACK) {
+		/*
+		 * DATA and STOP_ACK share the same FCF and addresses, so only the
+		 * protocol type byte needs restoring if a prior DATA start was late.
+		 */
+		if (set_preloaded_response_type(RECEPTEC_PACKET_STOP_ACK) < 0) {
+			runtime->stop_buffer_write_failures++;
+			return true;
+		}
+		runtime->prepared_response_type = RECEPTEC_PACKET_STOP_ACK;
 	}
 	if (!runtime->stop_tx_selected) {
-		select_preloaded_coletec_stop_ack(runtime->stop_tx_fctrl);
+		/*
+		 * The buffer is staged as STOP_ACK during idle time. Shorten the
+		 * existing frame prefix; stale DATA payload bytes stay in TX RAM.
+		 */
+		dwt_writetxfctrl(COLETEC_STOP_ACK_RADIO_LENGTH, 0U, 0U);
 		runtime->stop_tx_selected = true;
 	}
 	scheduled_tx_timestamp = request_rx_timestamp +
@@ -1035,6 +1007,17 @@ static bool handle_coletec_stop(struct coletec_radio_runtime *runtime,
 		radio_status = dwt_readsysstatuslo();
 	} while ((radio_status & DWT_INT_TXFRS_BIT_MASK) == 0U);
 	dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK);
+	if (response_sequence != request->sequence) {
+		uint8_t next_response_sequence =
+			next_prepared_response_sequence(
+				request->sequence, response_sequence,
+				runtime->fault_bad_response_count);
+
+		if (set_preloaded_response_sequence(next_response_sequence) == 0) {
+			runtime->prepared_response_sequence =
+				next_response_sequence;
+		}
+	}
 	runtime->stop_responses++;
 	return true;
 }
@@ -1175,7 +1158,9 @@ static void listen_synchronized_slot(struct coletec_radio_runtime *runtime,
 static int run_coletec_data(void)
 {
 	struct coletec_radio_runtime runtime = {
-		.prepared_stop_sequence = 1U,
+		.prepared_response_sequence =
+			CONFIG_RECEPTEC_TEST_BAD_ACKS > 0 ? 2U : 1U,
+		.prepared_response_type = RECEPTEC_PACKET_STOP_ACK,
 	};
 	struct coletec_sync sync;
 	int status;
@@ -1187,12 +1172,17 @@ static int run_coletec_data(void)
 	if (status < 0) {
 		return status;
 	}
-	status = preload_coletec_stop_ack(runtime.prepared_stop_sequence);
+	if (runtime.prepared_response_sequence != 1U) {
+		status = set_preloaded_response_sequence(
+			runtime.prepared_response_sequence);
+		if (status < 0) {
+			return status;
+		}
+	}
+	status = set_preloaded_response_type(RECEPTEC_PACKET_STOP_ACK);
 	if (status < 0) {
 		return status;
 	}
-	configure_coletec_stop_sequence_pointer();
-	runtime.stop_tx_fctrl = prepare_coletec_stop_tx_fctrl();
 	status = dw3110_port_irq_enable(false);
 	if (status < 0) {
 		return status;
@@ -1211,11 +1201,11 @@ static int run_coletec_data(void)
 		if (runtime.stop_requested) {
 			dwt_forcetrxoff();
 			printk("COLETEC STOPPED: seq=%u requests=%u responses=%u "
-			       "sequence-write-fail=%u late=%u "
+			       "buffer-write-fail=%u late=%u "
 			       "UWB disabled until reset\n",
 			       runtime.stop_sequence, runtime.stop_requests,
 			       runtime.stop_responses,
-			       runtime.stop_sequence_write_failures,
+			       runtime.stop_buffer_write_failures,
 			       runtime.stop_late_schedules);
 			return 0;
 		}

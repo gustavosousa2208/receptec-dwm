@@ -1,12 +1,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/sys/printk.h>
 
 #include <receptec/dw3110_radio.h>
 
 #define DEVICE_ID_SIZE 8U
+#define RECEPTEC_ROLE_LED_NODE DT_ALIAS(led3)
 
 enum device_role {
 	DEVICE_ROLE_COLETEC,
@@ -16,6 +18,9 @@ enum device_role {
 static const uint8_t receptec_device_id[DEVICE_ID_SIZE] = {
 	0x3E, 0xC6, 0xF3, 0x82, 0x06, 0xA8, 0x16, 0x41,
 };
+
+static const struct gpio_dt_spec receptec_role_led =
+	GPIO_DT_SPEC_GET(RECEPTEC_ROLE_LED_NODE, gpios);
 
 static void print_device_id(const uint8_t *device_id, size_t length)
 {
@@ -35,6 +40,34 @@ static enum device_role get_device_role(const uint8_t *device_id)
 	}
 
 	return DEVICE_ROLE_RECEPTEC;
+}
+
+static void configure_role_indicator(enum device_role role)
+{
+	int status;
+
+	if (!gpio_is_ready_dt(&receptec_role_led)) {
+		printk("RECEPTEC blue role LED GPIO is not ready\n");
+		return;
+	}
+
+	status = gpio_pin_configure_dt(&receptec_role_led,
+				       GPIO_OUTPUT_INACTIVE);
+	if (status < 0) {
+		printk("Failed to configure RECEPTEC blue role LED: %d\n",
+		       status);
+		return;
+	}
+
+	if (role == DEVICE_ROLE_RECEPTEC) {
+		status = gpio_pin_set_dt(&receptec_role_led, 1);
+		if (status < 0) {
+			printk("Failed to light RECEPTEC blue role LED: %d\n",
+			       status);
+			return;
+		}
+		printk("Role indicator: blue LED on\n");
+	}
 }
 
 int main(void)
@@ -61,6 +94,7 @@ int main(void)
 	role = get_device_role(device_id);
 	printk("Role: %s\n",
 	       role == DEVICE_ROLE_RECEPTEC ? "RECEPTEC" : "COLETEC");
+	configure_role_indicator(role);
 
 	if (dw3110_radio_init() < 0) {
 		printk("DW3110 bring-up failed\n");
