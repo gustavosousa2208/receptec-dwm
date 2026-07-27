@@ -88,8 +88,10 @@ static struct receptec_peer_runtime receptec_peers[RECEPTEC_PEER_COUNT] = {
 		.diagnostic_payload = true,
 	},
 	{
-		.name = "production-reserved",
+		.name = "production-coletec",
 		.eui = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02 },
+		.expected_present = true,
+		.diagnostic_payload = true,
 	},
 	{
 		.name = "missing-2",
@@ -807,6 +809,8 @@ static void print_receptec_slot_result(
 static int run_receptec_data(void)
 {
 	struct receptec_peer_runtime *live_peer = &receptec_peers[0];
+	struct receptec_peer_runtime *stop_peer =
+		&receptec_peers[CONFIG_RECEPTEC_TEST_STOP_PEER_SLOT];
 	uint32_t cycle_epoch;
 	uint32_t cycle = 0U;
 	bool test_silence_done = false;
@@ -827,17 +831,26 @@ static int run_receptec_data(void)
 		struct receptec_slot_result results[RECEPTEC_PEER_COUNT];
 
 		if (CONFIG_RECEPTEC_TEST_STOP_AFTER > 0 &&
-		    live_peer->successful_exchanges >=
+		    stop_peer->successful_exchanges >=
 			    CONFIG_RECEPTEC_TEST_STOP_AFTER) {
-			live_peer->sequence++;
-			printk("RECEPTEC initiating STOP after %u DATA transactions\n",
-			       live_peer->successful_exchanges);
-			status = run_receptec_stop(live_peer, cycle_epoch);
+			uint32_t stop_slot_epoch =
+				cycle_epoch +
+				(uint32_t)CONFIG_RECEPTEC_TEST_STOP_PEER_SLOT *
+					DW3110_SLOT_DURATION_US *
+					DW3110_UUS_TO_DX_TIME;
+
+			stop_peer->sequence++;
+			printk("RECEPTEC initiating STOP for slot=%u peer=%s "
+			       "after %u DATA transactions\n",
+			       CONFIG_RECEPTEC_TEST_STOP_PEER_SLOT,
+			       stop_peer->name,
+			       stop_peer->successful_exchanges);
+			status = run_receptec_stop(stop_peer, stop_slot_epoch);
 			dwt_forcetrxoff();
 			if (status == 0) {
 				printk("RECEPTEC STOPPED: UWB disabled\n");
 			} else {
-				print_protocol_counters(&live_peer->counters);
+				print_protocol_counters(&stop_peer->counters);
 				printk("Last STOP response type: %u\n",
 				       last_stop_response_type);
 			}
