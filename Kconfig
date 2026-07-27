@@ -51,4 +51,21 @@ config RECEPTEC_TEST_STOP_PEER_SLOT
 	  Selects which fixed RWD peer receives the test-only STOP transaction.
 	  Slot 0 is the DWM surrogate and slot 1 is the production COLETEC.
 
+config RECEPTEC_TEST_SYNC_AFTER
+	int "Completed DATA transactions before sending SYNC"
+	range 0 1000000
+	default 0
+	help
+	  Test-only SYNC trigger. A nonzero value makes RECEPTEC send one SYNC
+	  transaction after this many completed DATA transactions. Normal builds
+	  use zero and continue DATA polling.
+
+config RECEPTEC_TEST_SYNC_PEER_SLOT
+	int "Peer slot targeted by the test SYNC"
+	range 0 3
+	default 0
+	help
+	  Selects which fixed RWD peer receives the test-only SYNC transaction.
+	  Slot 0 is the DWM surrogate and slot 1 is the production COLETEC.
+
 source "Kconfig.zephyr"

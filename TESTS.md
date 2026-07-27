@@ -47,11 +47,12 @@ Current headline results:
 - production nRF52840/QM33120W completed at least 298 consecutive observed
   slot-1 exchanges on attempt 1 while the DWM surrogate remained live in
   slot 0;
-- production RX-to-TX timing measured exactly 1,000 us, with a maximum 762 us
-  from GPIO IRQ to the delayed-TX arm request;
-- production STOP_ACK passed over the air using the shared DATA TX slot: the
-  first response missed its deadline, and the duplicate STOP on attempt 2 was
-  acknowledged at the fixed +5,000 us retry offset;
+- production RX-to-TX timing measured exactly 1,000 us;
+- production DATA, ACK, and STOP_ACK all passed on attempt 1 after the final
+  SPIM3 and compact-buffer optimization;
+- stable production IRQ-to-delayed-TX-arm latency was approximately 701 us;
+- the conservative IRQ-to-return-from-`dwt_starttx()` time was approximately
+  884 us, leaving about 116 us before the response RMARKER;
 - both live peers crossed sequence wraparound from 255 to 0 without failure.
 
 ## 2. Active test profile
@@ -238,6 +239,7 @@ Existing fragments:
 | `tests/m9-drop-stop-ack.conf` | Drop first DATA/STOP_ACK response |
 | `tests/m9-bad-stop-ack.conf` | Send wrong sequence before corrected duplicate |
 | `tests/production-stop.conf` | Target production peer slot 1 with STOP after three DATA transactions |
+| `tests/production-sync.conf` | Target production peer slot 1 with SYNC after three DATA transactions |
 
 The build must be made pristine again without `EXTRA_CONF_FILE` after fault
 testing. Verify the final `.config` contains zero for every test fault option.
@@ -391,20 +393,46 @@ Executed on the DWM pair:
 Executed on the production COLETEC:
 
 - RECEPTEC targeted production peer slot 1 after three DATA transactions;
-- DATA, ACK, and STOP_ACK used one shared DW3720 TX-buffer slot at offset 0;
-- the response hot path changed only sequence, packet type, and frame length;
-- no TX-buffer pointer switch was used;
-- the first STOP_ACK missed the 1,000 us deadline;
-- the duplicate STOP on attempt 2, at offset +5,000 us, received a valid,
-  correctly addressed STOP_ACK;
+- DATA, ACK, and STOP_ACK were preloaded at compact DW3720 TX-buffer offsets
+  64, 0, and 32 respectively;
+- all start offsets remain within the DW3720 direct-offset range;
+- TX frame control and delayed time were programmed in one contiguous SPI
+  burst;
+- the final STOP received a valid, correctly addressed STOP_ACK on attempt 1;
 - RECEPTEC then entered `STOPPED` and disabled UWB;
-- the STOP run measured 915 us maximum GPIO-IRQ-to-arm-request latency, leaving
-  approximately 85 us before the required response time.
+- the STOP response armed at approximately 701 us and returned from
+  `dwt_starttx()` at approximately 884 us.
 
 After this test, the normal RECEPTEC image was restored and the production
 COLETEC was reset. Both live peers then completed more than 50 additional
 observed cycles on attempt 1 while the two absent peers exhausted their
 expected retries.
+
+### 6.8 Production SYNC/ACK
+
+Executed:
+
+- RECEPTEC targeted production peer slot 1 after three DATA transactions;
+- SYNC carried the normal two-byte `DT_sampling` correction;
+- production COLETEC selected the preloaded ACK at offset 0;
+- ACK passed on attempt 1 with valid FCS, addressing, type, and sequence;
+- the measured response RMARKER remained exactly 1,000 us after request
+  reception.
+
+### 6.9 Four-slot production rerun — 2026-07-27
+
+The normal images were flashed to the RECEPTEC, DWM surrogate COLETEC, and
+production COLETEC. The captured UART interval covered cycles 25 through 118:
+
+- slot 0 DWM and slot 1 production COLETEC answered on attempt 1 in every
+  captured cycle;
+- slots 2 and 3 each consumed the fixed three attempts and timed out as
+  expected;
+- valid FCS, addressing, maximum 105-byte DATA, and fixed slot ordering passed;
+- the RECEPTEC reported `live=100` at cycle 106 with zero RX errors;
+- production RTT showed zero steady-state RX errors/timeouts, an exact 1,000 us
+  response delay, and no increase in its initial late-schedule counter;
+- production BLE advertising and STM32 IPC traffic remained active.
 
 ## 7. Coverage calculation
 
@@ -435,7 +463,7 @@ The percentage below is **protocol scenario coverage**. It is calculated from
 | 13 | RX disabled outside assigned interval | Partial | 0.5 | Behavior inferred and observed through reserved slots; no external power/IRQ trace |
 | 14 | Guard expansion and fifth-miss loss | Pass | 1.0 | Complete controlled sequence |
 | 15 | Discovery backoff and reentry | Pass | 1.0 | Full multiplier range and automatic recovery |
-| 16 | Acknowledged STOP and reset recovery | Pass | 1.0 | Full DWM fault suite plus production duplicate STOP_ACK on attempt 2 and normal-image recovery |
+| 16 | Acknowledged STOP and reset recovery | Pass | 1.0 | Full DWM fault suite plus production STOP_ACK on attempt 1 and normal-image recovery |
 | 17 | Two live COLETECs/collision behavior | Partial | 0.5 | Two live tags passed in separate slots; intentional same-slot collision not run |
 | 18 | Production nRF52840/QM33120W interoperability under BLE/IPC load | Partial | 0.5 | 298+ observed cycles passed with BLE advertising and STM32 IPC streaming; connected BLE notifications and long soak remain |
 
@@ -449,8 +477,8 @@ Important interpretation:
 - **83% does not mean the production COLETEC is 83% validated.**
 - Production baseline OTA interoperability and timing now pass, but retries,
   recovery, connected-BLE load, and the 1,000-transaction production soak have
-  not yet been fully repeated on final hardware. Production STOP passed through
-  the attempt-2 duplicate path; the attempt-1 margin remains a known issue.
+  not yet been fully repeated on final hardware. Production DATA, SYNC/ACK, and
+  STOP/STOP_ACK now pass on attempt 1.
 
 ## 8. Tests not yet executed
 
@@ -479,16 +507,19 @@ Use this order with the communications team. Do not begin with a long soak.
 - one exclusive 4,096-byte UWB owner thread at metaIRQ priority `-16`;
 - the GPIO ISR only timestamps the IRQ and wakes the owner;
 - STS is disabled and the complete active PHY profile is configured;
-- DATA is preloaded once in DW3720 TX-buffer offset 0; ACK and STOP_ACK reuse
-  that same frame prefix by patching only sequence, packet type, and length;
+- DATA, ACK, and STOP_ACK are preloaded at offsets 64, 0, and 32;
+- UWB uses the nRF52840 SPIM3 instance at the QM33120W-supported 32 MHz rate;
+- timing-critical transfers use polling EasyDMA inside the exclusive UWB owner,
+  avoiding a scheduler round trip per small SPI register access;
+- cached TX frame control and delayed time are written as one register burst;
 - delayed responses use an absolute TX time calculated from the request RX
   RMARKER, avoiding the extra SPI correction performed by `DLY_RS`;
 - RX is enabled only for the assigned slot/guard or a discovery ON interval;
 - no logging, BLE, IPC, allocation, or payload construction occurs before
   delayed TX is armed;
 - the `ATLETEC_HW` application build and host protocol tests pass;
-- build usage is 332,700 bytes flash (31.73%) and 82,432 bytes RAM (31.45%);
-- production GPIO IRQ, 8 MHz SPI, maximum 105-byte DATA, FCS, addressing, and
+- build usage is 333,952 bytes flash (31.85%) and 82,432 bytes RAM (31.45%);
+- production GPIO IRQ, 32 MHz SPIM3, maximum 105-byte DATA, FCS, addressing, and
   RX RMARKER + 1,000 us timing pass OTA;
 - two live COLETECs pass in fixed slots 0 and 1 while slots 2 and 3 remain
   absent;
@@ -503,12 +534,17 @@ responses with zero RX errors/timeouts, 1,000 us measured RX-to-TX delay, and
 occurred while RECEPTEC was deliberately reflashed; three early late schedules
 did not increase during steady-state operation.
 
-The production STOP test passed on attempt 2 after the first STOP_ACK missed.
-That run reached 915 us maximum IRQ-to-arm-request latency, leaving only 85 us
-of margin. Connected BLE notifications, the complete retry/recovery fault
-suite, and the long soak remain. The current successful workspace build uses
-Zephyr 4.3.0; Gate 1 still requires a clean build in the intended NCS v3.2.1
-environment.
+The final production STOP and SYNC tests both passed on attempt 1. Stable
+responses reached approximately 701 us IRQ-to-arm-request latency and 884 us
+IRQ-to-return-from-`dwt_starttx()` latency, leaving about 116 us before the
+1,000 us response RMARKER. One late schedule occurred during initial discovery
+when the live RECEPTEC sequence could not have been predicted; deterministic
+retry acquired synchronization, after which the response sequences were staged
+before each slot.
+
+Connected BLE notifications, the complete retry/recovery fault suite, and the
+long soak remain. The current successful workspace build uses Zephyr 4.3.0;
+Gate 1 still requires a clean build in the intended NCS v3.2.1 environment.
 
 ### Gate 1 — Build and static checks
 
@@ -629,13 +665,11 @@ must keep these numbers separate.
 
 ### What is currently the biggest production risk?
 
-Timing margin when changing the shared TX prefix and under heavier BLE load.
-Normal DATA reached 762 us maximum GPIO-IRQ-to-arm-request latency, leaving
-about 238 us before the required 1,000 us RMARKER. STOP reached 915 us, leaving
-about 85 us, and its first response missed; the deterministic attempt-2 retry
-succeeded. Steady-state DATA passed with BLE advertising and STM32 IPC
-streaming, but connected notifications and the full retry/recovery suite still
-need qualification.
+Timing margin under connected BLE load. Stable DATA, ACK, and STOP_ACK now arm
+at approximately 701 us and return from the delayed-start call at approximately
+884 us, leaving about 116 us before the required 1,000 us RMARKER. Steady-state
+traffic passed with BLE advertising and STM32 IPC streaming, but connected
+notifications and the full retry/recovery suite still need qualification.
 
 ## 11. Test-record template
 

@@ -345,7 +345,8 @@ static void count_codec_rejection(struct protocol_counters *counters,
 	}
 }
 
-static int send_delayed_data_request_attempt(
+static int send_delayed_timed_request_attempt(
+	enum receptec_packet_type type,
 	uint8_t sequence,
 	const uint8_t destination[RECEPTEC_PROTOCOL_EUI64_SIZE],
 	uint16_t dt_sampling_us, uint32_t slot_epoch,
@@ -356,7 +357,7 @@ static int send_delayed_data_request_attempt(
 		.sequence = sequence,
 		.destination = { 0 },
 		.source = { 0 },
-		.type = RECEPTEC_PACKET_DATA_REQ,
+		.type = type,
 		.payload = dt_sampling,
 		.payload_length = sizeof(dt_sampling),
 	};
@@ -424,10 +425,11 @@ static int send_delayed_stop_attempt(
 	return 0;
 }
 
-static int poll_for_matching_stop_ack(
+static int poll_for_matching_empty_response(
 				      uint8_t sequence,
 				      const uint8_t expected_source[
 					      RECEPTEC_PROTOCOL_EUI64_SIZE],
+				      enum receptec_packet_type expected_type,
 				      struct protocol_counters *counters,
 				      uint32_t *final_radio_status)
 {
@@ -469,8 +471,10 @@ static int poll_for_matching_stop_ack(
 		status = -EBADMSG;
 		goto out;
 	}
-	if (stop_ack.type != RECEPTEC_PACKET_STOP_ACK) {
-		last_stop_response_type = (uint8_t)stop_ack.type;
+	if (stop_ack.type != expected_type) {
+		if (expected_type == RECEPTEC_PACKET_STOP_ACK) {
+			last_stop_response_type = (uint8_t)stop_ack.type;
+		}
 		counters->invalid_type++;
 		status = -EBADMSG;
 		goto out;
@@ -653,8 +657,10 @@ static int run_receptec_stop(struct receptec_peer_runtime *peer,
 			peer->sequence, peer->eui, attempt_offsets_us[attempt],
 			slot_epoch, &peer->counters);
 		if (attempt_status[attempt] == 0) {
-			attempt_status[attempt] = poll_for_matching_stop_ack(
-				peer->sequence, peer->eui, &peer->counters,
+			attempt_status[attempt] =
+				poll_for_matching_empty_response(
+				peer->sequence, peer->eui,
+				RECEPTEC_PACKET_STOP_ACK, &peer->counters,
 				&attempt_radio_status[attempt]);
 		}
 		status = attempt_status[attempt];
@@ -687,6 +693,61 @@ static int run_receptec_stop(struct receptec_peer_runtime *peer,
 	return status;
 }
 
+static int run_receptec_sync(struct receptec_peer_runtime *peer,
+			     uint32_t slot_epoch)
+{
+	uint32_t attempt_radio_status[DW3110_ATTEMPT_COUNT] = { 0 };
+	int attempt_status[DW3110_ATTEMPT_COUNT] = { 0 };
+	int status = -ETIMEDOUT;
+
+	peer->counters.transactions_started++;
+	for (size_t attempt = 0U; attempt < ARRAY_SIZE(attempt_offsets_us);
+	     ++attempt) {
+		attempt_status[attempt] = send_delayed_timed_request_attempt(
+			RECEPTEC_PACKET_SYNC, peer->sequence, peer->eui,
+			attempt_offsets_us[attempt], slot_epoch,
+			&peer->counters);
+		if (attempt_status[attempt] == 0) {
+			attempt_status[attempt] =
+				poll_for_matching_empty_response(
+				peer->sequence, peer->eui, RECEPTEC_PACKET_ACK,
+				&peer->counters,
+				&attempt_radio_status[attempt]);
+		}
+		status = attempt_status[attempt];
+		if (status == 0) {
+			for (size_t failed = 0U; failed < attempt; ++failed) {
+				printk("SYNC attempt failed: seq=%u attempt=%u "
+				       "offset=%u error=%d radio=0x%08X "
+				       "retrying\n",
+				       peer->sequence, (uint32_t)failed + 1U,
+				       attempt_offsets_us[failed],
+				       attempt_status[failed],
+				       attempt_radio_status[failed]);
+			}
+			peer->counters.transactions_completed++;
+			printk("SYNC/ACK OK: seq=%u attempt=%u offset=%u "
+			       "FCS=valid addressed=ok\n",
+			       peer->sequence, (uint32_t)attempt + 1U,
+			       attempt_offsets_us[attempt]);
+			return 0;
+		}
+	}
+	peer->counters.retry_exhaustion++;
+	for (size_t attempt = 0U; attempt < ARRAY_SIZE(attempt_offsets_us);
+	     ++attempt) {
+		printk("SYNC attempt failed: seq=%u attempt=%u offset=%u "
+		       "error=%d radio=0x%08X%s\n",
+		       peer->sequence, (uint32_t)attempt + 1U,
+		       attempt_offsets_us[attempt], attempt_status[attempt],
+		       attempt_radio_status[attempt],
+		       attempt + 1U < ARRAY_SIZE(attempt_offsets_us) ?
+		       " retrying" : " exhausted");
+	}
+	printk("SYNC/ACK failed: seq=%u error=%d\n", peer->sequence, status);
+	return status;
+}
+
 struct receptec_slot_result {
 	uint32_t attempt_radio_status[DW3110_ATTEMPT_COUNT];
 	int attempt_status[DW3110_ATTEMPT_COUNT];
@@ -714,7 +775,8 @@ static void run_receptec_peer_data(
 	     ++attempt) {
 		result->attempts_run = (uint8_t)attempt + 1U;
 		result->attempt_status[attempt] =
-			send_delayed_data_request_attempt(
+			send_delayed_timed_request_attempt(
+				RECEPTEC_PACKET_DATA_REQ,
 				peer->sequence, peer->eui,
 				attempt_offsets_us[attempt], slot_epoch,
 				&peer->counters);
@@ -811,6 +873,8 @@ static int run_receptec_data(void)
 	struct receptec_peer_runtime *live_peer = &receptec_peers[0];
 	struct receptec_peer_runtime *stop_peer =
 		&receptec_peers[CONFIG_RECEPTEC_TEST_STOP_PEER_SLOT];
+	struct receptec_peer_runtime *sync_peer =
+		&receptec_peers[CONFIG_RECEPTEC_TEST_SYNC_PEER_SLOT];
 	uint32_t cycle_epoch;
 	uint32_t cycle = 0U;
 	bool test_silence_done = false;
@@ -829,6 +893,27 @@ static int run_receptec_data(void)
 		      DW3110_REQUEST_SETUP_US * DW3110_UUS_TO_DX_TIME;
 	for (;;) {
 		struct receptec_slot_result results[RECEPTEC_PEER_COUNT];
+
+		if (CONFIG_RECEPTEC_TEST_SYNC_AFTER > 0 &&
+		    sync_peer->successful_exchanges >=
+			    CONFIG_RECEPTEC_TEST_SYNC_AFTER) {
+			uint32_t sync_slot_epoch =
+				cycle_epoch +
+				(uint32_t)CONFIG_RECEPTEC_TEST_SYNC_PEER_SLOT *
+					DW3110_SLOT_DURATION_US *
+					DW3110_UUS_TO_DX_TIME;
+
+			sync_peer->sequence++;
+			printk("RECEPTEC initiating SYNC for slot=%u peer=%s "
+			       "after %u DATA transactions\n",
+			       CONFIG_RECEPTEC_TEST_SYNC_PEER_SLOT,
+			       sync_peer->name,
+			       sync_peer->successful_exchanges);
+			status = run_receptec_sync(sync_peer, sync_slot_epoch);
+			dwt_forcetrxoff();
+			print_protocol_counters(&sync_peer->counters);
+			return status;
+		}
 
 		if (CONFIG_RECEPTEC_TEST_STOP_AFTER > 0 &&
 		    stop_peer->successful_exchanges >=
