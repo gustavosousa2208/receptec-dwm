@@ -240,6 +240,8 @@ Existing fragments:
 | `tests/m9-bad-stop-ack.conf` | Send wrong sequence before corrected duplicate |
 | `tests/production-stop.conf` | Target production peer slot 1 with STOP after three DATA transactions |
 | `tests/production-sync.conf` | Target production peer slot 1 with SYNC after three DATA transactions |
+| `tests/production-discovery.conf` | Silence both live peers for 100 cycles and qualify production discovery/backoff/reentry |
+| `tests/production-out-of-slot.conf` | Send a production-addressed DATA_REQ at 200 ms and require no response |
 
 The build must be made pristine again without `EXTRA_CONF_FILE` after fault
 testing. Verify the final `.config` contains zero for every test fault option.
@@ -434,6 +436,24 @@ production COLETEC. The captured UART interval covered cycles 25 through 118:
   response delay, and no increase in its initial late-schedule counter;
 - production BLE advertising and STM32 IPC traffic remained active.
 
+### 6.10 Production discovery and out-of-slot rejection — 2026-07-27
+
+The production COLETEC was synchronized in slot 1 before the RECEPTEC stopped
+all requests for 100 sampling periods. Production RTT recorded:
+
+- missed-slot guards of 600, 700, 800, and 900 us;
+- synchronization loss on the fifth missed slot;
+- discovery OFF intervals of 2, 4, 6, 8, and 10 seconds;
+- three unsuccessful discovery ON periods before each multiplier increase;
+- automatic reentry on sequence 12, attempt 2;
+- normal attempt-1 DATA responses from the following cycle.
+
+A separate test transmitted a valid DATA_REQ addressed to the production
+COLETEC at 200 ms from the cycle epoch. Its assigned slot-1 receive interval
+had ended near 40.5 ms. The request produced a real response timeout, and the
+next scheduled slot-1 DATA transaction passed on attempt 1. This directly
+qualifies the protocol behavior outside the assigned receive interval.
+
 ## 7. Coverage calculation
 
 This project does not currently run `gcov`, `lcov`, or compiler-based
@@ -460,7 +480,7 @@ The percentage below is **protocol scenario coverage**. It is calculated from
 | 10 | Lost-response recovery | Pass | 1.0 | Attempts 2 and 3 verified |
 | 11 | Duplicate request behavior | Pass | 1.0 | Frozen DATA and duplicate STOP_ACK verified |
 | 12 | Fixed multi-peer slot schedule | Pass | 1.0 | Two live and two absent peers; no compression |
-| 13 | RX disabled outside assigned interval | Partial | 0.5 | Behavior inferred and observed through reserved slots; no external power/IRQ trace |
+| 13 | RX disabled outside assigned interval | Pass | 1.0 | Correctly addressed production DATA_REQ at 200 ms received no response; next assigned slot passed |
 | 14 | Guard expansion and fifth-miss loss | Pass | 1.0 | Complete controlled sequence |
 | 15 | Discovery backoff and reentry | Pass | 1.0 | Full multiplier range and automatic recovery |
 | 16 | Acknowledged STOP and reset recovery | Pass | 1.0 | Full DWM fault suite plus production STOP_ACK on attempt 1 and normal-image recovery |
@@ -468,13 +488,13 @@ The percentage below is **protocol scenario coverage**. It is calculated from
 | 18 | Production nRF52840/QM33120W interoperability under BLE/IPC load | Partial | 0.5 | 298+ observed cycles passed with BLE advertising and STM32 IPC streaming; connected BLE notifications and long soak remain |
 
 ```text
-12 Pass + 6 Partial × 0.5 = 15 points
-15 / 18 = 83% scenario coverage
+13 Pass + 5 Partial × 0.5 = 15.5 points
+15.5 / 18 = 86% scenario coverage
 ```
 
 Important interpretation:
 
-- **83% does not mean the production COLETEC is 83% validated.**
+- **86% does not mean the production COLETEC is 86% validated.**
 - Production baseline OTA interoperability and timing now pass, but retries,
   recovery, connected-BLE load, and the 1,000-transaction production soak have
   not yet been fully repeated on final hardware. Production DATA, SYNC/ACK, and

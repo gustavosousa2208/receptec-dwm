@@ -27,6 +27,7 @@
 #define DW3110_RESPONSE_TIMEOUT_US 3000U
 #define DW3110_SAMPLING_PERIOD_US 1000000U
 #define DW3110_SLOT_DURATION_US 20000U
+#define DW3110_OUT_OF_SLOT_PROBE_US 200000U
 #define DW3110_ATTEMPT_COUNT 3U
 #define RECEPTEC_PEER_COUNT 4U
 #define DW3110_UUS_TO_DTU 65536ULL
@@ -868,6 +869,45 @@ static void print_receptec_slot_result(
 	}
 }
 
+static void run_out_of_slot_probe(struct receptec_peer_runtime *peer,
+				  uint32_t probe_epoch)
+{
+	struct protocol_counters counters = { 0 };
+	uint8_t payload[RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE];
+	size_t payload_length = 0U;
+	uint32_t radio_status = 0U;
+	uint32_t sample_counter = 0U;
+	bool payload_frozen = false;
+	int status;
+
+	printk("OUT-OF-SLOT probe: peer=%s seq=%u cycle-offset=%u us\n",
+	       peer->name, peer->sequence, DW3110_OUT_OF_SLOT_PROBE_US);
+	status = send_delayed_timed_request_attempt(
+		RECEPTEC_PACKET_DATA_REQ, peer->sequence, peer->eui, 0U,
+		probe_epoch, &counters);
+	if (status == 0) {
+		status = poll_for_matching_data(
+			peer->sequence, peer->eui, peer->diagnostic_payload,
+			&counters, &radio_status, payload, &payload_length,
+			&payload_frozen, &sample_counter);
+	}
+	if (status == -ETIMEDOUT) {
+		printk("OUT-OF-SLOT PASS: no response from peer=%s "
+		       "radio=0x%08X\n",
+		       peer->name, radio_status);
+		return;
+	}
+	if (status == 0) {
+		printk("OUT-OF-SLOT FAIL: peer=%s responded outside its "
+		       "assigned slot\n",
+		       peer->name);
+		return;
+	}
+	printk("OUT-OF-SLOT INCONCLUSIVE: peer=%s error=%d "
+	       "radio=0x%08X\n",
+	       peer->name, status, radio_status);
+}
+
 static int run_receptec_data(void)
 {
 	struct receptec_peer_runtime *live_peer = &receptec_peers[0];
@@ -875,9 +915,12 @@ static int run_receptec_data(void)
 		&receptec_peers[CONFIG_RECEPTEC_TEST_STOP_PEER_SLOT];
 	struct receptec_peer_runtime *sync_peer =
 		&receptec_peers[CONFIG_RECEPTEC_TEST_SYNC_PEER_SLOT];
+	struct receptec_peer_runtime *out_of_slot_peer =
+		&receptec_peers[CONFIG_RECEPTEC_TEST_OUT_OF_SLOT_PEER_SLOT];
 	uint32_t cycle_epoch;
 	uint32_t cycle = 0U;
 	bool test_silence_done = false;
+	bool out_of_slot_probe_done = false;
 	int status;
 
 	printk("Protocol test: RECEPTEC RWD schedule peers=%u slot=%u us "
@@ -943,6 +986,8 @@ static int run_receptec_data(void)
 		}
 
 		if (!test_silence_done && CONFIG_RECEPTEC_TEST_SILENCE_AFTER > 0 &&
+		    (CONFIG_RECEPTEC_TEST_OUT_OF_SLOT_AFTER == 0 ||
+		     out_of_slot_probe_done) &&
 		    live_peer->successful_exchanges >=
 			    CONFIG_RECEPTEC_TEST_SILENCE_AFTER) {
 			printk("RECEPTEC test silence: slots=%u\n",
@@ -977,6 +1022,18 @@ static int run_receptec_data(void)
 			printk("RWD qualification progress: live=%u cycles=%u\n",
 			       live_peer->successful_exchanges, cycle);
 			print_protocol_counters(&live_peer->counters);
+		}
+		if (!out_of_slot_probe_done &&
+		    CONFIG_RECEPTEC_TEST_OUT_OF_SLOT_AFTER > 0 &&
+		    out_of_slot_peer->successful_exchanges >=
+			    CONFIG_RECEPTEC_TEST_OUT_OF_SLOT_AFTER) {
+			uint32_t probe_epoch =
+				cycle_epoch +
+				DW3110_OUT_OF_SLOT_PROBE_US *
+					DW3110_UUS_TO_DX_TIME;
+
+			run_out_of_slot_probe(out_of_slot_peer, probe_epoch);
+			out_of_slot_probe_done = true;
 		}
 		cycle_epoch += DW3110_SAMPLING_PERIOD_US *
 			       DW3110_UUS_TO_DX_TIME;
