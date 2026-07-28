@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
 #include <zephyr/sys/printk.h>
 
 #include <deca_device_api.h>
@@ -29,7 +30,7 @@
 #define DW3110_SLOT_DURATION_US 20000U
 #define DW3110_OUT_OF_SLOT_PROBE_US 200000U
 #define DW3110_ATTEMPT_COUNT 3U
-#define RECEPTEC_PEER_COUNT 4U
+#define RECEPTEC_PEER_COUNT DW3110_RADIO_PEER_COUNT
 #define DW3110_UUS_TO_DTU 65536ULL
 #define DW3110_TIMESTAMP_MASK ((1ULL << 40) - 1ULL)
 #define DW3110_IRQ_EVENT_MASK \
@@ -43,6 +44,12 @@
 #define FRAME_TYPE_OFFSET 19U
 #define COLETEC_STOP_ACK_RADIO_LENGTH \
 	(RECEPTEC_PROTOCOL_HEADER_SIZE + RECEPTEC_PROTOCOL_FCS_SIZE)
+
+#if defined(CONFIG_RECEPTEC_SLOTTED_AUTOSTART)
+#define RECEPTEC_SLOTTED_AUTOSTART 1
+#else
+#define RECEPTEC_SLOTTED_AUTOSTART 0
+#endif
 
 struct protocol_counters {
 	uint32_t transactions_started;
@@ -71,6 +78,39 @@ struct receptec_peer_runtime {
 	bool diagnostic_payload;
 };
 
+enum receptec_command_kind {
+	RECEPTEC_COMMAND_SLOTTED_SET,
+	RECEPTEC_COMMAND_PERIODIC_SYNC_SET,
+	RECEPTEC_COMMAND_DATA_REQ,
+	RECEPTEC_COMMAND_TEST_SYNC,
+	RECEPTEC_COMMAND_TEST_STOP,
+	RECEPTEC_COMMAND_TEST_WRONG_EUI,
+	RECEPTEC_COMMAND_TEST_OUT_OF_SLOT,
+	RECEPTEC_COMMAND_TEST_SILENCE,
+	RECEPTEC_COMMAND_ABORT,
+};
+
+struct receptec_command {
+	enum receptec_command_kind kind;
+	uint32_t argument;
+	uint8_t peer_slot;
+	bool enable;
+};
+
+#define RECEPTEC_COMMAND_QUEUE_DEPTH 8U
+
+K_MSGQ_DEFINE(receptec_command_queue, sizeof(struct receptec_command),
+	      RECEPTEC_COMMAND_QUEUE_DEPTH, sizeof(uint32_t));
+
+static atomic_t control_slotted_running =
+	ATOMIC_INIT(RECEPTEC_SLOTTED_AUTOSTART);
+static atomic_t control_periodic_sync_running = ATOMIC_INIT(0);
+static atomic_t control_periodic_sync_peer_slot = ATOMIC_INIT(0);
+static atomic_t control_operation_pending = ATOMIC_INIT(0);
+static atomic_t control_operation =
+	ATOMIC_INIT(DW3110_RADIO_OPERATION_NONE);
+static atomic_t control_cycle = ATOMIC_INIT(0);
+
 static const uint16_t attempt_offsets_us[DW3110_ATTEMPT_COUNT] = {
 	0U, 5000U, 10000U,
 };
@@ -81,6 +121,27 @@ static const uint8_t receptec_eui[RECEPTEC_PROTOCOL_EUI64_SIZE] = {
 static const uint8_t coletec_eui[RECEPTEC_PROTOCOL_EUI64_SIZE] = {
 	0x31, 0x5D, 0x02, 0xD5, 0x15, 0x8C, 0xFA, 0x40,
 };
+
+static int configure_coletec_frame_filter(void)
+{
+#if defined(CONFIG_RECEPTEC_COLETEC_HW_FRAME_FILTER)
+	uint8_t programmed_eui[RECEPTEC_PROTOCOL_EUI64_SIZE];
+	uint8_t readback_eui[RECEPTEC_PROTOCOL_EUI64_SIZE];
+
+	memcpy(programmed_eui, coletec_eui, sizeof(programmed_eui));
+	dwt_seteui(programmed_eui);
+	dwt_geteui(readback_eui);
+	if (memcmp(readback_eui, coletec_eui, sizeof(readback_eui)) != 0) {
+		printk("COLETEC hardware frame filter EUI readback failed\n");
+		return -EIO;
+	}
+	dwt_configureframefilter(DWT_FF_ENABLE_802_15_4, DWT_FF_DATA_EN);
+	printk("COLETEC hardware frame filter enabled: "
+	       "destination=31:5D:02:D5:15:8C:FA:40 type=DATA\n");
+#endif
+	return 0;
+}
+
 static struct receptec_peer_runtime receptec_peers[RECEPTEC_PEER_COUNT] = {
 	{
 		.name = "dwm-test",
@@ -109,6 +170,8 @@ static size_t payload_mismatch_offset;
 static uint8_t payload_mismatch_expected;
 static uint8_t payload_mismatch_received;
 static uint8_t last_stop_response_type;
+static volatile uint32_t coletec_frame_filter_rejections;
+static volatile uint32_t coletec_slot_first_event_filter_rejections;
 static K_THREAD_STACK_DEFINE(uwb_thread_stack,
 			     DW3110_UWB_THREAD_STACK_SIZE);
 static struct k_thread uwb_thread;
@@ -908,6 +971,203 @@ static void run_out_of_slot_probe(struct receptec_peer_runtime *peer,
 	       peer->name, status, radio_status);
 }
 
+struct wrong_destination_result {
+	uint8_t destination[RECEPTEC_PROTOCOL_EUI64_SIZE];
+	uint8_t sequence;
+	uint32_t radio_status;
+	int status;
+};
+
+static void run_wrong_destination_probe(
+	struct receptec_peer_runtime *peer, uint32_t slot_epoch,
+	struct wrong_destination_result *result)
+{
+	struct protocol_counters counters = { 0 };
+	uint8_t payload[RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE];
+	size_t payload_length = 0U;
+	uint32_t sample_counter = 0U;
+	bool payload_frozen = false;
+
+	memset(result, 0, sizeof(*result));
+	memcpy(result->destination, peer->eui, sizeof(result->destination));
+	result->destination[0] ^= 0x80U;
+	peer->sequence++;
+	result->sequence = peer->sequence;
+	result->status = send_delayed_timed_request_attempt(
+		RECEPTEC_PACKET_DATA_REQ, result->sequence,
+		result->destination, 0U, slot_epoch, &counters);
+	if (result->status == 0) {
+		result->status = poll_for_matching_data(
+			result->sequence, peer->eui, peer->diagnostic_payload,
+			&counters, &result->radio_status, payload,
+			&payload_length, &payload_frozen, &sample_counter);
+	}
+}
+
+static void print_wrong_destination_result(
+	const struct receptec_peer_runtime *peer, uint8_t slot,
+	const struct wrong_destination_result *result)
+{
+	if (result->status == -ETIMEDOUT) {
+		printk("WRONG-EUI PASS: slot=%u peer=%s seq=%u "
+		       "destination=%02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X "
+		       "response=none\n",
+		       slot, peer->name, result->sequence,
+		       result->destination[0], result->destination[1],
+		       result->destination[2], result->destination[3],
+		       result->destination[4], result->destination[5],
+		       result->destination[6], result->destination[7]);
+		return;
+	}
+	if (result->status == 0) {
+		printk("WRONG-EUI FAIL: slot=%u peer=%s seq=%u responded\n",
+		       slot, peer->name, result->sequence);
+		return;
+	}
+	printk("WRONG-EUI INCONCLUSIVE: slot=%u peer=%s seq=%u error=%d "
+	       "radio=0x%08X\n",
+	       slot, peer->name, result->sequence, result->status,
+	       result->radio_status);
+}
+
+static bool wrong_destination_probe_ready(void)
+{
+	uint32_t selected =
+		(uint32_t)CONFIG_RECEPTEC_TEST_WRONG_DESTINATION_PEER_MASK;
+
+	if (CONFIG_RECEPTEC_TEST_WRONG_DESTINATION_AFTER == 0 ||
+	    selected == 0U) {
+		return false;
+	}
+	for (uint8_t slot = 0U; slot < RECEPTEC_PEER_COUNT; ++slot) {
+		if ((selected & (1U << slot)) == 0U) {
+			continue;
+		}
+		if (!receptec_peers[slot].expected_present ||
+		    receptec_peers[slot].successful_exchanges <
+			    CONFIG_RECEPTEC_TEST_WRONG_DESTINATION_AFTER) {
+			return false;
+		}
+	}
+	return true;
+}
+
+struct receptec_control_runtime {
+	struct receptec_command action;
+	uint32_t silence_remaining;
+	bool slotted_running;
+	bool periodic_sync_running;
+	bool action_ready;
+	bool epoch_reset;
+	uint8_t periodic_sync_peer_slot;
+};
+
+enum receptec_cycle_slot_operation {
+	RECEPTEC_SLOT_NONE,
+	RECEPTEC_SLOT_DATA,
+	RECEPTEC_SLOT_SYNC,
+	RECEPTEC_SLOT_STOP,
+	RECEPTEC_SLOT_WRONG_EUI,
+};
+
+static bool command_is_action(enum receptec_command_kind kind)
+{
+	return kind == RECEPTEC_COMMAND_DATA_REQ || kind == RECEPTEC_COMMAND_TEST_SYNC ||
+	       kind == RECEPTEC_COMMAND_TEST_STOP || kind == RECEPTEC_COMMAND_TEST_WRONG_EUI ||
+	       kind == RECEPTEC_COMMAND_TEST_OUT_OF_SLOT || kind == RECEPTEC_COMMAND_TEST_SILENCE;
+}
+
+static void clear_runtime_operation(struct receptec_control_runtime *control)
+{
+	control->action_ready = false;
+	atomic_set(&control_operation, DW3110_RADIO_OPERATION_NONE);
+	atomic_set(&control_operation_pending, 0);
+}
+
+static void apply_receptec_command(struct receptec_control_runtime *control,
+				   const struct receptec_command *command)
+{
+	switch (command->kind) {
+	case RECEPTEC_COMMAND_SLOTTED_SET:
+		if (control->slotted_running != command->enable) {
+			control->slotted_running = command->enable;
+			control->epoch_reset = true;
+		}
+		atomic_set(&control_slotted_running, control->slotted_running);
+		printk("UWB shell: slotted schedule %s\n",
+		       control->slotted_running ? "started" : "stopped");
+		break;
+	case RECEPTEC_COMMAND_PERIODIC_SYNC_SET:
+		if (control->periodic_sync_running != command->enable ||
+		    control->periodic_sync_peer_slot != command->peer_slot) {
+			control->epoch_reset = true;
+		}
+		control->periodic_sync_running = command->enable;
+		control->periodic_sync_peer_slot = command->peer_slot;
+		atomic_set(&control_periodic_sync_running, control->periodic_sync_running);
+		atomic_set(&control_periodic_sync_peer_slot, control->periodic_sync_peer_slot);
+		if (control->periodic_sync_running) {
+			printk("UWB shell: periodic SYNC started on slot=%u "
+			       "peer=%s\n",
+			       control->periodic_sync_peer_slot,
+			       receptec_peers[control->periodic_sync_peer_slot].name);
+		} else {
+			printk("UWB shell: periodic SYNC stopped\n");
+		}
+		break;
+	case RECEPTEC_COMMAND_ABORT:
+		if (control->action_ready || control->silence_remaining > 0U ||
+		    atomic_get(&control_operation_pending) != 0) {
+			control->silence_remaining = 0U;
+			clear_runtime_operation(control);
+			control->epoch_reset = true;
+			printk("UWB shell: test aborted at a safe boundary\n");
+		} else {
+			printk("UWB shell: no queued or active test to abort\n");
+		}
+		break;
+	default:
+		if (command_is_action(command->kind)) {
+			control->action = *command;
+			control->action_ready = true;
+		}
+		break;
+	}
+}
+
+static void drain_receptec_commands(struct receptec_control_runtime *control)
+{
+	struct receptec_command command;
+
+	while (k_msgq_get(&receptec_command_queue, &command, K_NO_WAIT) == 0) {
+		apply_receptec_command(control, &command);
+	}
+}
+
+static void run_runtime_silence_cycle(struct receptec_control_runtime *control)
+{
+	struct receptec_command command;
+
+	dwt_forcetrxoff();
+	if (k_msgq_get(&receptec_command_queue, &command, K_SECONDS(1)) == 0) {
+		apply_receptec_command(control, &command);
+		drain_receptec_commands(control);
+		return;
+	}
+
+	if (control->silence_remaining > 0U) {
+		control->silence_remaining--;
+	}
+	if (control->silence_remaining == 0U) {
+		printk("SILENCE test complete; normal timing epoch will restart\n");
+		clear_runtime_operation(control);
+		control->epoch_reset = true;
+	} else {
+		printk("SILENCE test: %u one-second cycles remaining\n",
+		       control->silence_remaining);
+	}
+}
+
 static int run_receptec_data(void)
 {
 	struct receptec_peer_runtime *live_peer = &receptec_peers[0];
@@ -917,40 +1177,98 @@ static int run_receptec_data(void)
 		&receptec_peers[CONFIG_RECEPTEC_TEST_SYNC_PEER_SLOT];
 	struct receptec_peer_runtime *out_of_slot_peer =
 		&receptec_peers[CONFIG_RECEPTEC_TEST_OUT_OF_SLOT_PEER_SLOT];
-	uint32_t cycle_epoch;
+	struct receptec_control_runtime control = {
+		.slotted_running = RECEPTEC_SLOTTED_AUTOSTART != 0,
+		.epoch_reset = true,
+	};
+	uint32_t cycle_epoch = 0U;
 	uint32_t cycle = 0U;
 	bool test_silence_done = false;
 	bool out_of_slot_probe_done = false;
+	bool wrong_destination_probe_done = false;
 	int status;
 
 	printk("Protocol test: RECEPTEC RWD schedule peers=%u slot=%u us "
 	       "sampling=%u us IRQ-driven\n",
-	       RECEPTEC_PEER_COUNT, DW3110_SLOT_DURATION_US,
-	       DW3110_SAMPLING_PERIOD_US);
+	       RECEPTEC_PEER_COUNT, DW3110_SLOT_DURATION_US, DW3110_SAMPLING_PERIOD_US);
 	status = enable_protocol_irq();
 	if (status < 0) {
 		return status;
 	}
 	k_msleep(250U);
-	cycle_epoch = dwt_readsystimestamphi32() +
-		      DW3110_REQUEST_SETUP_US * DW3110_UUS_TO_DX_TIME;
 	for (;;) {
 		struct receptec_slot_result results[RECEPTEC_PEER_COUNT];
+		struct wrong_destination_result wrong_results[RECEPTEC_PEER_COUNT];
+		enum receptec_cycle_slot_operation slot_operations[RECEPTEC_PEER_COUNT] = {
+			RECEPTEC_SLOT_NONE,
+		};
+		bool runtime_action;
+		bool wrong_destination_cycle =
+			!wrong_destination_probe_done && wrong_destination_probe_ready();
+
+		if (control.silence_remaining > 0U) {
+			run_runtime_silence_cycle(&control);
+			continue;
+		}
+
+		if (!control.slotted_running && !control.periodic_sync_running &&
+		    !control.action_ready) {
+			struct receptec_command command;
+
+			dwt_forcetrxoff();
+			printk("UWB shell: radio idle; waiting for a command\n");
+			if (k_msgq_get(&receptec_command_queue, &command, K_FOREVER) == 0) {
+				apply_receptec_command(&control, &command);
+				drain_receptec_commands(&control);
+			}
+			continue;
+		}
+
+		drain_receptec_commands(&control);
+		if (control.action_ready && control.action.kind == RECEPTEC_COMMAND_TEST_SILENCE) {
+			control.silence_remaining = control.action.argument;
+			control.action_ready = false;
+			control.epoch_reset = true;
+			printk("SILENCE test started: cycles=%u; all UWB "
+			       "requests suppressed\n",
+			       control.silence_remaining);
+			continue;
+		}
+		if (!control.slotted_running && !control.periodic_sync_running &&
+		    !control.action_ready) {
+			control.epoch_reset = true;
+			continue;
+		}
+		if (control.action_ready &&
+		    control.action.kind == RECEPTEC_COMMAND_TEST_OUT_OF_SLOT &&
+		    !control.slotted_running) {
+			printk("OUT-OF-SLOT test rejected: slotted schedule "
+			       "is not running\n");
+			clear_runtime_operation(&control);
+			continue;
+		}
+
+		if (control.epoch_reset) {
+			cycle_epoch = dwt_readsystimestamphi32() +
+				      DW3110_REQUEST_SETUP_US * DW3110_UUS_TO_DX_TIME;
+			control.epoch_reset = false;
+		}
+		runtime_action = control.action_ready;
+		if (runtime_action) {
+			wrong_destination_cycle = false;
+		}
 
 		if (CONFIG_RECEPTEC_TEST_SYNC_AFTER > 0 &&
-		    sync_peer->successful_exchanges >=
-			    CONFIG_RECEPTEC_TEST_SYNC_AFTER) {
+		    sync_peer->successful_exchanges >= CONFIG_RECEPTEC_TEST_SYNC_AFTER) {
 			uint32_t sync_slot_epoch =
-				cycle_epoch +
-				(uint32_t)CONFIG_RECEPTEC_TEST_SYNC_PEER_SLOT *
-					DW3110_SLOT_DURATION_US *
-					DW3110_UUS_TO_DX_TIME;
+				cycle_epoch + (uint32_t)CONFIG_RECEPTEC_TEST_SYNC_PEER_SLOT *
+						      DW3110_SLOT_DURATION_US *
+						      DW3110_UUS_TO_DX_TIME;
 
 			sync_peer->sequence++;
 			printk("RECEPTEC initiating SYNC for slot=%u peer=%s "
 			       "after %u DATA transactions\n",
-			       CONFIG_RECEPTEC_TEST_SYNC_PEER_SLOT,
-			       sync_peer->name,
+			       CONFIG_RECEPTEC_TEST_SYNC_PEER_SLOT, sync_peer->name,
 			       sync_peer->successful_exchanges);
 			status = run_receptec_sync(sync_peer, sync_slot_epoch);
 			dwt_forcetrxoff();
@@ -959,19 +1277,16 @@ static int run_receptec_data(void)
 		}
 
 		if (CONFIG_RECEPTEC_TEST_STOP_AFTER > 0 &&
-		    stop_peer->successful_exchanges >=
-			    CONFIG_RECEPTEC_TEST_STOP_AFTER) {
+		    stop_peer->successful_exchanges >= CONFIG_RECEPTEC_TEST_STOP_AFTER) {
 			uint32_t stop_slot_epoch =
-				cycle_epoch +
-				(uint32_t)CONFIG_RECEPTEC_TEST_STOP_PEER_SLOT *
-					DW3110_SLOT_DURATION_US *
-					DW3110_UUS_TO_DX_TIME;
+				cycle_epoch + (uint32_t)CONFIG_RECEPTEC_TEST_STOP_PEER_SLOT *
+						      DW3110_SLOT_DURATION_US *
+						      DW3110_UUS_TO_DX_TIME;
 
 			stop_peer->sequence++;
 			printk("RECEPTEC initiating STOP for slot=%u peer=%s "
 			       "after %u DATA transactions\n",
-			       CONFIG_RECEPTEC_TEST_STOP_PEER_SLOT,
-			       stop_peer->name,
+			       CONFIG_RECEPTEC_TEST_STOP_PEER_SLOT, stop_peer->name,
 			       stop_peer->successful_exchanges);
 			status = run_receptec_stop(stop_peer, stop_slot_epoch);
 			dwt_forcetrxoff();
@@ -979,43 +1294,112 @@ static int run_receptec_data(void)
 				printk("RECEPTEC STOPPED: UWB disabled\n");
 			} else {
 				print_protocol_counters(&stop_peer->counters);
-				printk("Last STOP response type: %u\n",
-				       last_stop_response_type);
+				printk("Last STOP response type: %u\n", last_stop_response_type);
 			}
 			return status;
 		}
 
 		if (!test_silence_done && CONFIG_RECEPTEC_TEST_SILENCE_AFTER > 0 &&
-		    (CONFIG_RECEPTEC_TEST_OUT_OF_SLOT_AFTER == 0 ||
-		     out_of_slot_probe_done) &&
-		    live_peer->successful_exchanges >=
-			    CONFIG_RECEPTEC_TEST_SILENCE_AFTER) {
+		    (CONFIG_RECEPTEC_TEST_OUT_OF_SLOT_AFTER == 0 || out_of_slot_probe_done) &&
+		    live_peer->successful_exchanges >= CONFIG_RECEPTEC_TEST_SILENCE_AFTER) {
 			printk("RECEPTEC test silence: slots=%u\n",
 			       CONFIG_RECEPTEC_TEST_SILENT_SLOTS);
 			dwt_forcetrxoff();
-			k_sleep(K_MSEC((uint32_t)CONFIG_RECEPTEC_TEST_SILENT_SLOTS *
-					 1000U));
+			k_sleep(K_MSEC((uint32_t)CONFIG_RECEPTEC_TEST_SILENT_SLOTS * 1000U));
 			cycle_epoch += (uint32_t)CONFIG_RECEPTEC_TEST_SILENT_SLOTS *
-				       DW3110_SAMPLING_PERIOD_US *
-				       DW3110_UUS_TO_DX_TIME;
+				       DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DX_TIME;
 			test_silence_done = true;
 			printk("RECEPTEC test silence complete\n");
 		}
 
 		cycle++;
+		atomic_set(&control_cycle, (atomic_val_t)cycle);
 		for (uint8_t slot = 0U; slot < RECEPTEC_PEER_COUNT; ++slot) {
-			uint32_t slot_epoch = cycle_epoch +
-				(uint32_t)slot * DW3110_SLOT_DURATION_US *
-					DW3110_UUS_TO_DX_TIME;
+			uint32_t slot_epoch = cycle_epoch + (uint32_t)slot *
+								    DW3110_SLOT_DURATION_US *
+								    DW3110_UUS_TO_DX_TIME;
+			struct receptec_peer_runtime *peer = &receptec_peers[slot];
 
-			run_receptec_peer_data(&receptec_peers[slot],
-					       slot_epoch, &results[slot]);
+			if (runtime_action && control.action.peer_slot == slot) {
+				switch (control.action.kind) {
+				case RECEPTEC_COMMAND_DATA_REQ:
+					printk("MANUAL DATA_REQ: cycle=%u slot=%u "
+					       "peer=%s\n",
+					       cycle, slot, peer->name);
+					slot_operations[slot] = RECEPTEC_SLOT_DATA;
+					run_receptec_peer_data(peer, slot_epoch, &results[slot]);
+					continue;
+				case RECEPTEC_COMMAND_TEST_SYNC:
+					peer->sequence++;
+					printk("ONE-SHOT SYNC: cycle=%u slot=%u "
+					       "peer=%s\n",
+					       cycle, slot, peer->name);
+					slot_operations[slot] = RECEPTEC_SLOT_SYNC;
+					(void)run_receptec_sync(peer, slot_epoch);
+					continue;
+				case RECEPTEC_COMMAND_TEST_STOP:
+					peer->sequence++;
+					printk("ONE-SHOT STOP: cycle=%u slot=%u "
+					       "peer=%s\n",
+					       cycle, slot, peer->name);
+					slot_operations[slot] = RECEPTEC_SLOT_STOP;
+					status = run_receptec_stop(peer, slot_epoch);
+					dwt_forcetrxoff();
+					if (status == 0) {
+						printk("STOP test complete: peer=%s "
+						       "requires reset\n",
+						       peer->name);
+					} else {
+						print_protocol_counters(&peer->counters);
+					}
+					continue;
+				case RECEPTEC_COMMAND_TEST_WRONG_EUI:
+					printk("ONE-SHOT WRONG-EUI: cycle=%u "
+					       "slot=%u peer=%s\n",
+					       cycle, slot, peer->name);
+					slot_operations[slot] = RECEPTEC_SLOT_WRONG_EUI;
+					run_wrong_destination_probe(peer, slot_epoch,
+								    &wrong_results[slot]);
+					continue;
+				default:
+					break;
+				}
+			}
+
+			if (wrong_destination_cycle &&
+			    (CONFIG_RECEPTEC_TEST_WRONG_DESTINATION_PEER_MASK & (1U << slot)) !=
+				    0U) {
+				slot_operations[slot] = RECEPTEC_SLOT_WRONG_EUI;
+				run_wrong_destination_probe(peer, slot_epoch, &wrong_results[slot]);
+				continue;
+			}
+			if (control.periodic_sync_running &&
+			    control.periodic_sync_peer_slot == slot) {
+				peer->sequence++;
+				printk("PERIODIC SYNC: cycle=%u slot=%u peer=%s\n", cycle, slot,
+				       peer->name);
+				slot_operations[slot] = RECEPTEC_SLOT_SYNC;
+				(void)run_receptec_sync(peer, slot_epoch);
+				continue;
+			}
+			if (control.slotted_running) {
+				slot_operations[slot] = RECEPTEC_SLOT_DATA;
+				run_receptec_peer_data(peer, slot_epoch, &results[slot]);
+			}
 		}
 
 		/* UART output waits until every fixed slot in the cycle is complete. */
 		for (uint8_t slot = 0U; slot < RECEPTEC_PEER_COUNT; ++slot) {
-			print_receptec_slot_result(&receptec_peers[slot], cycle,
-						   slot, &results[slot]);
+			if (slot_operations[slot] == RECEPTEC_SLOT_WRONG_EUI) {
+				print_wrong_destination_result(&receptec_peers[slot], slot,
+							       &wrong_results[slot]);
+			} else if (slot_operations[slot] == RECEPTEC_SLOT_DATA) {
+				print_receptec_slot_result(&receptec_peers[slot], cycle, slot,
+							   &results[slot]);
+			}
+		}
+		if (wrong_destination_cycle) {
+			wrong_destination_probe_done = true;
 		}
 		if ((live_peer->successful_exchanges % 100U) == 0U &&
 		    live_peer->successful_exchanges != 0U) {
@@ -1023,20 +1407,26 @@ static int run_receptec_data(void)
 			       live_peer->successful_exchanges, cycle);
 			print_protocol_counters(&live_peer->counters);
 		}
-		if (!out_of_slot_probe_done &&
-		    CONFIG_RECEPTEC_TEST_OUT_OF_SLOT_AFTER > 0 &&
+		if (runtime_action && control.action.kind == RECEPTEC_COMMAND_TEST_OUT_OF_SLOT) {
+			uint32_t probe_epoch =
+				cycle_epoch + DW3110_OUT_OF_SLOT_PROBE_US * DW3110_UUS_TO_DX_TIME;
+
+			run_out_of_slot_probe(&receptec_peers[control.action.peer_slot],
+					      probe_epoch);
+		}
+		if (runtime_action) {
+			clear_runtime_operation(&control);
+		}
+		if (!out_of_slot_probe_done && CONFIG_RECEPTEC_TEST_OUT_OF_SLOT_AFTER > 0 &&
 		    out_of_slot_peer->successful_exchanges >=
 			    CONFIG_RECEPTEC_TEST_OUT_OF_SLOT_AFTER) {
 			uint32_t probe_epoch =
-				cycle_epoch +
-				DW3110_OUT_OF_SLOT_PROBE_US *
-					DW3110_UUS_TO_DX_TIME;
+				cycle_epoch + DW3110_OUT_OF_SLOT_PROBE_US * DW3110_UUS_TO_DX_TIME;
 
 			run_out_of_slot_probe(out_of_slot_peer, probe_epoch);
 			out_of_slot_probe_done = true;
 		}
-		cycle_epoch += DW3110_SAMPLING_PERIOD_US *
-			       DW3110_UUS_TO_DX_TIME;
+		cycle_epoch += DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DX_TIME;
 	}
 	return 0;
 }
@@ -1063,6 +1453,15 @@ struct coletec_radio_runtime {
 	bool stop_requested;
 	bool stop_tx_selected;
 };
+
+static void count_coletec_filter_rejection(
+	struct coletec_radio_runtime *runtime, uint32_t radio_status)
+{
+	ARG_UNUSED(runtime);
+	if ((radio_status & DWT_INT_ARFE_BIT_MASK) != 0U) {
+		coletec_frame_filter_rejections++;
+	}
+}
 
 static uint32_t remaining_rx_us(uint32_t deadline_dx)
 {
@@ -1384,6 +1783,7 @@ static bool listen_until_slot_deadline(
 			return valid_request_seen;
 		}
 		radio_status = wait_for_rx_event();
+		count_coletec_filter_rejection(runtime, radio_status);
 		if (read_coletec_request(radio_status, &request,
 					 &request_rx_timestamp,
 					 &dt_sampling_us) == 0) {
@@ -1412,6 +1812,7 @@ static bool listen_open_period(struct coletec_radio_runtime *runtime,
 		if (radio_status == 0U) {
 			break;
 		}
+		count_coletec_filter_rejection(runtime, radio_status);
 		if (read_coletec_request(radio_status, &request,
 					 &request_rx_timestamp,
 					 &dt_sampling_us) == 0) {
@@ -1456,6 +1857,10 @@ static void listen_synchronized_slot(struct coletec_radio_runtime *runtime,
 		uint32_t radio_status = wait_for_rx_event();
 		uint16_t dt_sampling_us;
 
+		if ((radio_status & DWT_INT_ARFE_BIT_MASK) != 0U) {
+			coletec_slot_first_event_filter_rejections++;
+		}
+		count_coletec_filter_rejection(runtime, radio_status);
 		if (read_coletec_request(radio_status, &request,
 					 &request_rx_timestamp,
 					 &dt_sampling_us) == 0) {
@@ -1473,10 +1878,16 @@ static void listen_synchronized_slot(struct coletec_radio_runtime *runtime,
 		DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DX_TIME;
 	coletec_sync_miss_slot(sync);
 	if (sync->state == COLETEC_SYNC_DISCOVERY) {
-		printk("COLETEC synchronization lost after 5 missed slots\n");
+		printk("COLETEC synchronization lost after 5 missed slots "
+		       "hw-filter-rejections=%u first-event-filter=%u\n",
+		       coletec_frame_filter_rejections,
+		       coletec_slot_first_event_filter_rejections);
 	} else {
-		printk("COLETEC slot missed: count=%u next-guard=%u us\n",
-		       sync->missed_slots, coletec_sync_guard_us(sync));
+		printk("COLETEC slot missed: count=%u next-guard=%u us "
+		       "hw-filter-rejections=%u first-event-filter=%u\n",
+		       sync->missed_slots, coletec_sync_guard_us(sync),
+		       coletec_frame_filter_rejections,
+		       coletec_slot_first_event_filter_rejections);
 	}
 }
 
@@ -1493,6 +1904,12 @@ static int run_coletec_data(void)
 	printk("Protocol test: COLETEC synchronized DATA responder\n");
 	printk("Protocol fault injection: drop responses=%u bad responses=%u\n",
 	       CONFIG_RECEPTEC_TEST_DROP_ACKS, CONFIG_RECEPTEC_TEST_BAD_ACKS);
+	coletec_frame_filter_rejections = 0U;
+	coletec_slot_first_event_filter_rejections = 0U;
+	status = configure_coletec_frame_filter();
+	if (status < 0) {
+		return status;
+	}
 	status = preload_coletec_data();
 	if (status < 0) {
 		return status;
@@ -1675,13 +2092,169 @@ int dw3110_radio_start_protocol(bool is_receptec)
 		return -EALREADY;
 	}
 
+	k_msgq_purge(&receptec_command_queue);
+	atomic_set(&control_slotted_running,
+		   is_receptec ? RECEPTEC_SLOTTED_AUTOSTART : 0);
+	atomic_set(&control_periodic_sync_running, 0);
+	atomic_set(&control_periodic_sync_peer_slot, 0);
+	atomic_set(&control_operation_pending, 0);
+	atomic_set(&control_operation, DW3110_RADIO_OPERATION_NONE);
+	atomic_set(&control_cycle, 0);
 	uwb_thread_is_receptec = is_receptec;
 	uwb_thread_started = true;
-	k_thread_create(&uwb_thread, uwb_thread_stack,
-			K_THREAD_STACK_SIZEOF(uwb_thread_stack),
+	k_thread_create(&uwb_thread, uwb_thread_stack, K_THREAD_STACK_SIZEOF(uwb_thread_stack),
 			uwb_thread_entry, NULL, NULL, NULL,
-			K_PRIO_PREEMPT(DW3110_UWB_THREAD_PRIORITY), 0U,
-			K_NO_WAIT);
+			K_PRIO_PREEMPT(DW3110_UWB_THREAD_PRIORITY), 0U, K_NO_WAIT);
 	(void)k_thread_name_set(&uwb_thread, "uwb_protocol");
+	return 0;
+}
+
+static int submit_receptec_command(const struct receptec_command *command,
+				   enum dw3110_radio_operation operation)
+{
+	bool action = command_is_action(command->kind);
+
+	if (!uwb_thread_started) {
+		return -EAGAIN;
+	}
+	if (!uwb_thread_is_receptec) {
+		return -ENOTSUP;
+	}
+	if (command->peer_slot >= RECEPTEC_PEER_COUNT &&
+	    command->kind != RECEPTEC_COMMAND_TEST_SILENCE &&
+	    command->kind != RECEPTEC_COMMAND_SLOTTED_SET &&
+	    command->kind != RECEPTEC_COMMAND_PERIODIC_SYNC_SET &&
+	    command->kind != RECEPTEC_COMMAND_ABORT) {
+		return -EINVAL;
+	}
+	if (action && !atomic_cas(&control_operation_pending, 0, 1)) {
+		return -EBUSY;
+	}
+	if (action) {
+		atomic_set(&control_operation, operation);
+	}
+	if (k_msgq_put(&receptec_command_queue, command, K_NO_WAIT) < 0) {
+		if (action) {
+			atomic_set(&control_operation, DW3110_RADIO_OPERATION_NONE);
+			atomic_set(&control_operation_pending, 0);
+		}
+		return -ENOMSG;
+	}
+	return 0;
+}
+
+int dw3110_radio_set_slotted(bool enable)
+{
+	const struct receptec_command command = {
+		.kind = RECEPTEC_COMMAND_SLOTTED_SET,
+		.enable = enable,
+	};
+
+	return submit_receptec_command(&command, DW3110_RADIO_OPERATION_NONE);
+}
+
+int dw3110_radio_set_periodic_sync(bool enable, uint8_t peer_slot)
+{
+	const struct receptec_command command = {
+		.kind = RECEPTEC_COMMAND_PERIODIC_SYNC_SET,
+		.peer_slot = peer_slot,
+		.enable = enable,
+	};
+
+	if (enable && peer_slot >= RECEPTEC_PEER_COUNT) {
+		return -EINVAL;
+	}
+	return submit_receptec_command(&command, DW3110_RADIO_OPERATION_NONE);
+}
+
+int dw3110_radio_request_data(uint8_t peer_slot)
+{
+	const struct receptec_command command = {
+		.kind = RECEPTEC_COMMAND_DATA_REQ,
+		.peer_slot = peer_slot,
+	};
+
+	return submit_receptec_command(&command, DW3110_RADIO_OPERATION_DATA_REQ);
+}
+
+int dw3110_radio_run_test(enum dw3110_radio_test test, uint8_t peer_slot, uint32_t argument)
+{
+	struct receptec_command command = {
+		.peer_slot = peer_slot,
+		.argument = argument,
+	};
+	enum dw3110_radio_operation operation;
+
+	switch (test) {
+	case DW3110_RADIO_TEST_SYNC:
+		command.kind = RECEPTEC_COMMAND_TEST_SYNC;
+		operation = DW3110_RADIO_OPERATION_TEST_SYNC;
+		break;
+	case DW3110_RADIO_TEST_STOP:
+		command.kind = RECEPTEC_COMMAND_TEST_STOP;
+		operation = DW3110_RADIO_OPERATION_TEST_STOP;
+		break;
+	case DW3110_RADIO_TEST_WRONG_EUI:
+		command.kind = RECEPTEC_COMMAND_TEST_WRONG_EUI;
+		operation = DW3110_RADIO_OPERATION_TEST_WRONG_EUI;
+		break;
+	case DW3110_RADIO_TEST_OUT_OF_SLOT:
+		if (atomic_get(&control_slotted_running) == 0) {
+			return -EACCES;
+		}
+		command.kind = RECEPTEC_COMMAND_TEST_OUT_OF_SLOT;
+		operation = DW3110_RADIO_OPERATION_TEST_OUT_OF_SLOT;
+		break;
+	case DW3110_RADIO_TEST_SILENCE:
+		if (argument == 0U || argument > 1000U) {
+			return -EINVAL;
+		}
+		command.kind = RECEPTEC_COMMAND_TEST_SILENCE;
+		command.peer_slot = 0U;
+		operation = DW3110_RADIO_OPERATION_TEST_SILENCE;
+		break;
+	default:
+		return -EINVAL;
+	}
+	return submit_receptec_command(&command, operation);
+}
+
+int dw3110_radio_abort_test(void)
+{
+	const struct receptec_command command = {
+		.kind = RECEPTEC_COMMAND_ABORT,
+	};
+
+	return submit_receptec_command(&command, DW3110_RADIO_OPERATION_NONE);
+}
+
+int dw3110_radio_get_control_status(struct dw3110_radio_control_status *status)
+{
+	if (status == NULL) {
+		return -EINVAL;
+	}
+	if (!uwb_thread_started) {
+		return -EAGAIN;
+	}
+
+	status->receptec_role = uwb_thread_is_receptec;
+	status->slotted_running = atomic_get(&control_slotted_running) != 0;
+	status->periodic_sync_running = atomic_get(&control_periodic_sync_running) != 0;
+	status->periodic_sync_peer_slot = (uint8_t)atomic_get(&control_periodic_sync_peer_slot);
+	status->operation_pending = atomic_get(&control_operation_pending) != 0;
+	status->operation = (enum dw3110_radio_operation)atomic_get(&control_operation);
+	status->cycle = (uint32_t)atomic_get(&control_cycle);
+	return 0;
+}
+
+int dw3110_radio_get_peer_info(uint8_t peer_slot, struct dw3110_radio_peer_info *info)
+{
+	if (info == NULL || peer_slot >= RECEPTEC_PEER_COUNT) {
+		return -EINVAL;
+	}
+
+	info->name = receptec_peers[peer_slot].name;
+	info->eui = receptec_peers[peer_slot].eui;
+	info->expected_present = receptec_peers[peer_slot].expected_present;
 	return 0;
 }

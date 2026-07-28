@@ -22,6 +22,7 @@ target_sources(app PRIVATE
     src/coletec_sync.c
     src/dw3110_port.c
     src/dw3110_radio.c
+    src/uwb_shell.c
     ${QORVO_DRIVER_DIR}/deca_compat.c
     ${QORVO_DRIVER_DIR}/deca_interface.c
     ${QORVO_DRIVER_DIR}/deca_rsl.c

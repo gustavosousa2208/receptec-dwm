@@ -73,7 +73,7 @@ Both ends must use the same profile.
 | STS | Disabled |
 | PDOA | Disabled |
 | Hardware FCS | Enabled |
-| Hardware frame filtering | Disabled for initial integration |
+| Hardware frame filtering | COLETEC destination EUI-64 enabled |
 | Sampling period | 1,000 ms |
 | Slot duration | 20,000 us |
 | Response delay | 1,000 us from request RX RMARKER |
@@ -214,7 +214,8 @@ west build -p always -b decawave_dwm3001cdk/nrf52833 -d build .
 ```
 
 Flashing is permitted only when the selected probes and roles have been
-confirmed.
+confirmed. The normal image remains idle after boot. Connect to the RECEPTEC
+UART and enter `uwb slotted start` before collecting normal schedule evidence.
 
 ### 5.3 Fault configuration
 
@@ -246,7 +247,50 @@ Existing fragments:
 The build must be made pristine again without `EXTRA_CONF_FILE` after fault
 testing. Verify the final `.config` contains zero for every test fault option.
 
-### 5.4 Long qualification monitor
+### 5.4 Runtime UART shell
+
+Connect at 115,200 bit/s and press Enter:
+
+```sh
+picocom -b 115200 /dev/cu.usbmodem0007602167371
+```
+
+The shell queues commands to the exclusive UWB owner. A command does not call
+the Qorvo driver from the shell thread and therefore cannot race the protocol
+thread. State changes normally take effect after the current one-second cycle
+finishes. The normal image boots with the schedule stopped; begin normal
+traffic with `uwb slotted start`.
+
+Manual operation:
+
+| Command | Result |
+|---|---|
+| `uwb status` | Show active modes, cycle, and queued/running operation |
+| `uwb peers` | Show slot numbers, peer names, EUI-64 values, and expected presence |
+| `uwb slotted start` | Start the normal four-peer one-second schedule |
+| `uwb slotted stop` | Finish the current cycle, force radio idle, then wait |
+| `uwb sync start <slot>` | Send SYNC every second to one peer |
+| `uwb sync stop` | Stop periodic SYNC |
+| `uwb data_req <slot>` | Queue one DATA_REQ/DATA transaction |
+
+Runtime test battery:
+
+| Command | Test |
+|---|---|
+| `uwb test list` | List runtime tests and external prerequisites |
+| `uwb test sync <slot>` | One addressed SYNC/ACK |
+| `uwb test stop <slot>` | STOP/STOP_ACK; the peer must be reset afterward |
+| `uwb test wrong_eui <slot>` | One valid frame with an unknown destination EUI-64 |
+| `uwb test out_of_slot <slot>` | Correctly addressed request at 200 ms; slotted mode must be running |
+| `uwb test silence <cycles>` | Suppress every UWB request for the selected one-second cycles |
+| `uwb test abort` | Abort a queued test or active silence at a safe boundary |
+
+The shell cannot make a remote COLETEC deliberately drop a response or return
+a wrong sequence. Retry/drop and bad-sequence cases still require the matching
+COLETEC fault image. Collision testing still requires an independent
+transmitter.
+
+### 5.5 Long qualification monitor
 
 The DWM repository includes a dual-UART monitor:
 
@@ -259,7 +303,8 @@ python scripts/qualify-m5.py \
 
 It records both serial streams, counts completed transactions and attempt
 failures, and resets the consecutive-success count on final transaction
-failure.
+failure. Start the RECEPTEC schedule from its shell before launching the
+qualification monitor.
 
 Raw serial captures are stored under the ignored `logs/` directory. Important
 results are summarized in `receptec-dwm/MILESTONES.md`, but the raw logs are
@@ -454,6 +499,66 @@ had ended near 40.5 ms. The request produced a real response timeout, and the
 next scheduled slot-1 DATA transaction passed on attempt 1. This directly
 qualifies the protocol behavior outside the assigned receive interval.
 
+### 6.11 Hardware destination filtering — 2026-07-27
+
+The normal COLETEC receive path was configured with IEEE 802.15.4 Data Frame
+filtering and each COLETEC's local on-air EUI-64:
+
+- DWM surrogate/DW3110: `31:5D:02:D5:15:8C:FA:40`;
+- production QM33120W: `02:00:00:00:00:00:00:02`.
+
+After three correct exchanges per live peer, the RECEPTEC replaced one normal
+request in each assigned slot with a valid-FCS DATA_REQ addressed to an
+unknown EUI-64:
+
+- slot 0 sent `B1:5D:02:D5:15:8C:FA:40`;
+- slot 1 sent `82:00:00:00:00:00:00:02`.
+
+Both requests produced a real response timeout. The first radio event in each
+assigned COLETEC slot reported the Qorvo hardware address-filter rejection
+event (`ARFE`, bit `0x20000000`):
+
+- DWM surrogate J-Link counter:
+  `coletec_slot_first_event_filter_rejections = 1`;
+- production RTT:
+  `hw-filter-rejections=7 first-event-filter=1`.
+
+The larger production cumulative count includes other peers heard during
+initial discovery and guard overlap. `first-event-filter=1` is the decisive
+measurement: the first frame in the assigned slot was rejected by hardware
+before software decoding.
+
+On the next cycle both live peers recovered on attempt 2, because the rejected
+request counted as one missed synchronized slot. Both returned to attempt 1
+from the following cycle. Software validation of destination, source, type,
+length, and sequence remains enabled after hardware acceptance.
+
+### 6.12 Runtime UWB shell — 2026-07-27
+
+The normal shell-enabled RECEPTEC image was exercised against both live
+COLETECs:
+
+- `uwb status` and `uwb peers` reported the four configured slots correctly;
+- `uwb slotted stop` completed the active cycle, forced the radio idle, and
+  stopped all periodic output;
+- `uwb data_req 1` completed one production DATA transaction while the normal
+  schedule remained stopped;
+- `uwb sync start 1` ran independently once per second, recovered the
+  production COLETEC from discovery, and then completed on attempt 1;
+- `uwb sync stop` returned the radio to idle;
+- `uwb slotted start` restored the four-peer schedule and both live peers;
+- one-shot SYNC/ACK completed on production slot 1 at attempt 1;
+- runtime wrong-EUI and out-of-slot tests both produced no response and passed;
+- a two-cycle silence completed and recovered automatically;
+- a five-cycle silence was aborted safely, after which normal traffic
+  recovered;
+- final status was `slotted=running`, `periodic SYNC=stopped`, and
+  `one-shot/test=none`.
+
+The production antenna fault made some post-silence recovery requests require
+attempt 2, but steady traffic returned to attempt 1. No shell callback touched
+the radio directly; every operation was executed by the existing UWB owner.
+
 ## 7. Coverage calculation
 
 This project does not currently run `gcov`, `lcov`, or compiler-based
@@ -472,7 +577,7 @@ The percentage below is **protocol scenario coverage**. It is calculated from
 | 2 | Byte-exact frame codec | Pass | 1.0 | Host vectors and DWM interoperability |
 | 3 | Malformed-frame software validation | Partial | 0.5 | Host coverage is broad; OTA valid-FCS injection covered mainly wrong sequence |
 | 4 | Hardware-generated/validated FCS | Pass | 1.0 | Verified through DW3xxx RX-good events |
-| 5 | Source and destination filtering | Partial | 0.5 | Correct addressing and slot-1 wrong destination observed; no dedicated rogue transmitter |
+| 5 | Source and destination filtering | Pass | 1.0 | Wrong destination injected in both live assigned slots; DW3110 and QM33120W reported hardware ARFE and produced no response |
 | 6 | Opaque DATA lengths and freezing | Partial | 0.5 | Zero and maximum DATA host boundaries plus maximum OTA DATA tested; intermediate lengths are intentionally not enumerated |
 | 7 | Sequence matching and wraparound | Pass | 1.0 | Wrong sequences rejected; DWM and production runs crossed wraparound |
 | 8 | Response at RX RMARKER + 1,000 us | Pass | 1.0 | DWM and production QM33120W hardware timestamp qualification |
@@ -488,13 +593,13 @@ The percentage below is **protocol scenario coverage**. It is calculated from
 | 18 | Production nRF52840/QM33120W interoperability under BLE/IPC load | Partial | 0.5 | 298+ observed cycles passed with BLE advertising and STM32 IPC streaming; connected BLE notifications and long soak remain |
 
 ```text
-13 Pass + 5 Partial × 0.5 = 15.5 points
-15.5 / 18 = 86% scenario coverage
+14 Pass + 4 Partial × 0.5 = 16 points
+16 / 18 = 89% scenario coverage
 ```
 
 Important interpretation:
 
-- **86% does not mean the production COLETEC is 86% validated.**
+- **89% does not mean the production COLETEC is 89% validated.**
 - Production baseline OTA interoperability and timing now pass, but retries,
   recovery, connected-BLE load, and the 1,000-transaction production soak have
   not yet been fully repeated on final hardware. Production DATA, SYNC/ACK, and
@@ -506,7 +611,6 @@ Important interpretation:
 |---|---|---|
 | UWB timing during connected BLE load | BLE advertising and STM32 streaming passed, but BLE was not connected | BLE connection plus active notifications while repeating normal/retry/STOP |
 | Intentional simultaneous collision | No independent third transmitter | Two programmable tags or a UWB packet injector |
-| Dedicated wrong-address OTA injection | Reserved slot gives only indirect coverage | Third transmitter with selectable EUI |
 | Every DATA payload length 0–105 | Not planned: FCS protects all lengths and exhaustive enumeration adds little protocol evidence | Add selected intermediate lengths only if a length-dependent defect appears |
 | Real oscillator drift | Silence injection tests loss logic, not physical ppm drift | Long run, temperature variation, timestamp drift capture |
 | Range/orientation/body-loss test | Bench testing was at short uncontrolled distance | Agreed distances, antenna orientations, athlete/body phantom |
@@ -516,7 +620,6 @@ Important interpretation:
 | Malformed-FCS firmware behavior | DW3xxx hardware discards bad FCS before firmware | Packet injector and hardware RX-error counter analysis |
 | Long production soak | Initial production run covered 298+ observed RECEPTEC cycles and 425 production responses | Minimum 1,000 uninterrupted transactions, preferably overnight |
 | Security/STS | Intentionally excluded from protocol v1.0 | Agreed key, IV, persistence, update, and resynchronization design |
-| Hardware address filtering | Intentionally disabled for initial integration | Later profile decision after software interop is stable |
 
 ## 9. Production COLETEC qualification sequence
 
@@ -532,6 +635,8 @@ Use this order with the communications team. Do not begin with a long soak.
 - timing-critical transfers use polling EasyDMA inside the exclusive UWB owner,
   avoiding a scheduler round trip per small SPI register access;
 - cached TX frame control and delayed time are written as one register burst;
+- QM33120W destination EUI-64 filtering is enabled while complete software
+  validation remains in place;
 - delayed responses use an absolute TX time calculated from the request RX
   RMARKER, avoiding the extra SPI correction performed by `DLY_RS`;
 - RX is enabled only for the assigned slot/guard or a discovery ON interval;
@@ -597,6 +702,7 @@ Gate 1 still requires a clean build in the intended NCS v3.2.1 environment.
 - drop response 1 and recover on attempt 2;
 - drop responses 1 and 2 and recover on attempt 3;
 - send a wrong sequence and verify rejection;
+- send a wrong destination EUI-64 and verify a hardware `ARFE` event;
 - verify duplicate payload remains byte-identical;
 - verify next nominal slot has no retry-induced drift.
 
@@ -666,10 +772,11 @@ request for the next COLETEC from changing state or generating a response.
 Both devices must know when RX is required. Fixed offsets make the complete slot
 and `DT_sampling` correction deterministic.
 
-### Why is hardware frame filtering disabled?
+### What does hardware frame filtering validate?
 
-The v1.0 handoff deliberately begins with software validation so integration
-failures remain visible. Hardware FCS checking remains enabled.
+Each COLETEC radio rejects IEEE Data Frames whose destination EUI-64 does not
+match its programmed local address. The RECEPTEC source EUI-64, packet type,
+length, sequence, and protocol state are still validated in software.
 
 ### Why is STS disabled?
 
