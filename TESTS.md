@@ -312,6 +312,48 @@ not currently versioned. For partner qualification, preserve the raw log,
 firmware commit IDs, `.config`, board IDs, distance, orientation, and test date
 together.
 
+### 5.6 Long-duration drift soak
+
+`qualify-m5.py` proves ~1,000 transactions (~17 minutes); it does not
+demonstrate clock-drift stability over real time. `scripts/qualify-soak.py`
+runs the same dual-UART capture with no fixed transaction target, intended
+for an overnight or multi-day run against the normal four-peer DATA_REQ/DATA
+schedule:
+
+```sh
+python scripts/qualify-soak.py \
+  --receptec /dev/tty.usbmodem0007602167371 \
+  --coletec /dev/tty.usbmodem0007602167551 \
+  --duration-hours 12
+```
+
+Omit `--duration-hours` to run until interrupted (Ctrl+C). Start the
+RECEPTEC schedule from its shell (`uwb slotted start`) before launching the
+monitor, same as §5.5.
+
+It parses telemetry the firmware already emits — no firmware change is
+required:
+
+- `Protocol counters` (cumulative txns/attempts/timeouts/rx_errors/late),
+  dumped every 100 successful exchanges and on every failure;
+- `COLETEC slot missed` / guard-window growth and `COLETEC synchronization
+  lost` (drift-recovery events — the primary signal a long soak is for);
+- `COLETEC discovery reentry` (successful resync after a loss);
+- `COLETEC timing` (`IRQ-to-arm` and `max-IRQ-to-arm`), sampled every 10
+  responses.
+
+Output, all under `logs/`:
+
+- the same raw dual-role log as §5.5;
+- a CSV with one row per parsed event, so drift/latency trends can be
+  plotted over the run;
+- a periodic JSON checkpoint (default every 5 minutes) so an interrupted or
+  crashed overnight run still leaves usable data.
+
+This measures long-run *stability* at bench ambient temperature, not
+full-range oscillator ppm characterization — real temperature variation is
+a separate, still-open item (see §8).
+
 ## 6. Executed test cases and evidence
 
 ### 6.1 Wire format and validation
@@ -612,13 +654,13 @@ Important interpretation:
 | UWB timing during connected BLE load | BLE advertising and STM32 streaming passed, but BLE was not connected | BLE connection plus active notifications while repeating normal/retry/STOP |
 | Intentional simultaneous collision | No independent third transmitter | Two programmable tags or a UWB packet injector |
 | Every DATA payload length 0–105 | Not planned: FCS protects all lengths and exhaustive enumeration adds little protocol evidence | Add selected intermediate lengths only if a length-dependent defect appears |
-| Real oscillator drift | Silence injection tests loss logic, not physical ppm drift | Long run, temperature variation, timestamp drift capture |
+| Real oscillator drift | `scripts/qualify-soak.py` (§5.6) captures timestamp/guard drift over a long bench run; real ppm characterization still needs temperature variation | Overnight/multi-day run with `qualify-soak.py`, then a temperature-varied run |
 | Range/orientation/body-loss test | Bench testing was at short uncontrolled distance | Agreed distances, antenna orientations, athlete/body phantom |
 | Interference/channel occupancy | No controlled interferer or spectrum setup | UWB interferer/sniffer and repeatable RF environment |
 | External on-air timing measurement | Current evidence uses internal RMARKER timestamps | UWB sniffer or synchronized logic-analyzer/radio instrumentation |
 | Current consumption by radio state | Original DWM test optimized behavior, not production power | Production board plus current profiler |
 | Malformed-FCS firmware behavior | DW3xxx hardware discards bad FCS before firmware | Packet injector and hardware RX-error counter analysis |
-| Long production soak | Initial production run covered 298+ observed RECEPTEC cycles and 425 production responses | Minimum 1,000 uninterrupted transactions, preferably overnight |
+| Long production soak | Initial production run covered 298+ observed RECEPTEC cycles and 425 production responses | Run `scripts/qualify-soak.py` (§5.6) overnight against production hardware; Gate 8 minimum is 1,000 transactions but an unattended overnight run is preferred |
 | Security/STS | Intentionally excluded from protocol v1.0 | Agreed key, IV, persistence, update, and resynchronization design |
 
 ## 9. Production COLETEC qualification sequence
