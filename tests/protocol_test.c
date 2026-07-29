@@ -55,6 +55,32 @@ static void test_sync_vector(void)
 	assert(receptec_protocol_decode_dt_sampling(decoded.payload) == 0U);
 }
 
+static void test_sync_ack_contract(void)
+{
+	uint8_t encoded[RECEPTEC_PROTOCOL_MAX_LOGICAL_SIZE];
+	struct receptec_frame decoded;
+	struct receptec_frame ack = frame(RECEPTEC_PACKET_ACK, NULL, 0U);
+	enum receptec_packet_type response;
+	size_t length = 0U;
+
+	memcpy(ack.destination, receptec_eui, sizeof(receptec_eui));
+	memcpy(ack.source, coletec_eui, sizeof(coletec_eui));
+	assert(receptec_protocol_expected_response(RECEPTEC_PACKET_SYNC,
+						   &response) ==
+	       RECEPTEC_PROTOCOL_OK);
+	assert(response == RECEPTEC_PACKET_ACK);
+	assert(receptec_protocol_encode(encoded, sizeof(encoded), &ack,
+					&length) == RECEPTEC_PROTOCOL_OK);
+	assert(length == RECEPTEC_PROTOCOL_HEADER_SIZE);
+	assert(receptec_protocol_decode(encoded, length, &decoded) ==
+	       RECEPTEC_PROTOCOL_OK);
+	assert(decoded.type == RECEPTEC_PACKET_ACK);
+	assert(decoded.payload_length == 0U);
+	assert(memcmp(decoded.destination, receptec_eui,
+		      sizeof(receptec_eui)) == 0);
+	assert(memcmp(decoded.source, coletec_eui, sizeof(coletec_eui)) == 0);
+}
+
 static void test_maximum_data(void)
 {
 	uint8_t payload[RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE];
@@ -204,6 +230,7 @@ static void test_coletec_discovery_backoff(void)
 int main(void)
 {
 	test_sync_vector();
+	test_sync_ack_contract();
 	test_dt_sampling_values();
 	test_maximum_data();
 	test_rejections();
