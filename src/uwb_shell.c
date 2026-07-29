@@ -89,6 +89,7 @@ static int cmd_status(const struct shell *shell, size_t argc, char **argv)
 	}
 
 	shell_print(shell, "role: %s", status.receptec_role ? "RECEPTEC" : "COLETEC");
+	shell_print(shell, "protocol: %s", status.protocol_running ? "running" : "idle");
 	shell_print(shell, "slotted schedule: %s", status.slotted_running ? "running" : "stopped");
 	if (status.periodic_sync_running) {
 		shell_print(shell, "periodic SYNC: running on peer slot %u",
@@ -173,6 +174,15 @@ static int cmd_data_req(const struct shell *shell, size_t argc, char **argv)
 	}
 	return report_submission(shell, dw3110_radio_request_data((uint8_t)slot),
 				 "one-shot DATA_REQ");
+}
+
+static int cmd_coletec_start(const struct shell *shell, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+
+	return report_submission(shell, dw3110_radio_enable_coletec(),
+				 "COLETEC SYNC receiver start");
 }
 
 static int run_peer_test(const struct shell *shell, const char *slot_text,
@@ -272,6 +282,11 @@ SHELL_STATIC_SUBCMD_SET_CREATE(sub_sync,
 			       SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
+	sub_coletec,
+	SHELL_CMD(start, NULL, "Enable COLETEC RX and wait for SYNC", cmd_coletec_start),
+	SHELL_SUBCMD_SET_END);
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_test, SHELL_CMD(list, NULL, "List runtime and external test cases", cmd_test_list),
 	SHELL_CMD_ARG(sync, NULL, "Run one SYNC/ACK: sync <peer-slot>", cmd_test_sync, 2, 0),
 	SHELL_CMD_ARG(stop, NULL, "Run STOP/STOP_ACK (peer reset required): stop <peer-slot>",
@@ -290,6 +305,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD(peers, NULL, "List fixed peer slots and EUI-64 values", cmd_peers),
 	SHELL_CMD(slotted, &sub_slotted, "Control the normal slotted schedule", NULL),
 	SHELL_CMD(sync, &sub_sync, "Control periodic SYNC", NULL),
+	SHELL_CMD(coletec, &sub_coletec, "Control the COLETEC receiver", NULL),
 	SHELL_CMD_ARG(data_req, NULL, "Queue one DATA_REQ/DATA transaction: data_req <peer-slot>",
 		      cmd_data_req, 2, 0),
 	SHELL_CMD(test, &sub_test, "Run RECEPTEC-driven protocol tests", NULL),

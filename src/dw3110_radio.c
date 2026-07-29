@@ -175,6 +175,7 @@ static volatile uint32_t coletec_slot_first_event_filter_rejections;
 static K_THREAD_STACK_DEFINE(uwb_thread_stack,
 			     DW3110_UWB_THREAD_STACK_SIZE);
 static struct k_thread uwb_thread;
+static bool uwb_protocol_configured;
 static bool uwb_thread_started;
 static bool uwb_thread_is_receptec;
 
@@ -2086,9 +2087,18 @@ static void uwb_thread_entry(void *unused_a, void *unused_b, void *unused_c)
 	printk("UWB protocol thread exited: status=%d\n", status);
 }
 
+static void start_uwb_thread(void)
+{
+	uwb_thread_started = true;
+	k_thread_create(&uwb_thread, uwb_thread_stack, K_THREAD_STACK_SIZEOF(uwb_thread_stack),
+			uwb_thread_entry, NULL, NULL, NULL,
+			K_PRIO_PREEMPT(DW3110_UWB_THREAD_PRIORITY), 0U, K_NO_WAIT);
+	(void)k_thread_name_set(&uwb_thread, "uwb_protocol");
+}
+
 int dw3110_radio_start_protocol(bool is_receptec)
 {
-	if (uwb_thread_started) {
+	if (uwb_protocol_configured) {
 		return -EALREADY;
 	}
 
@@ -2101,11 +2111,29 @@ int dw3110_radio_start_protocol(bool is_receptec)
 	atomic_set(&control_operation, DW3110_RADIO_OPERATION_NONE);
 	atomic_set(&control_cycle, 0);
 	uwb_thread_is_receptec = is_receptec;
-	uwb_thread_started = true;
-	k_thread_create(&uwb_thread, uwb_thread_stack, K_THREAD_STACK_SIZEOF(uwb_thread_stack),
-			uwb_thread_entry, NULL, NULL, NULL,
-			K_PRIO_PREEMPT(DW3110_UWB_THREAD_PRIORITY), 0U, K_NO_WAIT);
-	(void)k_thread_name_set(&uwb_thread, "uwb_protocol");
+	uwb_protocol_configured = true;
+
+	if (is_receptec) {
+		start_uwb_thread();
+	} else {
+		printk("COLETEC protocol idle; run 'uwb coletec start' to wait for SYNC\n");
+	}
+	return 0;
+}
+
+int dw3110_radio_enable_coletec(void)
+{
+	if (!uwb_protocol_configured) {
+		return -EAGAIN;
+	}
+	if (uwb_thread_is_receptec) {
+		return -ENOTSUP;
+	}
+	if (uwb_thread_started) {
+		return -EALREADY;
+	}
+
+	start_uwb_thread();
 	return 0;
 }
 
@@ -2114,7 +2142,7 @@ static int submit_receptec_command(const struct receptec_command *command,
 {
 	bool action = command_is_action(command->kind);
 
-	if (!uwb_thread_started) {
+	if (!uwb_protocol_configured) {
 		return -EAGAIN;
 	}
 	if (!uwb_thread_is_receptec) {
@@ -2233,11 +2261,12 @@ int dw3110_radio_get_control_status(struct dw3110_radio_control_status *status)
 	if (status == NULL) {
 		return -EINVAL;
 	}
-	if (!uwb_thread_started) {
+	if (!uwb_protocol_configured) {
 		return -EAGAIN;
 	}
 
 	status->receptec_role = uwb_thread_is_receptec;
+	status->protocol_running = uwb_thread_started;
 	status->slotted_running = atomic_get(&control_slotted_running) != 0;
 	status->periodic_sync_running = atomic_get(&control_periodic_sync_running) != 0;
 	status->periodic_sync_peer_slot = (uint8_t)atomic_get(&control_periodic_sync_peer_slot);

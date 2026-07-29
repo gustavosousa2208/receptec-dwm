@@ -28,6 +28,7 @@ enum dw3110_radio_test {
 
 struct dw3110_radio_control_status {
 	bool receptec_role;
+	bool protocol_running;
 	bool slotted_running;
 	bool periodic_sync_running;
 	bool operation_pending;
@@ -44,6 +45,7 @@ struct dw3110_radio_peer_info {
 
 int dw3110_radio_init(void);
 int dw3110_radio_start_protocol(bool is_receptec);
+int dw3110_radio_enable_coletec(void);
 int dw3110_radio_set_slotted(bool enable);
 int dw3110_radio_set_periodic_sync(bool enable, uint8_t peer_slot);
 int dw3110_radio_request_data(uint8_t peer_slot);
