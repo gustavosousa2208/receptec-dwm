@@ -17,6 +17,25 @@ The active baseline is **UWB RECEPTEC↔COLETEC v1.0**. Shared or tunable values
 must be changed on both endpoints through the process in
 [`contracts/VERSIONS.md`](contracts/VERSIONS.md).
 
+### Protocol idea versus current implementation
+
+The v1.0 contract remains unchanged. The current bench firmware intentionally
+deviates from one tunable timing value while we validate a reliability fix:
+
+| Item | Protocol v1.0 | Current implementation | Status |
+|---|---:|---:|---|
+| Sampling period | 1,000 ms | 1,000 ms | Matches |
+| Slot duration | 20,000 µs | 20,000 µs | Matches |
+| Attempt offsets | 0 / 5,000 / 10,000 µs | 0 / 5,000 / 10,000 µs | Matches |
+| Response delay | 1,000 µs | 2,000 µs | Experimental deviation |
+| Time-unit meaning | SI microseconds | SI microseconds | Corrected to match |
+
+The response delay was increased after a 21.8-hour run found 608 COLETEC
+delayed-TX schedules that were armed too late. With 2,000 µs, a five-minute
+check completed 301/301 SYNC/ACK transactions with no new late schedules.
+Clock-drift telemetry and the soak logger are diagnostics only; they do not
+change the v1.0 wire format.
+
 ## Terms to use
 
 | Term | Meaning |
@@ -32,7 +51,7 @@ must be changed on both endpoints through the process in
 | EUI-64 | Eight-byte UWB protocol address |
 | J-Link serial | Debug-probe identifier; **not** an on-air address |
 
-Do not call the 1,000 µs response delay a slot. The current slot is 20,000 µs.
+Do not call the 2,000 µs response delay a slot. The current slot is 20,000 µs.
 
 ## Bench IDs
 
@@ -144,7 +163,7 @@ independently for each COLETEC. Retries keep the same sequence number.
 |---|---|---:|
 | `T_sampling` | Sampling cycle | 1,000 ms |
 | `T_slot` | One COLETEC slot | 20,000 µs |
-| `T_response_delay` | Request RX RMARKER to response TX RMARKER | 1,000 µs |
+| `T_response_delay` | Request RX RMARKER to response TX RMARKER | 2,000 µs |
 | `T_timeout` | RECEPTEC response timeout | 3,000 µs |
 | `N_attempts_max` | Total attempts, including the first | 3 |
 | Attempt offsets | Request positions inside the slot | 0 / 5,000 / 10,000 µs |
@@ -160,7 +179,7 @@ independently for each COLETEC. Retries keep the same sequence number.
 The response is scheduled in the UWB hardware time domain:
 
 ```text
-response_tx_rmarker = request_rx_rmarker + 1,000 us
+response_tx_rmarker = request_rx_rmarker + 2,000 us
 ```
 
 The request retry positions are fixed:
@@ -268,6 +287,45 @@ are asynchronous and print from the UWB owner thread.
 
 `uwb test stop <peer-slot>` sends the protocol STOP message. A successful STOP
 leaves that COLETEC stopped until it is reset.
+
+### Production COLETEC clock-drift soak
+
+For a single production COLETEC (QM33120W/DW3720, registered as peer slot 1),
+leave the normal four-peer schedule stopped and start only its periodic SYNC:
+
+```text
+uwb slotted stop
+uwb sync start 1
+```
+
+The RECEPTEC is monitored over its UART. The production COLETEC has no UART
+console, so the monitor starts SEGGER RTT Logger against its J-Link probe:
+
+```sh
+python scripts/qualify-soak.py \
+  --receptec ~/.serial/receptec-0 \
+  --coletec-rtt-probe 802003538 \
+  --duration-hours 24
+```
+
+Do not leave RTT Viewer, another RTT logger, a debugger, or a flashing process
+connected to that probe while the soak monitor is running. The old DWM COLETEC
+PoC can still be monitored over UART with `--coletec ~/.serial/coletec-0`.
+
+The production COLETEC compares each request's DW3720 RX RMARKER against the
+slot predicted from the previous request, before re-anchoring its schedule.
+Since the sampling period is exactly one second, the mean phase error in
+microseconds per cycle is numerically equal to relative frequency error in
+ppm. The CSV and checkpoint contain the latest phase sample, cumulative
+minimum/maximum/sum, sample count, and relative ppm. Positive ppm means request
+arrival advances in the COLETEC clock domain relative to its prediction;
+negative ppm means it falls behind.
+
+Stop the RECEPTEC traffic after the soak with:
+
+```text
+uwb sync stop
+```
 
 ## Validation status
 

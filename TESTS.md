@@ -1,5 +1,14 @@
 # UWB Protocol v1.0 Test Guide
 
+> **Implementation deviation (2026-07-30):** The canonical v1.0 contract
+> remains unchanged at a 1,000 µs response delay. The current bench firmware
+> experimentally uses 2,000 µs after the long soak exposed insufficient
+> delayed-TX scheduling margin. It also corrects the driver boundary so
+> protocol microseconds are SI microseconds rather than Qorvo's 1.0256 µs API
+> unit. A five-minute check completed 301/301 SYNC/ACK transactions at a
+> measured 0.999997 s mean cycle with zero new late response schedules.
+> Overnight reliability requalification remains required.
+
 Last updated: 2026-07-26
 
 This document explains how the RECEPTEC–COLETEC UWB protocol has been tested,

@@ -22,16 +22,14 @@
 #define DW3110_IDLE_RC_POLLS 1000U
 #define DW3110_TX_ANTENNA_DELAY 16385U
 #define DW3110_RX_ANTENNA_DELAY 16385U
-#define DW3110_UUS_TO_DX_TIME 256U
 #define DW3110_REQUEST_SETUP_US 2000U
-#define DW3110_RESPONSE_DELAY_US 1000U
+#define DW3110_RESPONSE_DELAY_US 2000U
 #define DW3110_RESPONSE_TIMEOUT_US 3000U
 #define DW3110_SAMPLING_PERIOD_US 1000000U
 #define DW3110_SLOT_DURATION_US 20000U
 #define DW3110_OUT_OF_SLOT_PROBE_US 200000U
 #define DW3110_ATTEMPT_COUNT 3U
 #define RECEPTEC_PEER_COUNT DW3110_RADIO_PEER_COUNT
-#define DW3110_UUS_TO_DTU 65536ULL
 #define DW3110_TIMESTAMP_MASK ((1ULL << 40) - 1ULL)
 #define DW3110_IRQ_EVENT_MASK \
 	(DWT_INT_TXFRS_BIT_MASK | DWT_INT_RXFCG_BIT_MASK | \
@@ -123,6 +121,28 @@ static const uint8_t receptec_eui[RECEPTEC_PROTOCOL_EUI64_SIZE] = {
 static const uint8_t coletec_eui[RECEPTEC_PROTOCOL_EUI64_SIZE] = {
 	0x31, 0x5D, 0x02, 0xD5, 0x15, 0x8C, 0xFA, 0x40,
 };
+
+/* DW3xxx time is based on 499.2 MHz: 1 us = 319488 / 5 DTU. */
+static uint64_t us_to_dtu(uint64_t us)
+{
+	return (us * 319488ULL + 2ULL) / 5ULL;
+}
+
+static uint32_t us_to_dx_time(uint32_t us)
+{
+	return (uint32_t)(((uint64_t)us * 1248ULL + 2ULL) / 5ULL);
+}
+
+/* Qorvo RX timeout arguments use 512 / 499.2 MHz = 40 / 39 us units. */
+static uint32_t us_to_rx_timeout(uint32_t us)
+{
+	return (uint32_t)(((uint64_t)us * 39ULL + 39ULL) / 40ULL);
+}
+
+static uint32_t dx_time_to_us(uint32_t dx_time)
+{
+	return (uint32_t)(((uint64_t)dx_time * 5ULL) / 1248ULL);
+}
 
 static int configure_coletec_frame_filter(void)
 {
@@ -384,8 +404,8 @@ static int64_t update_nominal_slot(uint64_t request_rx_timestamp,
 				   uint64_t *previous_nominal_slot)
 {
 	uint64_t next_nominal_slot = (request_rx_timestamp +
-		(uint64_t)DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DTU -
-		(uint64_t)dt_sampling_us * DW3110_UUS_TO_DTU) &
+		us_to_dtu(DW3110_SAMPLING_PERIOD_US) -
+		us_to_dtu(dt_sampling_us)) &
 		DW3110_TIMESTAMP_MASK;
 	uint64_t delta;
 
@@ -443,9 +463,9 @@ static int send_delayed_timed_request_attempt(
 	dwt_forcetrxoff();
 	clear_radio_events();
 	dwt_setrxaftertxdelay(0U);
-	dwt_setrxtimeout(DW3110_RESPONSE_TIMEOUT_US);
+	dwt_setrxtimeout(us_to_rx_timeout(DW3110_RESPONSE_TIMEOUT_US));
 	dwt_setdelayedtrxtime(slot_epoch +
-			     (uint32_t)dt_sampling_us * DW3110_UUS_TO_DX_TIME);
+			     us_to_dx_time(dt_sampling_us));
 	if (dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED) !=
 	    DWT_SUCCESS) {
 		counters->late_schedules++;
@@ -480,9 +500,9 @@ static int send_delayed_stop_attempt(
 	dwt_forcetrxoff();
 	clear_radio_events();
 	dwt_setrxaftertxdelay(0U);
-	dwt_setrxtimeout(DW3110_RESPONSE_TIMEOUT_US);
+	dwt_setrxtimeout(us_to_rx_timeout(DW3110_RESPONSE_TIMEOUT_US));
 	dwt_setdelayedtrxtime(slot_epoch +
-			     (uint32_t)attempt_offset_us * DW3110_UUS_TO_DX_TIME);
+			     us_to_dx_time(attempt_offset_us));
 	if (dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED) !=
 	    DWT_SUCCESS) {
 		counters->late_schedules++;
@@ -1253,7 +1273,7 @@ static int run_receptec_data(void)
 
 		if (control.epoch_reset) {
 			cycle_epoch = dwt_readsystimestamphi32() +
-				      DW3110_REQUEST_SETUP_US * DW3110_UUS_TO_DX_TIME;
+				      us_to_dx_time(DW3110_REQUEST_SETUP_US);
 			control.epoch_reset = false;
 		}
 		runtime_action = control.action_ready;
@@ -1264,9 +1284,9 @@ static int run_receptec_data(void)
 		if (CONFIG_RECEPTEC_TEST_SYNC_AFTER > 0 &&
 		    sync_peer->successful_exchanges >= CONFIG_RECEPTEC_TEST_SYNC_AFTER) {
 			uint32_t sync_slot_epoch =
-				cycle_epoch + (uint32_t)CONFIG_RECEPTEC_TEST_SYNC_PEER_SLOT *
-						      DW3110_SLOT_DURATION_US *
-						      DW3110_UUS_TO_DX_TIME;
+				cycle_epoch + us_to_dx_time(
+					(uint32_t)CONFIG_RECEPTEC_TEST_SYNC_PEER_SLOT *
+					DW3110_SLOT_DURATION_US);
 
 			sync_peer->sequence++;
 			printk("RECEPTEC initiating SYNC for slot=%u peer=%s "
@@ -1282,9 +1302,9 @@ static int run_receptec_data(void)
 		if (CONFIG_RECEPTEC_TEST_STOP_AFTER > 0 &&
 		    stop_peer->successful_exchanges >= CONFIG_RECEPTEC_TEST_STOP_AFTER) {
 			uint32_t stop_slot_epoch =
-				cycle_epoch + (uint32_t)CONFIG_RECEPTEC_TEST_STOP_PEER_SLOT *
-						      DW3110_SLOT_DURATION_US *
-						      DW3110_UUS_TO_DX_TIME;
+				cycle_epoch + us_to_dx_time(
+					(uint32_t)CONFIG_RECEPTEC_TEST_STOP_PEER_SLOT *
+					DW3110_SLOT_DURATION_US);
 
 			stop_peer->sequence++;
 			printk("RECEPTEC initiating STOP for slot=%u peer=%s "
@@ -1310,7 +1330,7 @@ static int run_receptec_data(void)
 			dwt_forcetrxoff();
 			k_sleep(K_MSEC((uint32_t)CONFIG_RECEPTEC_TEST_SILENT_SLOTS * 1000U));
 			cycle_epoch += (uint32_t)CONFIG_RECEPTEC_TEST_SILENT_SLOTS *
-				       DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DX_TIME;
+				       us_to_dx_time(DW3110_SAMPLING_PERIOD_US);
 			test_silence_done = true;
 			printk("RECEPTEC test silence complete\n");
 		}
@@ -1318,9 +1338,9 @@ static int run_receptec_data(void)
 		cycle++;
 		atomic_set(&control_cycle, (atomic_val_t)cycle);
 		for (uint8_t slot = 0U; slot < RECEPTEC_PEER_COUNT; ++slot) {
-			uint32_t slot_epoch = cycle_epoch + (uint32_t)slot *
-								    DW3110_SLOT_DURATION_US *
-								    DW3110_UUS_TO_DX_TIME;
+			uint32_t slot_epoch = cycle_epoch +
+				us_to_dx_time((uint32_t)slot *
+					      DW3110_SLOT_DURATION_US);
 			struct receptec_peer_runtime *peer = &receptec_peers[slot];
 
 			if (runtime_action && control.action.peer_slot == slot) {
@@ -1412,7 +1432,8 @@ static int run_receptec_data(void)
 		}
 		if (runtime_action && control.action.kind == RECEPTEC_COMMAND_TEST_OUT_OF_SLOT) {
 			uint32_t probe_epoch =
-				cycle_epoch + DW3110_OUT_OF_SLOT_PROBE_US * DW3110_UUS_TO_DX_TIME;
+				cycle_epoch +
+				us_to_dx_time(DW3110_OUT_OF_SLOT_PROBE_US);
 
 			run_out_of_slot_probe(&receptec_peers[control.action.peer_slot],
 					      probe_epoch);
@@ -1424,12 +1445,13 @@ static int run_receptec_data(void)
 		    out_of_slot_peer->successful_exchanges >=
 			    CONFIG_RECEPTEC_TEST_OUT_OF_SLOT_AFTER) {
 			uint32_t probe_epoch =
-				cycle_epoch + DW3110_OUT_OF_SLOT_PROBE_US * DW3110_UUS_TO_DX_TIME;
+				cycle_epoch +
+				us_to_dx_time(DW3110_OUT_OF_SLOT_PROBE_US);
 
 			run_out_of_slot_probe(out_of_slot_peer, probe_epoch);
 			out_of_slot_probe_done = true;
 		}
-		cycle_epoch += DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DX_TIME;
+		cycle_epoch += us_to_dx_time(DW3110_SAMPLING_PERIOD_US);
 	}
 	return 0;
 }
@@ -1477,14 +1499,14 @@ static uint32_t remaining_rx_us(uint32_t deadline_dx)
 	if (remaining_dx <= 0) {
 		return 0U;
 	}
-	return (uint32_t)remaining_dx / DW3110_UUS_TO_DX_TIME;
+	return dx_time_to_us((uint32_t)remaining_dx);
 }
 
 static int arm_immediate_rx(uint32_t timeout_us)
 {
 	dwt_forcetrxoff();
 	clear_radio_events();
-	dwt_setrxtimeout(timeout_us);
+	dwt_setrxtimeout(us_to_rx_timeout(timeout_us));
 	return dwt_rxenable(DWT_START_RX_IMMEDIATE) == DWT_SUCCESS ? 0 : -EIO;
 }
 
@@ -1492,7 +1514,7 @@ static int arm_delayed_rx(uint32_t start_dx, uint32_t timeout_us)
 {
 	dwt_forcetrxoff();
 	clear_radio_events();
-	dwt_setrxtimeout(timeout_us);
+	dwt_setrxtimeout(us_to_rx_timeout(timeout_us));
 	dwt_setdelayedtrxtime(start_dx);
 	return dwt_rxenable(DWT_START_RX_DELAYED | DWT_IDLE_ON_DLY_ERR) ==
 	       DWT_SUCCESS ? 0 : -ETIME;
@@ -1582,8 +1604,8 @@ static void handle_coletec_request(
 	uint16_t dt_sampling_us)
 {
 	uint64_t next_nominal_slot = (request_rx_timestamp +
-		(uint64_t)DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DTU -
-		(uint64_t)dt_sampling_us * DW3110_UUS_TO_DTU) &
+		us_to_dtu(DW3110_SAMPLING_PERIOD_US) -
+		us_to_dtu(dt_sampling_us)) &
 		DW3110_TIMESTAMP_MASK;
 	uint64_t response_tx_timestamp;
 	uint64_t response_delay_dtu;
@@ -1627,7 +1649,7 @@ static void handle_coletec_request(
 		runtime->prepared_response_type = RECEPTEC_PACKET_DATA;
 	}
 	scheduled_tx_timestamp = request_rx_timestamp +
-		(uint64_t)DW3110_RESPONSE_DELAY_US * DW3110_UUS_TO_DTU -
+		us_to_dtu(DW3110_RESPONSE_DELAY_US) -
 		DW3110_TX_ANTENNA_DELAY;
 	dwt_setdelayedtrxtime((uint32_t)(scheduled_tx_timestamp >> 8));
 	runtime->last_irq_to_arm_us = (uint16_t)MIN(
@@ -1656,7 +1678,7 @@ static void handle_coletec_request(
 		       "duplicate=%u nominal-delta=%lld dtu FCS=valid\n",
 		       request->sequence, response_sequence,
 		       RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE, dt_sampling_us,
-		       (response_delay_dtu + 32768U) / DW3110_UUS_TO_DTU,
+		       (response_delay_dtu * 5ULL + 159744ULL) / 319488ULL,
 		       duplicate_request, runtime->nominal_slot_delta);
 	}
 	next_response_sequence = next_prepared_response_sequence(
@@ -1729,7 +1751,7 @@ static bool handle_coletec_stop(struct coletec_radio_runtime *runtime,
 		runtime->stop_tx_selected = true;
 	}
 	scheduled_tx_timestamp = request_rx_timestamp +
-		(uint64_t)DW3110_RESPONSE_DELAY_US * DW3110_UUS_TO_DTU -
+		us_to_dtu(DW3110_RESPONSE_DELAY_US) -
 		DW3110_TX_ANTENNA_DELAY;
 	dwt_setdelayedtrxtime((uint32_t)(scheduled_tx_timestamp >> 8));
 	if (dwt_starttx(DWT_START_TX_DELAYED) != DWT_SUCCESS) {
@@ -1760,8 +1782,8 @@ static void handle_coletec_sync(struct coletec_radio_runtime *runtime,
 				uint16_t dt_sampling_us)
 {
 	uint64_t next_nominal_slot = (request_rx_timestamp +
-		(uint64_t)DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DTU -
-		(uint64_t)dt_sampling_us * DW3110_UUS_TO_DTU) &
+		us_to_dtu(DW3110_SAMPLING_PERIOD_US) -
+		us_to_dtu(dt_sampling_us)) &
 		DW3110_TIMESTAMP_MASK;
 	uint64_t scheduled_tx_timestamp;
 	uint8_t response_sequence = request->sequence;
@@ -1801,7 +1823,7 @@ static void handle_coletec_sync(struct coletec_radio_runtime *runtime,
 	}
 	dwt_writetxfctrl(COLETEC_EMPTY_RESPONSE_RADIO_LENGTH, 0U, 0U);
 	scheduled_tx_timestamp = request_rx_timestamp +
-		(uint64_t)DW3110_RESPONSE_DELAY_US * DW3110_UUS_TO_DTU -
+		us_to_dtu(DW3110_RESPONSE_DELAY_US) -
 		DW3110_TX_ANTENNA_DELAY;
 	dwt_setdelayedtrxtime((uint32_t)(scheduled_tx_timestamp >> 8));
 	if (dwt_starttx(DWT_START_TX_DELAYED) != DWT_SUCCESS) {
@@ -1919,11 +1941,11 @@ static bool listen_open_period(struct coletec_radio_runtime *runtime,
 			}
 			current_slot_deadline = request.type == RECEPTEC_PACKET_STOP ?
 				(uint32_t)(request_rx_timestamp >> 8) +
-				DW3110_SLOT_DURATION_US * DW3110_UUS_TO_DX_TIME :
+				us_to_dx_time(DW3110_SLOT_DURATION_US) :
 				runtime->next_slot_dx -
-				DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DX_TIME +
-				(DW3110_SLOT_DURATION_US + COLETEC_BASE_GUARD_US) *
-				DW3110_UUS_TO_DX_TIME;
+				us_to_dx_time(DW3110_SAMPLING_PERIOD_US) +
+				us_to_dx_time(DW3110_SLOT_DURATION_US +
+					      COLETEC_BASE_GUARD_US);
 			(void)listen_until_slot_deadline(runtime, sync,
 						 current_slot_deadline);
 			return true;
@@ -1941,9 +1963,9 @@ static void listen_synchronized_slot(struct coletec_radio_runtime *runtime,
 {
 	uint32_t guard_us = coletec_sync_guard_us(sync);
 	uint32_t window_start = runtime->next_slot_dx -
-		guard_us * DW3110_UUS_TO_DX_TIME;
+		us_to_dx_time(guard_us);
 	uint32_t window_deadline = runtime->next_slot_dx +
-		(DW3110_SLOT_DURATION_US + guard_us) * DW3110_UUS_TO_DX_TIME;
+		us_to_dx_time(DW3110_SLOT_DURATION_US + guard_us);
 	uint32_t window_duration = DW3110_SLOT_DURATION_US + 2U * guard_us;
 	bool valid_request_seen = false;
 
@@ -1971,7 +1993,7 @@ static void listen_synchronized_slot(struct coletec_radio_runtime *runtime,
 		return;
 	}
 	runtime->next_slot_dx +=
-		DW3110_SAMPLING_PERIOD_US * DW3110_UUS_TO_DX_TIME;
+		us_to_dx_time(DW3110_SAMPLING_PERIOD_US);
 	coletec_sync_miss_slot(sync);
 	if (sync->state == COLETEC_SYNC_DISCOVERY) {
 		printk("COLETEC synchronization lost after 5 missed slots "
