@@ -19,6 +19,21 @@ to change it):
 `contracts/` — not a local copy.** If you find a contract doc outside `contracts/`,
 move it into `contracts/` and delete the stray (no duplicates, no symlinks).
 
+> **Audit note:** `contracts/protocol/uwb-receptec-coletec/protocol-v1.0.md` is
+> the canonical spec. That folder also has a `HANDOFF.md` of uncertain origin
+> that contradicts it on at least two points affecting this repo: the RECEPTEC
+> retry/backoff model — v1.0.md §4.2 requires binary exponential backoff +
+> jitter (`T_wait = T_base × 2^N_retry + random(0, T_jitter_max)`); HANDOFF.md
+> instead mandates fixed 0/5000/10000µs offsets with no jitter. This repo's
+> RECEPTEC role owns that logic directly. Also check this repo's COLETEC-role
+> code (used for bench testing): v1.0.md §5.6/5.7 says COLETEC disables RX
+> right after each response, which the doc's own unresolved **OI-01** flags as
+> broken (a lost response means no one is listening for the retry); HANDOFF.md
+> resolves OI-01 by keeping RX enabled through the whole slot instead — a real
+> behavior difference, not just a timing constant. Audit both roles in this
+> repo against `protocol-v1.0.md` specifically before trusting them just
+> because they match `HANDOFF.md`.
+
 ## Zephyr source changes
 
 Do not edit files inside the Zephyr source tree directly. In this workspace the
