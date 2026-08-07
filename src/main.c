@@ -15,8 +15,13 @@ enum device_role {
 	DEVICE_ROLE_RECEPTEC,
 };
 
+/* This board (S/N 760216755, hwinfo 40:FA:8C:15:D5:02:5D:31) is dedicated to
+ * running this repo's own RECEPTEC role as a reference implementation, to
+ * compare against Firmware-Atletec's RECEPTEC (flashed on the other DWM3001C,
+ * S/N 760216737) under identical conditions against the production COLETEC.
+ * Do not run both RECEPTEC boards at the same time -- same on-air identity. */
 static const uint8_t receptec_device_id[DEVICE_ID_SIZE] = {
-	0x3E, 0xC6, 0xF3, 0x82, 0x06, 0xA8, 0x16, 0x41,
+	0x40, 0xFA, 0x8C, 0x15, 0xD5, 0x02, 0x5D, 0x31,
 };
 
 static const struct gpio_dt_spec receptec_role_led =
