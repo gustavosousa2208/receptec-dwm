@@ -57,6 +57,40 @@ A SYNC is 22 logical bytes and a 24-byte radio PSDU. Supplying 22 makes the
 DW3110 overwrite the two final logical bytes with FCS; the result is CRC-valid
 but malformed.
 
+## Set up inside the Zephyr workspace
+
+Keep this application beside the `zephyr/` directory, not inside the Zephyr
+source tree. The expected layout is:
+
+```text
+zephyr-v4.3.0/
+├── .venv/
+├── zephyr/
+├── Firmware-Atletec/
+└── coletec-dwm/
+```
+
+From the workspace root, clone the application and its pinned contracts, then
+activate the workspace tool environment:
+
+```sh
+export ATLETEC_WORKSPACE=/path/to/zephyr-v4.3.0
+cd "$ATLETEC_WORKSPACE"
+git clone --recurse-submodules git@gitea-local:/gusta/coletec-dwm.git coletec-dwm
+source .venv/bin/activate
+export ZEPHYR_BASE="$ATLETEC_WORKSPACE/zephyr"
+cd coletec-dwm
+```
+
+For an existing checkout, use the same workspace setup and refresh the pinned
+contract repository before building:
+
+```sh
+cd "$ATLETEC_WORKSPACE/coletec-dwm"
+git pull --ff-only
+git submodule update --init --recursive
+```
+
 ## Build, test, and flash
 
 ```sh
