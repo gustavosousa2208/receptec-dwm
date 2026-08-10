@@ -237,6 +237,6 @@ int main(void)
 	test_stop_frames();
 	test_coletec_synchronization_recovery();
 	test_coletec_discovery_backoff();
-	puts("receptec protocol tests passed");
+	puts("coletec protocol tests passed");
 	return 0;
 }
