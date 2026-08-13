@@ -38,6 +38,11 @@ static void print_device_id(const uint8_t *device_id, size_t length)
 
 static enum device_role get_device_role(const uint8_t *device_id)
 {
+	if (IS_ENABLED(CONFIG_RECEPTEC_FORCE_RECEPTEC_ROLE)) {
+		printk("Role forced to RECEPTEC by Kconfig\n");
+		return DEVICE_ROLE_RECEPTEC;
+	}
+
 	for (size_t i = 0U; i < sizeof(receptec_device_id); ++i) {
 		if (device_id[i] != receptec_device_id[i]) {
 			return DEVICE_ROLE_COLETEC;

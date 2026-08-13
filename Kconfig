@@ -1,5 +1,24 @@
 mainmenu "RECEPTEC DWM3001C firmware"
 
+config RECEPTEC_FORCE_RECEPTEC_ROLE
+	bool "Always take the RECEPTEC role, ignoring the Nordic device ID"
+	default n
+	help
+	  By default the role is chosen by comparing the nRF52833 device ID
+	  against the one hardcoded in main.c, so only that single physical
+	  DWM3001C board acts as RECEPTEC and every other board falls back to
+	  the COLETEC surrogate role.
+
+	  Enable this to force the RECEPTEC role on any board, which is what a
+	  bench setup wants when the RECEPTEC talks to a real COLETEC tag
+	  instead of a second DWM.
+
+	  The device-ID check doubles as a guard: every RECEPTEC build
+	  transmits the same on-air EUI-64, so only one board may hold the
+	  role at a time. Forcing it removes that guard — never power up two
+	  forced boards, or a forced board alongside the dedicated one, on the
+	  same channel.
+
 config RECEPTEC_SLOTTED_AUTOSTART
 	bool "Start the RECEPTEC slotted schedule at boot"
 	default n
