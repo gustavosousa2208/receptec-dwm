@@ -9,32 +9,71 @@ more COLETEC tags. This application runs on a Qorvo DWM3001C module
 ## Source of truth
 
 This README is an operational cheat sheet for development and communication.
-The canonical wire contract is
-[`contracts/protocol/uwb-receptec-coletec/HANDOFF.md`](contracts/protocol/uwb-receptec-coletec/HANDOFF.md).
-If a value here differs from that document, the canonical contract wins.
+If a value here differs from the contract, the contract wins.
 
 The active baseline is **UWB RECEPTEC↔COLETEC v1.0**. Shared or tunable values
 must be changed on both endpoints through the process in
 [`contracts/VERSIONS.md`](contracts/VERSIONS.md).
 
+> **Which document is canonical is disputed, and it matters here.** This README
+> has named
+> [`HANDOFF.md`](contracts/protocol/uwb-receptec-coletec/HANDOFF.md) as canonical.
+> The workspace `AGENTS.md`, `nrf52-bringup-fw` and `contracts/VERSIONS.md` all
+> name
+> [`protocol-v1.0.md`](contracts/protocol/uwb-receptec-coletec/protocol-v1.0.md)
+> as canonical and treat `HANDOFF.md` as an informal companion that contradicts
+> it in at least three places. This firmware follows `HANDOFF.md`, so the two
+> readings give different verdicts on whether this repo conforms — see the table
+> below. Tracked as A4/A7/A8 in
+> `../nrf52-bringup-fw/docs/consolidation-backlog.md`, pending a tech-lead
+> decision. Do not resolve it by editing this line.
+
+### Bench results must name the contract revision they were taken against
+
+This board is the test environment for both ends of the link, and what is
+validated here gets ported into the real COLETEC firmware. A measurement is only
+reusable if the reader can tell which revision of the contract it was taken
+against, so **record the `contracts/` commit alongside any result you intend to
+carry upstream** — in `MILESTONES.md`, in the soak logs, or in the commit
+message that lands the change.
+
+```sh
+git -C contracts rev-parse --short HEAD    # the revision a result was taken against
+git submodule status --recursive           # full chain, including common/
+```
+
+Current pin: **`4d1b278`**. It is behind `contracts` master, and the gap has been
+checked: across it the UWB contract changes by six lines, one of them substantive
+(`T_response_delay` 1,000 → 2,000 µs, which this firmware already implements).
+The pin carries no behavioural risk, but a result recorded against it predates
+that correction.
+
 ### Protocol idea versus current implementation
 
-The v1.0 contract remains unchanged. The current bench firmware intentionally
-deviates from one tunable timing value while we validate a reliability fix:
+The v1.0 wire format is unchanged. The two source documents disagree, so the
+verdict column depends on which one you read:
 
-| Item | Protocol v1.0 | Current implementation | Status |
-|---|---:|---:|---|
-| Sampling period | 1,000 ms | 1,000 ms | Matches |
-| Slot duration | 20,000 µs | 20,000 µs | Matches |
-| Attempt offsets | 0 / 5,000 / 10,000 µs | 0 / 5,000 / 10,000 µs | Matches |
-| Response delay | 1,000 µs | 2,000 µs | Experimental deviation |
-| Time-unit meaning | SI microseconds | SI microseconds | Corrected to match |
+| Item | `protocol-v1.0.md` | `HANDOFF.md` | Current implementation | Status |
+|---|---:|---:|---:|---|
+| Sampling period | 1,000 ms | 1,000 ms | 1,000 ms | Matches both |
+| Slot duration | 20,000 µs | 20,000 µs | 20,000 µs | Matches both |
+| Attempt offsets | binary exponential backoff + jitter (§4.2) | 0 / 5,000 / 10,000 µs, no jitter | 0 / 5,000 / 10,000 µs | **Matches `HANDOFF.md`, diverges from `protocol-v1.0.md`** — A7 |
+| Response delay | not specified | 2,000 µs (was 1,000) | 2,000 µs | Matches — no longer a deviation |
+| COLETEC RX gating | disable RX after each response (§5.6/5.7, own OI-01 calls this broken) | RX enabled through the whole slot | RX enabled through slot | **Matches `HANDOFF.md`, diverges from `protocol-v1.0.md`** — A8 |
+| Time-unit meaning | SI microseconds | SI microseconds | SI microseconds | Matches both |
 
 The response delay was increased after a 21.8-hour run found 608 COLETEC
-delayed-TX schedules that were armed too late. With 2,000 µs, a five-minute
-check completed 301/301 SYNC/ACK transactions with no new late schedules.
-Clock-drift telemetry and the soak logger are diagnostics only; they do not
-change the v1.0 wire format.
+delayed-TX schedules armed too late. With 2,000 µs, a five-minute check completed
+301/301 SYNC/ACK transactions with no new late schedules. That change has since
+been adopted into the contract — `HANDOFF.md` reads 2,000 µs on `contracts`
+master, so this row is settled and was never a `protocol-v1.0.md` value in the
+first place. Clock-drift telemetry and the soak logger are diagnostics only; they
+do not change the v1.0 wire format.
+
+The two remaining rows are the ones that matter for porting. Both are behavioural,
+not tunable constants, and both would travel upstream into `nrf52-bringup-fw` with
+any port of this code. Audit against `protocol-v1.0.md` before carrying either
+one up.
 
 ## Terms to use
 
