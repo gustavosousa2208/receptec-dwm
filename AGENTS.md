@@ -67,3 +67,6 @@ placed in the Zephyr source tree.
 Code/comments/docs in **English**; commit messages in **PT-BR** Conventional
 Commits (`feat(uwb): ...`, `fix(main): ...`).
 `AGENTS.md` is the real file; `CLAUDE.md` is a symlink to it.
+
+Any future merge from a development branch to `master` must go through a pull
+request. Never merge or push that integration directly to `master`.
