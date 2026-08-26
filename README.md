@@ -42,7 +42,7 @@ git -C contracts rev-parse --short HEAD    # the revision a result was taken aga
 git submodule status --recursive           # full chain, including common/
 ```
 
-Current pin: **`377802f`**. This is reachable from `contracts` master and keeps
+Current pin: **`2014bca`**. This is reachable from `contracts` master and keeps
 the UWB wire format at v1.0. The pin update does not change bench behavior; it
 adds contract-checking coverage and advances shared-code release provenance.
 
