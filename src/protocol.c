@@ -161,3 +161,27 @@ uint16_t receptec_protocol_decode_dt_sampling(
 {
 	return (uint16_t)input[0] | ((uint16_t)input[1] << 8);
 }
+
+void receptec_protocol_backoff_schedule(
+	const uint32_t random_words[RECEPTEC_PROTOCOL_ATTEMPT_COUNT],
+	uint16_t offsets_us[RECEPTEC_PROTOCOL_ATTEMPT_COUNT])
+{
+	uint32_t offset = 0U;
+
+	offsets_us[0] = 0U;
+	for (size_t attempt = 1U; attempt < RECEPTEC_PROTOCOL_ATTEMPT_COUNT;
+	     ++attempt) {
+		uint32_t wait = RECEPTEC_PROTOCOL_BACKOFF_BASE_US
+				<< (attempt - 1U);
+		uint32_t jitter = random_words[attempt] %
+				  (RECEPTEC_PROTOCOL_BACKOFF_JITTER_MAX_US + 1U);
+
+		offset += wait + jitter;
+		offsets_us[attempt] = (uint16_t)offset;
+	}
+}
+
+bool receptec_protocol_attempt_offset_valid(uint16_t dt_sampling_us)
+{
+	return dt_sampling_us <= RECEPTEC_PROTOCOL_ATTEMPT_OFFSET_MAX_US;
+}

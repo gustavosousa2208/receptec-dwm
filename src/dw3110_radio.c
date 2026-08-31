@@ -9,6 +9,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
+#include <zephyr/random/random.h>
 #include <zephyr/sys/printk.h>
 
 #include <deca_device_api.h>
@@ -28,7 +29,18 @@
 #define DW3110_SAMPLING_PERIOD_US 1000000U
 #define DW3110_SLOT_DURATION_US 20000U
 #define DW3110_OUT_OF_SLOT_PROBE_US 200000U
-#define DW3110_ATTEMPT_COUNT 3U
+
+/*
+ * protocol-v1.0 leaves "no retry may extend beyond the slot deadline" as OI-04.
+ * The COLETEC keeps RX enabled for its whole slot, so the last attempt plus its
+ * response timeout has to land inside DW3110_SLOT_DURATION_US or the tag stops
+ * listening mid-schedule and the retries are wasted.
+ */
+BUILD_ASSERT(RECEPTEC_PROTOCOL_ATTEMPT_OFFSET_MAX_US +
+		     DW3110_RESPONSE_TIMEOUT_US <=
+	     DW3110_SLOT_DURATION_US,
+	     "backoff schedule must finish inside the COLETEC slot");
+#define DW3110_ATTEMPT_COUNT RECEPTEC_PROTOCOL_ATTEMPT_COUNT
 #define RECEPTEC_PEER_COUNT DW3110_RADIO_PEER_COUNT
 #define DW3110_TIMESTAMP_MASK ((1ULL << 40) - 1ULL)
 #define DW3110_IRQ_EVENT_MASK \
@@ -111,9 +123,20 @@ static atomic_t control_operation =
 	ATOMIC_INIT(DW3110_RADIO_OPERATION_NONE);
 static atomic_t control_cycle = ATOMIC_INIT(0);
 
-static const uint16_t attempt_offsets_us[DW3110_ATTEMPT_COUNT] = {
-	0U, 5000U, 10000U,
-};
+/*
+ * The backoff schedule is drawn per transaction (protocol-v1.0 §4.2), so there
+ * is no fixed offset table any more. Each run_* function builds its own and
+ * passes it to whoever prints the result.
+ */
+static void draw_attempt_offsets(uint16_t offsets_us[DW3110_ATTEMPT_COUNT])
+{
+	uint32_t random_words[DW3110_ATTEMPT_COUNT];
+
+	for (size_t i = 0U; i < ARRAY_SIZE(random_words); ++i) {
+		random_words[i] = sys_rand32_get();
+	}
+	receptec_protocol_backoff_schedule(random_words, offsets_us);
+}
 
 static const uint8_t receptec_eui[RECEPTEC_PROTOCOL_EUI64_SIZE] = {
 	0x41, 0x16, 0xA8, 0x06, 0x82, 0xF3, 0xC6, 0x3E,
@@ -388,15 +411,6 @@ static uint8_t next_prepared_response_sequence(
 		(uint8_t)(request_sequence + 1U);
 }
 
-static bool is_valid_attempt_offset(uint16_t dt_sampling_us)
-{
-	for (size_t i = 0U; i < ARRAY_SIZE(attempt_offsets_us); ++i) {
-		if (dt_sampling_us == attempt_offsets_us[i]) {
-			return true;
-		}
-	}
-	return false;
-}
 
 static int64_t update_nominal_slot(uint64_t request_rx_timestamp,
 				   uint16_t dt_sampling_us,
@@ -734,9 +748,11 @@ static int run_receptec_stop(struct receptec_peer_runtime *peer,
 {
 	uint32_t attempt_radio_status[DW3110_ATTEMPT_COUNT] = { 0 };
 	int attempt_status[DW3110_ATTEMPT_COUNT] = { 0 };
+	uint16_t attempt_offsets_us[DW3110_ATTEMPT_COUNT];
 	uint32_t attempts_run = 0U;
 	int status = -ETIMEDOUT;
 
+	draw_attempt_offsets(attempt_offsets_us);
 	for (size_t attempt = 0U; attempt < ARRAY_SIZE(attempt_offsets_us);
 	     ++attempt) {
 		attempts_run = (uint32_t)attempt + 1U;
@@ -785,9 +801,11 @@ static int run_receptec_sync(struct receptec_peer_runtime *peer,
 {
 	uint32_t attempt_radio_status[DW3110_ATTEMPT_COUNT] = { 0 };
 	int attempt_status[DW3110_ATTEMPT_COUNT] = { 0 };
+	uint16_t attempt_offsets_us[DW3110_ATTEMPT_COUNT];
 	int status = -ETIMEDOUT;
 
 	peer->counters.transactions_started++;
+	draw_attempt_offsets(attempt_offsets_us);
 	for (size_t attempt = 0U; attempt < ARRAY_SIZE(attempt_offsets_us);
 	     ++attempt) {
 		attempt_status[attempt] = send_delayed_timed_request_attempt(
@@ -838,6 +856,8 @@ static int run_receptec_sync(struct receptec_peer_runtime *peer,
 struct receptec_slot_result {
 	uint32_t attempt_radio_status[DW3110_ATTEMPT_COUNT];
 	int attempt_status[DW3110_ATTEMPT_COUNT];
+	/* The schedule this transaction drew, so the printer can report it. */
+	uint16_t attempt_offsets_us[DW3110_ATTEMPT_COUNT];
 	uint32_t sample_counter;
 	size_t payload_length;
 	uint8_t sequence;
@@ -857,15 +877,16 @@ static void run_receptec_peer_data(
 	peer->sequence++;
 	result->sequence = peer->sequence;
 	peer->counters.transactions_started++;
+	draw_attempt_offsets(result->attempt_offsets_us);
 
-	for (size_t attempt = 0U; attempt < ARRAY_SIZE(attempt_offsets_us);
-	     ++attempt) {
+	for (size_t attempt = 0U;
+	     attempt < ARRAY_SIZE(result->attempt_offsets_us); ++attempt) {
 		result->attempts_run = (uint8_t)attempt + 1U;
 		result->attempt_status[attempt] =
 			send_delayed_timed_request_attempt(
 				RECEPTEC_PACKET_DATA_REQ,
 				peer->sequence, peer->eui,
-				attempt_offsets_us[attempt], slot_epoch,
+				result->attempt_offsets_us[attempt], slot_epoch,
 				&peer->counters);
 		if (result->attempt_status[attempt] == 0) {
 			result->attempt_status[attempt] =
@@ -904,7 +925,7 @@ static void print_receptec_slot_result(
 			printk("DATA_REQ attempt failed: seq=%u attempt=%u "
 			       "offset=%u error=%d radio=0x%08X retrying\n",
 			       result->sequence, attempt + 1U,
-			       attempt_offsets_us[attempt],
+			       result->attempt_offsets_us[attempt],
 			       result->attempt_status[attempt],
 			       result->attempt_radio_status[attempt]);
 		}
@@ -920,7 +941,7 @@ static void print_receptec_slot_result(
 		       cycle, slot, peer->name, result->sequence,
 		       result->sample_counter, (uint32_t)result->payload_length,
 		       result->successful_attempt,
-		       attempt_offsets_us[result->successful_attempt - 1U]);
+		       result->attempt_offsets_us[result->successful_attempt - 1U]);
 		return;
 	}
 
@@ -936,7 +957,7 @@ static void print_receptec_slot_result(
 		printk("DATA_REQ attempt failed: seq=%u attempt=%u offset=%u "
 		       "error=%d radio=0x%08X%s\n",
 		       result->sequence, attempt + 1U,
-		       attempt_offsets_us[attempt],
+		       result->attempt_offsets_us[attempt],
 		       result->attempt_status[attempt],
 		       result->attempt_radio_status[attempt],
 		       attempt + 1U < result->attempts_run ?
@@ -1591,7 +1612,7 @@ static int read_coletec_request(uint32_t radio_status,
 	}
 	if ((request->type == RECEPTEC_PACKET_DATA_REQ ||
 	     request->type == RECEPTEC_PACKET_SYNC) &&
-	    !is_valid_attempt_offset(*dt_sampling_us)) {
+	    !receptec_protocol_attempt_offset_valid(*dt_sampling_us)) {
 		return -EBADMSG;
 	}
 	*request_rx_timestamp = read_rx_timestamp();
@@ -1672,7 +1693,7 @@ static void handle_coletec_request(
 	response_delay_dtu = (response_tx_timestamp - request_rx_timestamp) &
 			     DW3110_TIMESTAMP_MASK;
 	runtime->data_responses++;
-	if (dt_sampling_us == attempt_offsets_us[DW3110_ATTEMPT_COUNT - 1U]) {
+	if (dt_sampling_us >= RECEPTEC_PROTOCOL_ATTEMPT_OFFSET_FINAL_MIN_US) {
 		printk("Final-slot DATA: request-seq=%u response-seq=%u "
 		       "sample=1 bytes=%u dt=%u RX-to-TX=%llu us "
 		       "duplicate=%u nominal-delta=%lld dtu FCS=valid\n",
