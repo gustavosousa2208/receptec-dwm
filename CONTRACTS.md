@@ -4,7 +4,7 @@ Tracks the contract revision used by this bench firmware.
 
 ## Status
 
-`contracts/` pin: `b1d0fc5`
+`contracts/` pin: `33437c3`
 
 | Contract | Targeted version | Status | Notes |
 |----------|-----------------|--------|-------|
