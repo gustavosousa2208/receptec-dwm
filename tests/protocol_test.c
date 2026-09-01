@@ -227,6 +227,74 @@ static void test_coletec_discovery_backoff(void)
 	assert(sync.discovery_off_multiplier == 1U);
 }
 
+/*
+ * protocol-v1.0 §4.2: T_wait(n) = T_base * 2^n + random(0, T_jitter_max),
+ * accumulated from the slot epoch and reported as DT_sampling.
+ */
+static void test_backoff_schedule(void)
+{
+	uint16_t offsets[RECEPTEC_PROTOCOL_ATTEMPT_COUNT];
+	const uint32_t zero_jitter[RECEPTEC_PROTOCOL_ATTEMPT_COUNT] = {
+		0U, 0U, 0U,
+	};
+	const uint32_t max_jitter[RECEPTEC_PROTOCOL_ATTEMPT_COUNT] = {
+		0U,
+		RECEPTEC_PROTOCOL_BACKOFF_JITTER_MAX_US,
+		RECEPTEC_PROTOCOL_BACKOFF_JITTER_MAX_US,
+	};
+
+	/* First attempt always leaves at the nominal slot epoch. */
+	receptec_protocol_backoff_schedule(zero_jitter, offsets);
+	assert(offsets[0] == 0U);
+	/* Doubling wait: T_base, then 2*T_base on top of it. */
+	assert(offsets[1] == RECEPTEC_PROTOCOL_BACKOFF_BASE_US);
+	assert(offsets[2] == 3U * RECEPTEC_PROTOCOL_BACKOFF_BASE_US);
+	assert(offsets[2] == RECEPTEC_PROTOCOL_ATTEMPT_OFFSET_FINAL_MIN_US);
+
+	receptec_protocol_backoff_schedule(max_jitter, offsets);
+	assert(offsets[0] == 0U);
+	assert(offsets[2] == RECEPTEC_PROTOCOL_ATTEMPT_OFFSET_MAX_US);
+
+	/* Jitter is bounded, and the schedule stays monotonic whatever is drawn. */
+	for (uint32_t draw = 0U; draw < 5000U; ++draw) {
+		const uint32_t words[RECEPTEC_PROTOCOL_ATTEMPT_COUNT] = {
+			draw, draw * 2654435761U, draw * 40503U + 7U,
+		};
+
+		receptec_protocol_backoff_schedule(words, offsets);
+		assert(offsets[0] == 0U);
+		for (size_t i = 1U; i < RECEPTEC_PROTOCOL_ATTEMPT_COUNT; ++i) {
+			assert(offsets[i] > offsets[i - 1U]);
+		}
+		assert(offsets[RECEPTEC_PROTOCOL_ATTEMPT_COUNT - 1U] <=
+		       RECEPTEC_PROTOCOL_ATTEMPT_OFFSET_MAX_US);
+		/* Every offset must survive the 16-bit DT_sampling field. */
+		for (size_t i = 0U; i < RECEPTEC_PROTOCOL_ATTEMPT_COUNT; ++i) {
+			uint8_t encoded[RECEPTEC_PROTOCOL_DT_SAMPLING_SIZE];
+
+			receptec_protocol_encode_dt_sampling(offsets[i],
+							     encoded);
+			assert(receptec_protocol_decode_dt_sampling(encoded) ==
+			       offsets[i]);
+			assert(receptec_protocol_attempt_offset_valid(
+				offsets[i]));
+		}
+		/*
+		 * A COLETEC recognises the last attempt by threshold alone; no
+		 * earlier attempt may reach it.
+		 */
+		assert(offsets[RECEPTEC_PROTOCOL_ATTEMPT_COUNT - 2U] <
+		       RECEPTEC_PROTOCOL_ATTEMPT_OFFSET_FINAL_MIN_US);
+		assert(offsets[RECEPTEC_PROTOCOL_ATTEMPT_COUNT - 1U] >=
+		       RECEPTEC_PROTOCOL_ATTEMPT_OFFSET_FINAL_MIN_US);
+	}
+
+	/* Anything past the schedule's reach is not a legal DT_sampling. */
+	assert(!receptec_protocol_attempt_offset_valid(
+		RECEPTEC_PROTOCOL_ATTEMPT_OFFSET_MAX_US + 1U));
+	assert(receptec_protocol_attempt_offset_valid(0U));
+}
+
 int main(void)
 {
 	test_sync_vector();
@@ -237,6 +305,7 @@ int main(void)
 	test_stop_frames();
 	test_coletec_synchronization_recovery();
 	test_coletec_discovery_backoff();
+	test_backoff_schedule();
 	puts("receptec protocol tests passed");
 	return 0;
 }
