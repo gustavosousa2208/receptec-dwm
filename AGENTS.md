@@ -64,6 +64,11 @@ placed in the Zephyr source tree.
 
 ## Conventions
 
+Strategic docs — requirements, roadmap, traceability matrices, meeting notes,
+cross-repo status — belong in `~/shared-data/ATLETEC/03-firmware-atletec/`,
+which Obsidian opens as a vault; this repo's `docs/` is for what explains this
+repo's code. See the workspace `../AGENTS.md`.
+
 Code/comments/docs in **English**; commit messages in **PT-BR** Conventional
 Commits (`feat(uwb): ...`, `fix(main): ...`).
 `AGENTS.md` is the real file; `CLAUDE.md` is a symlink to it.
