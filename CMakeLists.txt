@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.20.0)
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
-project(coletec_dwm)
+project(receptec_dwm)
 
 set(QORVO_DRIVER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/qorvo)
 
@@ -21,7 +21,8 @@ target_sources(app PRIVATE
     src/protocol.c
     src/coletec_sync.c
     src/dw3110_port.c
-    src/coletec_radio.c
+    src/dw3110_radio.c
+    src/uwb_shell.c
     ${QORVO_DRIVER_DIR}/deca_compat.c
     ${QORVO_DRIVER_DIR}/deca_interface.c
     ${QORVO_DRIVER_DIR}/deca_rsl.c

@@ -1,3 +1,139 @@
-mainmenu "COLETEC DWM3001C firmware"
+mainmenu "ATLETEC DWM3001C UWB firmware"
+
+choice RECEPTEC_DEVICE_ROLE
+	prompt "UWB protocol role"
+	default RECEPTEC_ROLE_COLETEC
+	help
+	  Select the one protocol role compiled into this image. The role never
+	  depends on the physical board serial number or Nordic device ID.
+
+config RECEPTEC_ROLE_COLETEC
+	bool "COLETEC responder"
+
+config RECEPTEC_ROLE_RECEPTEC
+	bool "RECEPTEC initiator"
+
+endchoice
+
+config RECEPTEC_SLOTTED_AUTOSTART
+	bool "Start the RECEPTEC slotted schedule at boot"
+	default n
+	help
+	  Starts the four-peer periodic DATA_REQ schedule automatically. Normal
+	  interactive builds leave this disabled so the radio remains idle until
+	  the operator enters "uwb slotted start". Dedicated automated test
+	  fragments enable it explicitly.
+
+config RECEPTEC_COLETEC_HW_FRAME_FILTER
+	bool "Enable DW3110 destination EUI-64 filtering on the COLETEC"
+	default y
+	help
+	  Programs the COLETEC's on-air EUI-64 into the DW3110 and enables
+	  IEEE 802.15.4 Data Frame filtering. The RECEPTEC role remains
+	  unfiltered, and firmware continues to validate destination, source,
+	  type, length, and sequence.
+
+config RECEPTEC_TEST_DROP_ACKS
+	int "Responses to drop at the start of each transaction"
+	range 0 2
+	default 0
+	help
+	  Test-only fault injection. A value of 1 or 2 makes the COLETEC skip
+	  that many valid responses per new sequence so deterministic retry
+	  offsets can be verified. Production and normal bench builds use zero.
+
+config RECEPTEC_TEST_BAD_ACKS
+	int "Wrong-sequence responses at the start of each transaction"
+	range 0 2
+	default 0
+	help
+	  Test-only stale-frame injection. A value of 1 or 2 makes the COLETEC
+	  return that many hardware-FCS-valid responses with sequence + 1 before
+	  using the request sequence. Production and normal bench builds use zero.
+
+config RECEPTEC_TEST_SILENCE_AFTER
+	int "Completed transactions before a one-time request silence"
+	range 0 1000000
+	default 0
+	help
+	  Test-only synchronization fault injection. A nonzero value pauses the
+	  RECEPTEC after this many completed transactions. Normal builds use zero.
+
+config RECEPTEC_TEST_SILENT_SLOTS
+	int "Sampling periods in the one-time request silence"
+	range 0 1000
+	default 0
+	help
+	  Number of one-second sampling periods skipped by the test-only silence.
+	  This has no effect when RECEPTEC_TEST_SILENCE_AFTER is zero.
+
+config RECEPTEC_TEST_STOP_AFTER
+	int "Completed DATA transactions before sending STOP"
+	range 0 1000000
+	default 0
+	help
+	  Test-only STOP trigger. A nonzero value makes RECEPTEC send one STOP
+	  transaction after this many completed DATA transactions. Normal builds
+	  use zero and continue DATA polling.
+
+config RECEPTEC_TEST_STOP_PEER_SLOT
+	int "Peer slot targeted by the test STOP"
+	range 0 3
+	default 0
+	help
+	  Selects which fixed RWD peer receives the test-only STOP transaction.
+	  Slot 0 is the DWM surrogate and slot 1 is the production COLETEC.
+
+config RECEPTEC_TEST_SYNC_AFTER
+	int "Completed DATA transactions before sending SYNC"
+	range 0 1000000
+	default 0
+	help
+	  Test-only SYNC trigger. A nonzero value makes RECEPTEC send one SYNC
+	  transaction after this many completed DATA transactions. Normal builds
+	  use zero and continue DATA polling.
+
+config RECEPTEC_TEST_SYNC_PEER_SLOT
+	int "Peer slot targeted by the test SYNC"
+	range 0 3
+	default 0
+	help
+	  Selects which fixed RWD peer receives the test-only SYNC transaction.
+	  Slot 0 is the DWM surrogate and slot 1 is the production COLETEC.
+
+config RECEPTEC_TEST_OUT_OF_SLOT_AFTER
+	int "Completed DATA transactions before an out-of-slot request"
+	range 0 1000000
+	default 0
+	help
+	  Test-only RX-window probe. A nonzero value sends one correctly
+	  addressed DATA_REQ at 200 ms from the cycle epoch, after all configured
+	  slots have ended. A response is a test failure. Normal builds use zero.
+
+config RECEPTEC_TEST_OUT_OF_SLOT_PEER_SLOT
+	int "Peer targeted by the out-of-slot request"
+	range 0 3
+	default 1
+	help
+	  Selects which fixed RWD peer receives the test-only out-of-slot probe.
+	  Slot 1 is the production COLETEC.
+
+config RECEPTEC_TEST_WRONG_DESTINATION_AFTER
+	int "Completed transactions before the wrong-destination probe"
+	range 0 1000000
+	default 0
+	help
+	  Test-only address-filter qualification. A nonzero value replaces the
+	  selected peers' normal request in one cycle with a correctly formed
+	  DATA_REQ addressed to an unknown EUI-64. No response is expected.
+
+config RECEPTEC_TEST_WRONG_DESTINATION_PEER_MASK
+	int "Peer-slot mask for the wrong-destination probe"
+	range 0 15
+	default 0
+	help
+	  Bit mask selecting the fixed peer slots to probe. Bit 0 selects the
+	  DWM surrogate and bit 1 selects the production COLETEC. Use 3 to test
+	  both live peers in the same fixed schedule cycle.
 
 source "Kconfig.zephyr"
