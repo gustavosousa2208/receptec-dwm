@@ -1,24 +1,13 @@
 mainmenu "Atletec DWM3001C UWB bench firmware"
 
-choice DWM_UWB_ROLE
-	prompt "DWM UWB bench role"
-	default DWM_UWB_ROLE_COLETEC
+config DWM_COLETEC_INSTANCE
+	int
+	range 0 1
+	default 1 if BOARD_COLETEC_1
+	default 0
 	help
-	  Select exactly one role for this firmware image. The receptec and
-	  coletec board targets select their matching role; the safe default for
-	  any unsupported target is the passive COLETEC responder.
-
-config DWM_UWB_ROLE_RECEPTEC
-	bool "RECEPTEC initiator"
-	help
-	  Build the fixed-station role that schedules and initiates UWB traffic.
-
-config DWM_UWB_ROLE_COLETEC
-	bool "COLETEC responder"
-	help
-	  Build the DWM surrogate tag role that responds to RECEPTEC requests.
-
-endchoice
+	  Select the fixed surrogate identity. The coletec_0 and coletec_1 board
+	  targets set this value to 0 and 1 respectively.
 
 config RECEPTEC_SLOTTED_AUTOSTART
 	bool "Start the RECEPTEC slotted schedule at boot"

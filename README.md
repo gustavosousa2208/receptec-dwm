@@ -1,120 +1,81 @@
-# Atletec DWM UWB bench
+# Atletec dual-COLETEC DWM bench
 
-DWM3001C firmware for exercising the Atletec EPTS UWB protocol before enough
-production units are available. Product names are used consistently at the
-operator boundary; component and development-kit names stay in the hardware
-implementation.
+Firmware for the two DWM3001C boards that act as COLETEC surrogates in the
+Atletec EPTS UWB bench.
 
-| Name | Purpose | Processor | UWB radio | Firmware |
-|---|---|---|---|---|
-| RECEPTEC | Fixed protocol initiator | nRF52840 | QM33120W | Production RECEPTEC repository |
-| COLETEC | Mobile protocol responder | nRF52840 | QM33120W | `nrf52-bringup-fw` |
-| `receptec` | RECEPTEC-compatible bench target | nRF52833 | DW3110 | This repository |
-| `coletec` | COLETEC-compatible bench target | nRF52833 | DW3110 | This repository |
+## Bench topology
 
-The two lower-case names are Zephyr board targets for the DWM3001C bench
-hardware. They identify the firmware role directly and must not be confused
-with production hardware.
+| Bench name | Hardware | Protocol role | Firmware source |
+|---|---|---|---|
+| RECEPTEC | Production receiver, nRF52840 + QM33120W | Initiator | RECEPTEC repository |
+| COLETEC-0 | DWM3001C, nRF52833 + DW3110 | Surrogate responder | This repository, target `coletec_0` |
+| COLETEC-1 | DWM3001C, nRF52833 + DW3110 | Surrogate responder | This repository, target `coletec_1` |
+| COLETEC | Production tag, nRF52840 + QM33120W | Production responder | `nrf52-bringup-fw` |
 
-## Current implementation boundary
+The real RECEPTEC is the only initiator in this topology. This repository does
+not produce a RECEPTEC image, and neither DWM board may be flashed as one.
 
-The production RECEPTEC boots and has a verified RTT shell, but its QM33120W
-radio remains disabled while the proven COLETEC QM33120W driver is ported into
-the RECEPTEC firmware. The DWM3001C DW3110 driver in this repository cannot be
-reused for that hardware.
+The two surrogate images have distinct compiled identities:
 
-Likewise, this repository currently builds one generic DWM COLETEC image with
-one compiled EUI-64. `COLETEC-0` and `COLETEC-1` are the bench identities to
-implement next; distinct image configuration and identities are required
-before flashing two DWM responders concurrently. This naming change does not
-claim that two-tag operation is already qualified.
+| Target | EUI-64 | Default J-Link |
+|---|---|---:|
+| `coletec_0` | `31:5D:02:D5:15:8C:FA:40` | `760216737` |
+| `coletec_1` | `31:5D:02:D5:15:8C:FA:41` | `760216755` |
 
-## Branch and build model
+Both EUI-64 addresses must be registered in the real RECEPTEC configuration.
 
-Permanent branches are:
+## Branch model
 
-| Branch | Purpose |
-|---|---|
-| `master` | Stable integration; changes arrive only through pull requests. |
-| `develop` | Active integration for completed feature and fix branches. |
-
-The compatibility harness has `receptec` and `coletec` board targets. Each
-target selects its hardware and protocol role directly. One checkout and one
-source commit produce two independent images:
-
-```text
-build-receptec/zephyr/zephyr.hex
-build-coletec/zephyr/zephyr.hex
-```
+`develop` is the active integration branch. Feature and fix branches merge
+into `develop`. Integration from `develop` to the protected `main` branch is
+performed only through a pull request in Bitbucket.
 
 ## Source of truth
 
 The canonical protocol is
 [`contracts/protocol/uwb-receptec-coletec/protocol-v1.0.md`](contracts/protocol/uwb-receptec-coletec/protocol-v1.0.md).
-Read it before changing frames, timing, retries, addressing, or PHY settings.
-`HANDOFF.md` beside it is supporting context, not an alternative specification.
+Read it before changing frames, timing, addressing, retries, or PHY settings.
+Contract versions and conformance status live in
+[`contracts/VERSIONS.md`](contracts/VERSIONS.md) and
+[`CONTRACTS.md`](CONTRACTS.md).
 
-Contract versions and conformance status live only in:
+## Setup
 
-- [`contracts/VERSIONS.md`](contracts/VERSIONS.md)
-- [`CONTRACTS.md`](CONTRACTS.md)
-
-Shared protocol changes must be coordinated with every endpoint.
-
-## First-time setup
-
-Keep the repository beside the Zephyr source tree:
-
-```text
-zephyrproject/
-├── .venv/
-├── zephyr/
-├── atletec-uwb-dwm-bench/
-└── nrf52-bringup-fw/
-```
+Keep this repository beside the Zephyr source tree, activate the workspace
+environment, and initialize the contracts submodule:
 
 ```sh
-cd /path/to/zephyrproject
-git clone --recurse-submodules \
-  git@bitbucket.org:techfusionwksp/atletec-uwb-dwm-bench.git
-cd atletec-uwb-dwm-bench
-git switch develop
-
 source ../.venv/bin/activate
 export ZEPHYR_BASE="$PWD/../zephyr"
 git submodule update --init --recursive
 ```
 
 Never edit the shared Zephyr tree directly. Application changes belong here;
-unavoidable Zephyr changes must be recorded under `patches/zephyr/` and applied
-with `scripts/apply-zephyr-patches.sh`.
+unavoidable Zephyr changes must be recorded under `patches/zephyr/`.
 
-## Build the named bench boards
-
-Build both named targets concurrently:
+## Build both surrogate boards
 
 ```sh
 ./scripts/build-both.sh
 ```
 
-Equivalent individual commands are:
+Equivalent direct commands:
 
 ```sh
-west build -b receptec -d build-receptec .
-
-west build -b coletec -d build-coletec .
+west build -b coletec_0 -d build-coletec-0 .
+west build -b coletec_1 -d build-coletec-1 .
 ```
 
-The role is compiled into each image. Nordic device IDs are printed for
-diagnostics but never select behavior.
+Outputs:
 
-The startup role indicator uses the board LED aliases and leaves the other role
-LED off:
+```text
+build-coletec-0/zephyr/zephyr.hex
+build-coletec-1/zephyr/zephyr.hex
+```
 
-| Role | Indicator |
-|---|---|
-| RECEPTEC | Red `led1` (`D12`, P0.14) |
-| COLETEC surrogate | Blue `led3` (`D10`, P0.05) |
+The build script verifies the compiled identity of each image and records the
+source commit, contracts pin, and optional test configuration in each build
+directory.
 
 Run host protocol tests separately:
 
@@ -124,117 +85,71 @@ cmake --build build-tests
 ctest --test-dir build-tests --output-on-failure
 ```
 
-## Flash both DWM reference boards
+## Flash both DWM boards
 
-The default mapping is:
-
-| Image | J-Link serial |
-|---|---:|
-| RECEPTEC bench target | `760216755` |
-| COLETEC bench target | `760216737` |
-
-Build, connect both probes and antennas, then run:
+After building and committing the source:
 
 ```sh
 ./scripts/flash-both.sh
 ```
 
-The script verifies that both images came from the current source commit and
-contracts pin, confirms their compiled roles, displays the mapping, and flashes
-both probes concurrently. Override the mapping when necessary:
+Override the explicit probe mapping when necessary:
 
 ```sh
 ./scripts/flash-both.sh \
-  --receptec-probe <serial> \
-  --coletec-probe <serial>
+  --coletec-0-probe <serial> \
+  --coletec-1-probe <serial>
 ```
 
-It refuses identical probe serials and reports partial failures explicitly.
-Never choose a probe from USB enumeration order.
+The script rejects duplicate probe serials, stale images, mismatched compiled
+identities, and builds made from different test configurations. It never uses
+USB enumeration order to decide which image belongs to a board.
 
-For a repository-owned fault scenario, build both explicit roles with the same
-test fragment before flashing:
+For a repository-owned fault scenario, apply the same fragment to both
+surrogates:
 
 ```sh
 ./scripts/build-both.sh --test-conf tests/m7-drop-two-acks.conf
-./scripts/flash-both.sh
 ```
 
-The flash confirmation displays the selected test fragment. Rebuild normally
-with `./scripts/build-both.sh` immediately after fault testing.
+Rebuild without `--test-conf` immediately after fault testing.
 
-## First bench exchange
+## Operate the bench
 
-Connect to the **RECEPTEC bench target** UART at 115200 bit/s. Both bench boot
-logs must show the same source/contracts revisions and their distinct compiled
-roles. The production RECEPTEC uses its own firmware image.
+Start both surrogate responders before starting traffic on the real RECEPTEC:
 
 ```text
-uwb status
-uwb peers
-uwb data_req 0
-uwb test sync 0
-uwb slotted start
+uwb coletec start
 ```
 
-Observe at least 20 successful exchanges without final transaction failures or
-late schedules, then stop traffic:
+Run that command on both DWM shells. Scheduling, peer selection, DATA_REQ,
+SYNC, and STOP commands belong to the real RECEPTEC firmware, not these DWM
+images.
 
-```text
-uwb slotted stop
-```
-
-When UART wiring is unavailable, open the same Zephyr shell through SEGGER RTT:
+Open an individual DWM RTT shell with:
 
 ```sh
-./scripts/rtt-shell.sh 802008564
+./scripts/rtt-shell.sh <J-Link serial>
 ```
 
-The script requires SEGGER's `JLinkGDBServerCLExe` and `JLinkRTTClient`. It can
-also use `JLINK_SN_RECEPTEC` from `lstty` when invoked without an argument.
-
-## UWB shell commands
-
-Enter `help uwb` to display the command tree. Peer slots range from 0 to 3;
-always run `uwb peers` before selecting one.
-
-| Command | Purpose |
-|---|---|
-| `uwb status` | Show role, protocol/schedule state, cycle, and queued operation. |
-| `uwb peers` | List peer slots, addresses, and expected presence. |
-| `uwb slotted start` | Start the normal periodic DATA_REQ/DATA schedule. |
-| `uwb slotted stop` | Finish the active cycle and stop the schedule safely. |
-| `uwb data_req <slot>` | Queue one DATA_REQ/DATA transaction. |
-| `uwb sync start <slot>` | Send periodic SYNC/ACK to one peer. |
-| `uwb sync stop` | Stop periodic SYNC. |
-| `uwb coletec start` | On the COLETEC image, enable RX and await synchronization. |
-| `uwb test list` | Print available runtime tests. |
-| `uwb test sync <slot>` | Run one addressed SYNC/ACK transaction. |
-| `uwb test stop <slot>` | Run STOP/STOP_ACK; reset the peer afterward. |
-| `uwb test wrong_eui <slot>` | Send a request to an unknown destination; expect no response. |
-| `uwb test out_of_slot <slot>` | Send outside the peer RX window; slotted mode must run. |
-| `uwb test silence <cycles>` | Suppress requests to exercise synchronization loss/discovery. |
-| `uwb test abort` | Cancel a queued test or active silence safely. |
-
-Commands are queued to the exclusive UWB owner thread and results print
-asynchronously. `uwb test stop` leaves the target radio stopped until reset or
-power cycle. Further protocol-test planning and qualification evidence are kept
-in local operator notes outside repository tracking.
+The DWM startup log prints its target, `COLETEC-0` or `COLETEC-1` identity,
+source revision, contracts revision, Nordic device ID, and UWB frame-filter
+address. Both surrogate images use the blue COLETEC role indicator.
 
 ## Code map
 
 | Path | Responsibility |
 |---|---|
-| `src/main.c` | Startup, build identity, and compiled role selection |
-| `src/dw3110_radio.c` | Radio owner, RECEPTEC scheduler, and COLETEC responder |
-| `src/protocol.c` | Frame codec and retry scheduling helpers |
-| `src/coletec_sync.c` | Synchronization, guards, and discovery state |
+| `boards/atletec/coletec/` | Direct `coletec_0` and `coletec_1` board targets |
+| `src/main.c` | Startup and compiled surrogate identity |
+| `src/dw3110_radio.c` | DW3110 owner and COLETEC responder behavior |
+| `src/protocol.c` | Protocol frame codec and timing helpers |
+| `src/coletec_sync.c` | COLETEC synchronization, guards, and discovery |
 | `src/dw3110_port.c` | SPI, GPIO, interrupt, and timing bridge |
-| `src/uwb_shell.c` | Operator control queued to the radio owner |
-| `configs/` | Explicit RECEPTEC and COLETEC build selections |
-| `tests/` | Host tests and hardware fault configurations |
-| `scripts/` | Dual builds, dual flashing, and qualification tools |
+| `src/uwb_shell.c` | Operator shell |
+| `tests/` | Host tests and bounded hardware fault configurations |
+| `scripts/` | Dual build, flash, RTT, and analysis tooling |
 | `vendor/qorvo/` | Pinned Qorvo DW3XXX driver and provenance |
 
-Qorvo driver licensing and checksums are in
-[`vendor/qorvo/README.md`](vendor/qorvo/README.md).
+Qualification evidence and unfinished test results remain outside repository
+tracking until the validation campaign is complete.

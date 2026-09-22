@@ -2,7 +2,7 @@
 
 set -eu
 
-probe=${1:-${JLINK_SN_RECEPTEC:-}}
+probe=${1:-${JLINK_SN_COLETEC:-}}
 device=${JLINK_DEVICE:-nRF52833_xxAA}
 gdb_server=${JLINK_GDB_SERVER:-JLinkGDBServerCLExe}
 rtt_client=${JLINK_RTT_CLIENT:-JLinkRTTClient}
