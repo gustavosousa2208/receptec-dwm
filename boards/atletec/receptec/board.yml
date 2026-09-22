@@ -1,0 +1,6 @@
+board:
+  name: receptec
+  full_name: RECEPTEC UWB bench endpoint
+  vendor: atletec
+  socs:
+    - name: nrf52833

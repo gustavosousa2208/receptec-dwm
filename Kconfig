@@ -1,17 +1,22 @@
-mainmenu "ATLETEC DWM3001C UWB firmware"
+mainmenu "Atletec DWM3001C UWB bench firmware"
 
-choice RECEPTEC_DEVICE_ROLE
-	prompt "UWB protocol role"
-	default RECEPTEC_ROLE_COLETEC
+choice DWM_UWB_ROLE
+	prompt "DWM UWB bench role"
+	default DWM_UWB_ROLE_COLETEC
 	help
-	  Select the one protocol role compiled into this image. The role never
-	  depends on the physical board serial number or Nordic device ID.
+	  Select exactly one role for this firmware image. The receptec and
+	  coletec board targets select their matching role; the safe default for
+	  any unsupported target is the passive COLETEC responder.
 
-config RECEPTEC_ROLE_COLETEC
-	bool "COLETEC responder"
-
-config RECEPTEC_ROLE_RECEPTEC
+config DWM_UWB_ROLE_RECEPTEC
 	bool "RECEPTEC initiator"
+	help
+	  Build the fixed-station role that schedules and initiates UWB traffic.
+
+config DWM_UWB_ROLE_COLETEC
+	bool "COLETEC responder"
+	help
+	  Build the DWM surrogate tag role that responds to RECEPTEC requests.
 
 endchoice
 
@@ -135,5 +140,30 @@ config RECEPTEC_TEST_WRONG_DESTINATION_PEER_MASK
 	  Bit mask selecting the fixed peer slots to probe. Bit 0 selects the
 	  DWM surrogate and bit 1 selects the production COLETEC. Use 3 to test
 	  both live peers in the same fixed schedule cycle.
+
+config RECEPTEC_TEST_SAMPLING_PERIOD_MS
+	int "Sampling period in milliseconds (test-only acceleration)"
+	range 100 1000
+	default 1000
+	help
+	  Test-only soak acceleration. Shortens T_sampling so that many
+	  transactions fit in a bounded run. It must be identical in the RECEPTEC
+	  and COLETEC images, which scripts/build-both.sh guarantees when the
+	  value comes from a tests/*.conf fragment. The normal and production
+	  value is 1000 ms; a peer that is not built with the same value (the
+	  production COLETEC) will not stay synchronized. The lower bound leaves
+	  the four fixed slots room to finish. Silence and out-of-slot tests
+	  assume the normal period and are rejected at build time otherwise.
+
+config RECEPTEC_TEST_POLL_PEER_MASK
+	int "Peer-slot mask polled by the slotted DATA schedule"
+	range 1 15
+	default 15
+	help
+	  Bit mask of the fixed peer slots that the slotted schedule polls with
+	  DATA_REQ. Normal builds poll all four slots. A soak of the DWM
+	  surrogate uses 1 so that the production COLETEC is not polled at a
+	  cadence it is not built for. Manual one-shot tests and the periodic
+	  SYNC ignore this mask.
 
 source "Kconfig.zephyr"

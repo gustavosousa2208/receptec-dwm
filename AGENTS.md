@@ -1,16 +1,12 @@
-# receptec-dwm — agent instructions
+# atletec-uwb-dwm-bench — agent instructions
 
 Part of the **Atletec EPTS** workspace — read the workspace `../AGENTS.md` and the
 `contracts/` submodule first.
 
-> **The directory is `coletec-dwm/`; the repo is `receptec-dwm`.** The name is
-> historical and misleading — this is the RECEPTEC, not the COLETEC. Docs name
-> the repo; paths need the directory.
-
-This repo is the **RECEPTEC**: the fixed UWB base station (Qorvo DWM3001C =
-nRF52833 + DW3110). It is the receiver end of the UWB link with the COLETEC tag,
-whose UWB endpoint is `nrf52-bringup-fw`. It also carries a COLETEC-role build
-used for bench testing.
+This repo is the unified DWM3001C UWB bench (nRF52833 + DW3110). It builds an
+explicit **RECEPTEC** initiator image and an explicit **COLETEC** surrogate
+image from the same commit. The production COLETEC endpoint remains
+`nrf52-bringup-fw`.
 
 ## Contract this repo implements
 
@@ -27,12 +23,14 @@ Pinned in `contracts/`; follow `contracts/VERSIONS.md` to change it.
 move it into `contracts/` and delete the stray (no duplicates, no symlinks).
 
 `contracts/protocol/uwb-receptec-coletec/protocol-v1.0.md` is the canonical spec.
-The `HANDOFF.md` sitting beside it contradicts it on three points, two of which
-land in this repo's code: the retry/backoff model (RECEPTEC role) and whether
-COLETEC keeps RX enabled through the slot (bench role). Those are tracked as
-**A7** and **A8** in `../nrf52-bringup-fw/docs/consolidation-backlog.md`, blocked
-on a tech-lead decision. Audit against `protocol-v1.0.md` specifically —
-matching `HANDOFF.md` is not evidence of conformance.
+The `HANDOFF.md` sitting beside it contradicts it on the retry/backoff model and
+whether COLETEC keeps RX enabled through the slot. This repo now follows the
+canonical exponential-backoff rule. It keeps COLETEC RX enabled through the
+slot, while the canonical text requires immediate shutdown but flags that rule
+as broken in OI-01. The document conflicts remain tracked as **A7** and **A8**
+in `../nrf52-bringup-fw/docs/consolidation-backlog.md`. Audit against
+`protocol-v1.0.md` specifically — matching `HANDOFF.md` is not evidence of
+conformance.
 
 ## Zephyr source changes
 
@@ -73,5 +71,18 @@ Code/comments/docs in **English**; commit messages in **PT-BR** Conventional
 Commits (`feat(uwb): ...`, `fix(main): ...`).
 `AGENTS.md` is the real file; `CLAUDE.md` is a symlink to it.
 
-Any future merge from a development branch to `master` must go through a pull
-request. Never merge or push that integration directly to `master`.
+## Gitflow
+
+Use the normal Gitflow branch model:
+
+- `main` is the protected release branch.
+- `develop` is the active integration branch and the destination for completed
+  feature and fix work.
+- Create `feature/*` branches from `develop` and merge them back into `develop`.
+- Create `release/*` branches from `develop`. Merge a completed release into
+  `main` through a pull request, then merge it back into `develop`.
+- Create `hotfix/*` branches from `main`. Merge a completed hotfix into `main`
+  through a pull request and also merge it into `develop`.
+- Never merge or push feature work directly to `main`.
+- Never merge or push `develop` directly to `main`; that integration must go
+  through a pull request.

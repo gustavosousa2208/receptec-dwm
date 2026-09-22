@@ -1,4 +1,4 @@
-# Contract compliance — receptec-dwm
+# Contract compliance — atletec-uwb-dwm-bench
 
 Tracks the contract revision used by this bench firmware.
 
@@ -8,8 +8,7 @@ Tracks the contract revision used by this bench firmware.
 
 | Contract | Targeted version | Status | Notes |
 |----------|-----------------|--------|-------|
-| UWB RECEPTEC↔COLETEC | 1.0 | partial | Wire format and PHY profile implemented. Retry scheduling and RX gating follow the companion HANDOFF rather than two disputed canonical-spec sections; see A7/A8 in the Nordic consolidation backlog. |
+| UWB RECEPTEC↔COLETEC | 1.0 | partial | Wire format, PHY profile, and canonical exponential backoff are implemented. COLETEC RX remains enabled through the slot, diverging from the canonical immediate-shutdown text that OI-01 itself flags as broken; see A8 in the Nordic consolidation backlog. |
 
-The pin is reachable from the contracts default branch. Bench results must
-record this commit so behavior can be correlated with the exact specification
-revision used for the test.
+Bench results must record the pin so behavior can be correlated with the exact
+specification revision used for the test.

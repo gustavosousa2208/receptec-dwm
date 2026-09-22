@@ -8,7 +8,8 @@
 #include <receptec/dw3110_radio.h>
 
 #define DEVICE_ID_SIZE 8U
-#define RECEPTEC_ROLE_LED_NODE DT_ALIAS(led3)
+#define RECEPTEC_ROLE_LED_NODE DT_ALIAS(receptec_role_led)
+#define COLETEC_ROLE_LED_NODE DT_ALIAS(coletec_role_led)
 
 enum device_role {
 	DEVICE_ROLE_COLETEC,
@@ -17,6 +18,8 @@ enum device_role {
 
 static const struct gpio_dt_spec receptec_role_led =
 	GPIO_DT_SPEC_GET(RECEPTEC_ROLE_LED_NODE, gpios);
+static const struct gpio_dt_spec coletec_role_led =
+	GPIO_DT_SPEC_GET(COLETEC_ROLE_LED_NODE, gpios);
 
 static void print_device_id(const uint8_t *device_id, size_t length)
 {
@@ -27,38 +30,57 @@ static void print_device_id(const uint8_t *device_id, size_t length)
 	printk("\n");
 }
 
-static enum device_role get_device_role(void)
+static enum device_role configured_role(void)
 {
-	return IS_ENABLED(CONFIG_RECEPTEC_ROLE_RECEPTEC) ?
+	return IS_ENABLED(CONFIG_DWM_UWB_ROLE_RECEPTEC) ?
 		DEVICE_ROLE_RECEPTEC : DEVICE_ROLE_COLETEC;
 }
 
 static void configure_role_indicator(enum device_role role)
 {
+	const struct gpio_dt_spec *active_led;
+	const char *active_color;
 	int status;
 
 	if (!gpio_is_ready_dt(&receptec_role_led)) {
-		printk("RECEPTEC blue role LED GPIO is not ready\n");
+		printk("RECEPTEC red role LED GPIO is not ready\n");
 		return;
 	}
-
 	status = gpio_pin_configure_dt(&receptec_role_led,
 				       GPIO_OUTPUT_INACTIVE);
 	if (status < 0) {
-		printk("Failed to configure RECEPTEC blue role LED: %d\n",
+		printk("Failed to configure RECEPTEC red role LED: %d\n",
+		       status);
+		return;
+	}
+
+	if (!gpio_is_ready_dt(&coletec_role_led)) {
+		printk("COLETEC blue role LED GPIO is not ready\n");
+		return;
+	}
+	status = gpio_pin_configure_dt(&coletec_role_led,
+				       GPIO_OUTPUT_INACTIVE);
+	if (status < 0) {
+		printk("Failed to configure COLETEC blue role LED: %d\n",
 		       status);
 		return;
 	}
 
 	if (role == DEVICE_ROLE_RECEPTEC) {
-		status = gpio_pin_set_dt(&receptec_role_led, 1);
-		if (status < 0) {
-			printk("Failed to light RECEPTEC blue role LED: %d\n",
-			       status);
-			return;
-		}
-		printk("Role indicator: blue LED on\n");
+		active_led = &receptec_role_led;
+		active_color = "red";
+	} else {
+		active_led = &coletec_role_led;
+		active_color = "blue";
 	}
+
+	status = gpio_pin_set_dt(active_led, 1);
+	if (status < 0) {
+		printk("Failed to light %s role LED: %d\n", active_color,
+		       status);
+		return;
+	}
+	printk("Role indicator: %s LED on\n", active_color);
 }
 
 int main(void)
@@ -79,11 +101,13 @@ int main(void)
 		return -1;
 	}
 
+	printk("Atletec DWM UWB bench\n");
 	printk("Board: %s\n", CONFIG_BOARD_TARGET);
+	printk("Build: %s contracts: %s\n", DWM_BENCH_GIT_REV,
+	       DWM_BENCH_CONTRACTS_REV);
 	print_device_id(device_id, (size_t)length);
 
-	role = get_device_role();
-	printk("Role source: build configuration\n");
+	role = configured_role();
 	printk("Role: %s\n",
 	       role == DEVICE_ROLE_RECEPTEC ? "RECEPTEC" : "COLETEC");
 	configure_role_indicator(role);

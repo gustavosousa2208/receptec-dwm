@@ -1,0 +1,16 @@
+identifier: coletec/nrf52833
+name: COLETEC UWB bench endpoint
+type: mcu
+arch: arm
+ram: 128
+flash: 512
+toolchain:
+  - zephyr
+  - gnuarmemb
+supported:
+  - adc
+  - usb_device
+  - ble
+  - gpio
+  - watchdog
+vendor: atletec

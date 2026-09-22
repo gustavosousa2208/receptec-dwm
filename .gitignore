@@ -16,3 +16,7 @@ __pycache__/
 
 # Qualification logs are local test artifacts
 logs/
+
+# Operator planning and qualification notes stay on this machine
+/TODO.md
+/TESTS.md

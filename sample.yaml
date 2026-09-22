@@ -1,11 +1,20 @@
 sample:
-  description: DWM3001C identity and UWB hardware bring-up application
-  name: DWM3001C identity bring-up
+  description: Atletec DWM3001C UWB bench with explicit endpoint roles
+  name: Atletec DWM UWB bench
 tests:
-  application.receptec.build:
+  application.dwm_uwb_bench.receptec.build:
     build_only: true
     platform_allow:
-      - decawave_dwm3001cdk/nrf52833
+      - receptec/nrf52833
     tags:
       - uwb
       - protocol
+      - receptec
+  application.dwm_uwb_bench.coletec.build:
+    build_only: true
+    platform_allow:
+      - coletec/nrf52833
+    tags:
+      - uwb
+      - protocol
+      - coletec

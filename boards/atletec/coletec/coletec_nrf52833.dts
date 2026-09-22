@@ -1,0 +1,11 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/dts-v1/;
+#include <nordic/nrf52833_qdaa.dtsi>
+#include "../common/dwm3001cdk-pinctrl.dtsi"
+#include "../common/dwm3001cdk.dtsi"
+
+/ {
+	model = "Atletec COLETEC UWB bench endpoint";
+	compatible = "atletec,coletec-bench";
+};

@@ -147,6 +147,52 @@ static void test_rejections(void)
 	       RECEPTEC_PROTOCOL_ERR_LENGTH);
 }
 
+static void test_coletec_request_rejections(void)
+{
+	uint8_t dt[RECEPTEC_PROTOCOL_DT_SAMPLING_SIZE];
+	uint8_t wrong_eui[RECEPTEC_PROTOCOL_EUI64_SIZE];
+	struct receptec_frame request;
+	uint16_t decoded_dt = UINT16_MAX;
+
+	receptec_protocol_encode_dt_sampling(0U, dt);
+	request = frame(RECEPTEC_PACKET_DATA_REQ, dt, sizeof(dt));
+	assert(receptec_protocol_validate_request(
+		       &request, coletec_eui, receptec_eui, &decoded_dt) ==
+	       RECEPTEC_PROTOCOL_OK);
+	assert(decoded_dt == 0U);
+
+	memcpy(wrong_eui, receptec_eui, sizeof(wrong_eui));
+	wrong_eui[0] ^= 0x80U;
+	assert(receptec_protocol_validate_request(
+		       &request, coletec_eui, wrong_eui, &decoded_dt) ==
+	       RECEPTEC_PROTOCOL_ERR_ADDRESS);
+
+	memcpy(wrong_eui, coletec_eui, sizeof(wrong_eui));
+	wrong_eui[7] ^= 0x01U;
+	assert(receptec_protocol_validate_request(
+		       &request, wrong_eui, receptec_eui, &decoded_dt) ==
+	       RECEPTEC_PROTOCOL_ERR_ADDRESS);
+
+	request.type = RECEPTEC_PACKET_DATA;
+	assert(receptec_protocol_validate_request(
+		       &request, coletec_eui, receptec_eui, &decoded_dt) ==
+	       RECEPTEC_PROTOCOL_ERR_TYPE);
+
+	request.type = RECEPTEC_PACKET_SYNC;
+	receptec_protocol_encode_dt_sampling(
+		RECEPTEC_PROTOCOL_ATTEMPT_OFFSET_MAX_US + 1U, dt);
+	assert(receptec_protocol_validate_request(
+		       &request, coletec_eui, receptec_eui, &decoded_dt) ==
+	       RECEPTEC_PROTOCOL_ERR_DT_SAMPLING);
+
+	request = frame(RECEPTEC_PACKET_STOP, NULL, 0U);
+	decoded_dt = UINT16_MAX;
+	assert(receptec_protocol_validate_request(
+		       &request, coletec_eui, receptec_eui, &decoded_dt) ==
+	       RECEPTEC_PROTOCOL_OK);
+	assert(decoded_dt == 0U);
+}
+
 static void test_stop_frames(void)
 {
 	uint8_t encoded[RECEPTEC_PROTOCOL_MAX_LOGICAL_SIZE];
@@ -170,6 +216,44 @@ static void test_stop_frames(void)
 	       RECEPTEC_PROTOCOL_OK);
 	assert(decoded.type == RECEPTEC_PACKET_STOP_ACK);
 	assert(decoded.payload_length == 0U);
+}
+
+static void test_sequence_wrap(void)
+{
+	static const uint8_t sequences[] = { 254U, 255U, 0U };
+	uint8_t dt[RECEPTEC_PROTOCOL_DT_SAMPLING_SIZE];
+	uint8_t encoded[RECEPTEC_PROTOCOL_MAX_LOGICAL_SIZE];
+	struct receptec_frame decoded;
+	size_t length;
+
+	receptec_protocol_encode_dt_sampling(0U, dt);
+	for (size_t i = 0U; i < sizeof(sequences); ++i) {
+		struct receptec_frame request =
+			frame(RECEPTEC_PACKET_SYNC, dt, sizeof(dt));
+		struct receptec_frame response =
+			frame(RECEPTEC_PACKET_ACK, NULL, 0U);
+
+		request.sequence = sequences[i];
+		assert(receptec_protocol_encode(encoded, sizeof(encoded),
+						&request, &length) ==
+		       RECEPTEC_PROTOCOL_OK);
+		assert(receptec_protocol_decode(encoded, length, &decoded) ==
+		       RECEPTEC_PROTOCOL_OK);
+		assert(decoded.sequence == sequences[i]);
+
+		response.sequence = decoded.sequence;
+		memcpy(response.destination, receptec_eui,
+		       sizeof(receptec_eui));
+		memcpy(response.source, coletec_eui, sizeof(coletec_eui));
+		assert(receptec_protocol_encode(encoded, sizeof(encoded),
+						&response, &length) ==
+		       RECEPTEC_PROTOCOL_OK);
+		assert(receptec_protocol_decode(encoded, length, &decoded) ==
+		       RECEPTEC_PROTOCOL_OK);
+		assert(decoded.type == RECEPTEC_PACKET_ACK);
+		assert(decoded.sequence == sequences[i]);
+	}
+	assert((uint8_t)(sequences[1] + 1U) == sequences[2]);
 }
 
 static void test_coletec_synchronization_recovery(void)
@@ -302,7 +386,9 @@ int main(void)
 	test_dt_sampling_values();
 	test_maximum_data();
 	test_rejections();
+	test_coletec_request_rejections();
 	test_stop_frames();
+	test_sequence_wrap();
 	test_coletec_synchronization_recovery();
 	test_coletec_discovery_backoff();
 	test_backoff_schedule();

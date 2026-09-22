@@ -1,0 +1,6 @@
+board:
+  name: coletec
+  full_name: COLETEC UWB bench endpoint
+  vendor: atletec
+  socs:
+    - name: nrf52833

@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <zephyr/shell/shell.h>
 
@@ -24,6 +25,12 @@ static const char *operation_name(enum dw3110_radio_operation operation)
 		return "test-out-of-slot";
 	case DW3110_RADIO_OPERATION_TEST_SILENCE:
 		return "test-silence";
+	case DW3110_RADIO_OPERATION_TEST_REJECTION:
+		return "test-rejection";
+	case DW3110_RADIO_OPERATION_TEST_SEQUENCE_WRAP:
+		return "test-sequence-wrap";
+	case DW3110_RADIO_OPERATION_TEST_WINDOW:
+		return "test-window";
 	default:
 		return "unknown";
 	}
@@ -220,10 +227,86 @@ static int cmd_test_wrong_eui(const struct shell *shell, size_t argc, char **arg
 	return run_peer_test(shell, argv[1], DW3110_RADIO_TEST_WRONG_EUI, "wrong-EUI test");
 }
 
+static int cmd_test_reject(const struct shell *shell, size_t argc, char **argv)
+{
+	static const struct {
+		const char *name;
+		enum dw3110_radio_rejection_case test;
+	} cases[] = {
+		{ "wrong_source", DW3110_RADIO_REJECT_WRONG_SOURCE },
+		{ "wrong_type", DW3110_RADIO_REJECT_WRONG_TYPE },
+		{ "reserved", DW3110_RADIO_REJECT_RESERVED_BITS },
+		{ "short", DW3110_RADIO_REJECT_SHORT_PAYLOAD },
+		{ "dt_range", DW3110_RADIO_REJECT_DT_SAMPLING },
+	};
+	uint32_t slot;
+	int status;
+
+	ARG_UNUSED(argc);
+	status = parse_u32(shell, argv[2], 0U, DW3110_RADIO_PEER_COUNT - 1U,
+			   &slot);
+	if (status < 0) {
+		return status;
+	}
+	for (size_t i = 0U; i < ARRAY_SIZE(cases); ++i) {
+		if (strcmp(argv[1], cases[i].name) == 0) {
+			return report_submission(
+				shell,
+				dw3110_radio_run_test(DW3110_RADIO_TEST_REJECTION,
+						      (uint8_t)slot, cases[i].test),
+				"P-02 rejection test");
+		}
+	}
+	shell_error(shell,
+		    "case must be wrong_source, wrong_type, reserved, short, or dt_range");
+	return -EINVAL;
+}
+
 static int cmd_test_out_of_slot(const struct shell *shell, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
 	return run_peer_test(shell, argv[1], DW3110_RADIO_TEST_OUT_OF_SLOT, "out-of-slot test");
+}
+
+static int cmd_test_sequence_wrap(const struct shell *shell, size_t argc,
+				  char **argv)
+{
+	ARG_UNUSED(argc);
+	return run_peer_test(shell, argv[1], DW3110_RADIO_TEST_SEQUENCE_WRAP,
+			     "P-04 sequence-wrap test");
+}
+
+static int cmd_test_window(const struct shell *shell, size_t argc, char **argv)
+{
+	static const struct {
+		const char *name;
+		enum dw3110_radio_window_case test;
+	} cases[] = {
+		{ "before", DW3110_RADIO_WINDOW_BEFORE },
+		{ "inside", DW3110_RADIO_WINDOW_INSIDE },
+		{ "end", DW3110_RADIO_WINDOW_END },
+		{ "after", DW3110_RADIO_WINDOW_AFTER },
+	};
+	uint32_t slot;
+	int status;
+
+	ARG_UNUSED(argc);
+	status = parse_u32(shell, argv[2], 0U, DW3110_RADIO_PEER_COUNT - 1U,
+			   &slot);
+	if (status < 0) {
+		return status;
+	}
+	for (size_t i = 0U; i < ARRAY_SIZE(cases); ++i) {
+		if (strcmp(argv[1], cases[i].name) == 0) {
+			return report_submission(
+				shell,
+				dw3110_radio_run_test(DW3110_RADIO_TEST_WINDOW,
+						      (uint8_t)slot, cases[i].test),
+				"P-05 receive-window test");
+		}
+	}
+	shell_error(shell, "case must be before, inside, end, or after");
+	return -EINVAL;
 }
 
 static int cmd_test_silence(const struct shell *shell, size_t argc, char **argv)
@@ -258,7 +341,10 @@ static int cmd_test_list(const struct shell *shell, size_t argc, char **argv)
 	shell_print(shell, "  uwb test sync <slot>");
 	shell_print(shell, "  uwb test stop <slot>       (peer reset required)");
 	shell_print(shell, "  uwb test wrong_eui <slot>");
+	shell_print(shell, "  uwb test reject <case> <slot>");
 	shell_print(shell, "  uwb test out_of_slot <slot> (slotted must run)");
+	shell_print(shell, "  uwb test sequence_wrap <slot>");
+	shell_print(shell, "  uwb test window <before|inside|end|after> <slot>");
 	shell_print(shell, "  uwb test silence <cycles>");
 	shell_print(shell, "  uwb test abort");
 	shell_print(shell, "Normal 4-peer coverage: uwb slotted start");
@@ -293,8 +379,17 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      cmd_test_stop, 2, 0),
 	SHELL_CMD_ARG(wrong_eui, NULL, "Send one wrong-destination request: wrong_eui <peer-slot>",
 		      cmd_test_wrong_eui, 2, 0),
+	SHELL_CMD_ARG(reject, NULL,
+		      "P-02 rejection: reject <wrong_source|wrong_type|reserved|short|dt_range> <slot>",
+		      cmd_test_reject, 3, 0),
 	SHELL_CMD_ARG(out_of_slot, NULL, "Probe after all assigned slots: out_of_slot <peer-slot>",
 		      cmd_test_out_of_slot, 2, 0),
+	SHELL_CMD_ARG(sequence_wrap, NULL,
+		      "P-04 explicit 254,255,0,1 sequence test: sequence_wrap <peer-slot>",
+		      cmd_test_sequence_wrap, 2, 0),
+	SHELL_CMD_ARG(window, NULL,
+		      "P-05 receive-window boundary: window <before|inside|end|after> <slot>",
+		      cmd_test_window, 3, 0),
 	SHELL_CMD_ARG(silence, NULL, "Suppress all requests: silence <one-second-cycles>",
 		      cmd_test_silence, 2, 0),
 	SHELL_CMD(abort, NULL, "Abort a queued test or active silence", cmd_test_abort),

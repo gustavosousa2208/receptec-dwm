@@ -67,6 +67,8 @@ enum receptec_protocol_status {
 	RECEPTEC_PROTOCOL_ERR_FCF = -4,
 	RECEPTEC_PROTOCOL_ERR_RESERVED = -5,
 	RECEPTEC_PROTOCOL_ERR_TYPE = -6,
+	RECEPTEC_PROTOCOL_ERR_ADDRESS = -7,
+	RECEPTEC_PROTOCOL_ERR_DT_SAMPLING = -8,
 };
 
 struct receptec_frame {
@@ -119,5 +121,12 @@ void receptec_protocol_backoff_schedule(
 
 /* True when dt_sampling_us could have come from a valid backoff schedule. */
 bool receptec_protocol_attempt_offset_valid(uint16_t dt_sampling_us);
+
+/* Validate a decoded frame before the COLETEC changes state or responds. */
+int receptec_protocol_validate_request(
+	const struct receptec_frame *frame,
+	const uint8_t expected_destination[RECEPTEC_PROTOCOL_EUI64_SIZE],
+	const uint8_t expected_source[RECEPTEC_PROTOCOL_EUI64_SIZE],
+	uint16_t *dt_sampling_us);
 
 #endif /* RECEPTEC_PROTOCOL_H_ */
