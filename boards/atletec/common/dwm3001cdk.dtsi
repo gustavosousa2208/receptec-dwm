@@ -71,7 +71,6 @@
 		led3 = &led3;
 		watchdog0 = &wdt0;
 		accel0 = &lis2dh12;
-		receptec-role-led = &led1;
 		coletec-role-led = &led3;
 		external-blue-led = &external_blue_led;
 		external-green-led = &external_green_led;

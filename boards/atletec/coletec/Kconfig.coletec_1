@@ -1,2 +1,2 @@
-config BOARD_RECEPTEC
+config BOARD_COLETEC_1
 	select SOC_NRF52833_QDAA

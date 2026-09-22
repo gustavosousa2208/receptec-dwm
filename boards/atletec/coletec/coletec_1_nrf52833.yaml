@@ -1,5 +1,5 @@
-identifier: receptec/nrf52833
-name: RECEPTEC UWB bench endpoint
+identifier: coletec_1/nrf52833
+name: COLETEC-1 UWB bench surrogate
 type: mcu
 arch: arm
 ram: 128

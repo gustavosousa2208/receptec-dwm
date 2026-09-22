@@ -157,9 +157,17 @@ static void draw_attempt_offsets(uint16_t offsets_us[DW3110_ATTEMPT_COUNT])
 static const uint8_t receptec_eui[RECEPTEC_PROTOCOL_EUI64_SIZE] = {
 	0x41, 0x16, 0xA8, 0x06, 0x82, 0xF3, 0xC6, 0x3E,
 };
+#if CONFIG_DWM_COLETEC_INSTANCE == 0
 static const uint8_t coletec_eui[RECEPTEC_PROTOCOL_EUI64_SIZE] = {
 	0x31, 0x5D, 0x02, 0xD5, 0x15, 0x8C, 0xFA, 0x40,
 };
+#define COLETEC_EUI_TEXT "31:5D:02:D5:15:8C:FA:40"
+#else
+static const uint8_t coletec_eui[RECEPTEC_PROTOCOL_EUI64_SIZE] = {
+	0x31, 0x5D, 0x02, 0xD5, 0x15, 0x8C, 0xFA, 0x41,
+};
+#define COLETEC_EUI_TEXT "31:5D:02:D5:15:8C:FA:41"
+#endif
 
 /* DW3xxx time is based on 499.2 MHz: 1 us = 319488 / 5 DTU. */
 static uint64_t us_to_dtu(uint64_t us)
@@ -197,8 +205,9 @@ static int configure_coletec_frame_filter(void)
 		return -EIO;
 	}
 	dwt_configureframefilter(DWT_FF_ENABLE_802_15_4, DWT_FF_DATA_EN);
-	printk("COLETEC hardware frame filter enabled: "
-	       "destination=31:5D:02:D5:15:8C:FA:40 type=DATA\n");
+	printk("COLETEC-%u hardware frame filter enabled: "
+	       "destination=%s type=DATA\n",
+	       CONFIG_DWM_COLETEC_INSTANCE, COLETEC_EUI_TEXT);
 #endif
 	return 0;
 }

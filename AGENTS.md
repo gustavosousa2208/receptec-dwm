@@ -3,20 +3,21 @@
 Part of the **Atletec EPTS** workspace — read the workspace `../AGENTS.md` and the
 `contracts/` submodule first.
 
-This repo is the unified DWM3001C UWB bench (nRF52833 + DW3110). It builds an
-explicit **RECEPTEC** initiator image and an explicit **COLETEC** surrogate
-image from the same commit. The production COLETEC endpoint remains
-`nrf52-bringup-fw`.
+This repo owns the two DWM3001C surrogate tags in the UWB bench (nRF52833 +
+DW3110). It builds explicit **COLETEC-0** and **COLETEC-1** images from the same
+commit. The bench initiator is the real RECEPTEC running firmware from its own
+repository; never build or flash a DWM as RECEPTEC. The production COLETEC
+endpoint remains `nrf52-bringup-fw`.
 
 ## Contract this repo implements
 
 Pinned in `contracts/`; follow `contracts/VERSIONS.md` to change it.
 
-- **UWB RECEPTEC↔COLETEC** — this repo is the **RECEPTEC** end:
+- **UWB RECEPTEC↔COLETEC** — this repo implements two surrogate **COLETEC** ends:
   `contracts/protocol/uwb-receptec-coletec/`. Run the **same active PHY profile**
   as the COLETEC (Ch 9, 6.8 Mbit/s, PRF 64 MHz, preamble 128 / code 9, STS
-  disabled — the protocol doc is the authority). Hardware facts:
-  `contracts/hardware/receptec-dwm.md`.
+  disabled — the protocol doc is the authority). The real RECEPTEC is outside
+  this repository.
 
 **When implementing or modifying the UWB protocol, read the canonical doc from
 `contracts/` — not a local copy.** If you find a contract doc outside `contracts/`,
