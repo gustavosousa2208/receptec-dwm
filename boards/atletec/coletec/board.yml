@@ -1,11 +1,11 @@
 boards:
   - name: coletec_0
-    full_name: COLETEC-0 UWB bench surrogate
+    full_name: fake-COLETEC-0 UWB bench surrogate
     vendor: atletec
     socs:
       - name: nrf52833
   - name: coletec_1
-    full_name: COLETEC-1 UWB bench surrogate
+    full_name: fake-COLETEC-1 UWB bench surrogate
     vendor: atletec
     socs:
       - name: nrf52833

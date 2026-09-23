@@ -1,6 +1,7 @@
 # Zephyr and native build output
 build/
 build-*/
+/firmware/receptec/build/
 
 # Editor and operating-system files
 .cache/

@@ -5,8 +5,8 @@ script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 app_dir=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 coletec_0_build="$app_dir/build-coletec-0"
 coletec_1_build="$app_dir/build-coletec-1"
-coletec_0_probe=760216737
-coletec_1_probe=760216755
+coletec_0_probe=760216755
+coletec_1_probe=760216737
 assume_yes=false
 
 usage()
@@ -15,8 +15,8 @@ usage()
 Usage: scripts/flash-both.sh [options]
 
 Options:
-  --coletec-0-probe SERIAL  COLETEC-0 J-Link serial (default: 760216737)
-  --coletec-1-probe SERIAL  COLETEC-1 J-Link serial (default: 760216755)
+  --coletec-0-probe SERIAL  fake-COLETEC-0 J-Link serial (default: 760216755)
+  --coletec-1-probe SERIAL  fake-COLETEC-1 J-Link serial (default: 760216737)
   --yes                     Skip the interactive mapping confirmation
   -h, --help                Show this help
 EOF

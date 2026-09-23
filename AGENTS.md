@@ -3,21 +3,27 @@
 Part of the **Atletec EPTS** workspace — read the workspace `../AGENTS.md` and the
 `contracts/` submodule first.
 
-This repo owns the two DWM3001C surrogate tags in the UWB bench (nRF52833 +
-DW3110). It builds explicit **COLETEC-0** and **COLETEC-1** images from the same
-commit. The bench initiator is the real RECEPTEC running firmware from its own
-repository; never build or flash a DWM as RECEPTEC. The production COLETEC
-endpoint remains `nrf52-bringup-fw`.
+This repo owns the two DWM3001C fake-COLETEC surrogate tags (nRF52833 + DW3110)
+and the RECEPTEC Type2AB receiver under `firmware/receptec/`. It builds explicit
+**COLETEC-0** and **COLETEC-1** surrogate images, plus a distinct
+`receptec/nrf52840` board target. RECEPTEC has a QM33120W/DW3720 driver, a
+manual SYNC initiator and peer registry; periodic scheduling, DATA collection,
+and Pi data export are not implemented. Never build or flash a DWM as
+RECEPTEC. The production COLETEC endpoint remains separate in
+`nrf52-bringup-fw`.
 
 ## Contract this repo implements
 
 Pinned in `contracts/`; follow `contracts/VERSIONS.md` to change it.
 
-- **UWB RECEPTEC↔COLETEC** — this repo implements two surrogate **COLETEC** ends:
+- **UWB RECEPTEC↔COLETEC** — the DWM apps implement two surrogate **COLETEC**
+  ends and the RECEPTEC app implements the initiator-side PHY, peer registry,
+  frame codec, and manual SYNC/ACK operation:
   `contracts/protocol/uwb-receptec-coletec/`. Run the **same active PHY profile**
   as the COLETEC (Ch 9, 6.8 Mbit/s, PRF 64 MHz, preamble 128 / code 9, STS
-  disabled — the protocol doc is the authority). The real RECEPTEC is outside
-  this repository.
+  disabled — the protocol doc is the authority). DATA remains a COLETEC-owned
+  application payload; its schema and RECEPTEC export to maleta are future
+  contract work. The production COLETEC source remains in `nrf52-bringup-fw`.
 
 **When implementing or modifying the UWB protocol, read the canonical doc from
 `contracts/` — not a local copy.** If you find a contract doc outside `contracts/`,

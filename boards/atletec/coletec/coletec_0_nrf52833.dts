@@ -6,6 +6,6 @@
 #include "../common/dwm3001cdk.dtsi"
 
 / {
-	model = "Atletec COLETEC-0 UWB bench surrogate";
-	compatible = "atletec,coletec-0-bench";
+	model = "Atletec fake-COLETEC-0 UWB bench surrogate";
+	compatible = "atletec,fake-coletec-0-bench";
 };

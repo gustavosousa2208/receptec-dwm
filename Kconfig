@@ -6,8 +6,9 @@ config DWM_COLETEC_INSTANCE
 	default 1 if BOARD_COLETEC_1
 	default 0
 	help
-	  Select the fixed surrogate identity. The coletec_0 and coletec_1 board
-	  targets set this value to 0 and 1 respectively.
+	  Select the on-air COLETEC peer identity for a fake-COLETEC DWM surrogate.
+	  The coletec_0 and coletec_1 board targets set this value to 0 and 1.
+	  These targets are responders and must never be used as RECEPTEC.
 
 config RECEPTEC_SLOTTED_AUTOSTART
 	bool "Start the RECEPTEC slotted schedule at boot"
