@@ -1,19 +1,19 @@
 sample:
-  description: Two DWM3001C COLETEC surrogates for the Atletec UWB bench
-  name: Atletec dual-COLETEC DWM bench
+  description: Two DWM3001C fake-COLETEC surrogates for the Atletec UWB bench
+  name: Atletec fake-COLETEC DWM bench
 tests:
-  application.dwm_uwb_bench.coletec_0.build:
+  application.dwm_uwb_bench.fake_coletec_0.build:
     build_only: true
     platform_allow:
-      - coletec_0/nrf52833
+      - fake_coletec_0/nrf52833
     tags:
       - uwb
       - protocol
       - coletec
-  application.dwm_uwb_bench.coletec_1.build:
+  application.dwm_uwb_bench.fake_coletec_1.build:
     build_only: true
     platform_allow:
-      - coletec_1/nrf52833
+      - fake_coletec_1/nrf52833
     tags:
       - uwb
       - protocol

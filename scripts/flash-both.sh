@@ -3,8 +3,8 @@ set -u
 
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 app_dir=$(CDPATH='' cd -- "$script_dir/.." && pwd)
-coletec_0_build="$app_dir/build-coletec-0"
-coletec_1_build="$app_dir/build-coletec-1"
+coletec_0_build="$app_dir/build-fake-coletec-0"
+coletec_1_build="$app_dir/build-fake-coletec-1"
 coletec_0_probe=760216755
 coletec_1_probe=760216737
 assume_yes=false
@@ -15,8 +15,8 @@ usage()
 Usage: scripts/flash-both.sh [options]
 
 Options:
-  --coletec-0-probe SERIAL  fake-COLETEC-0 J-Link serial (default: 760216755)
-  --coletec-1-probe SERIAL  fake-COLETEC-1 J-Link serial (default: 760216737)
+  --fake-coletec-0-probe SERIAL  fake-COLETEC-0 J-Link serial (default: 760216755)
+  --fake-coletec-1-probe SERIAL  fake-COLETEC-1 J-Link serial (default: 760216737)
   --yes                     Skip the interactive mapping confirmation
   -h, --help                Show this help
 EOF
@@ -24,8 +24,8 @@ EOF
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
-	--coletec-0-probe) [ "$#" -ge 2 ] || exit 2; coletec_0_probe=$2; shift 2 ;;
-	--coletec-1-probe) [ "$#" -ge 2 ] || exit 2; coletec_1_probe=$2; shift 2 ;;
+	--fake-coletec-0-probe) [ "$#" -ge 2 ] || exit 2; coletec_0_probe=$2; shift 2 ;;
+	--fake-coletec-1-probe) [ "$#" -ge 2 ] || exit 2; coletec_1_probe=$2; shift 2 ;;
 	--yes) assume_yes=true; shift ;;
 	-h|--help) usage; exit 0 ;;
 	*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -37,7 +37,7 @@ case "$coletec_0_probe:$coletec_1_probe" in
 esac
 if [ -z "$coletec_0_probe" ] || [ -z "$coletec_1_probe" ] ||
    [ "$coletec_0_probe" = "$coletec_1_probe" ]; then
-	echo "COLETEC-0 and COLETEC-1 require distinct probe serials." >&2
+	echo "fake-COLETEC-0 and fake-COLETEC-1 require distinct probe serials." >&2
 	exit 2
 fi
 command -v west >/dev/null 2>&1 || {
@@ -65,7 +65,7 @@ verify_image()
 		echo "Missing $expected_identity build; run scripts/build-both.sh." >&2
 		return 1
 	}
-	grep -qx "role=COLETEC" "$metadata" &&
+	grep -qx "role=fake-COLETEC" "$metadata" &&
 	grep -qx "identity=$expected_identity" "$metadata" &&
 	grep -qx "source_commit=$source_commit" "$metadata" &&
 	grep -qx "contracts_commit=$contracts_commit" "$metadata" &&
@@ -87,8 +87,8 @@ if [ -z "$coletec_0_test_config" ] ||
 fi
 
 echo "Flash mapping:"
-echo "  COLETEC-0 image -> J-Link $coletec_0_probe"
-echo "  COLETEC-1 image -> J-Link $coletec_1_probe"
+echo "  fake-COLETEC-0 image -> J-Link $coletec_0_probe"
+echo "  fake-COLETEC-1 image -> J-Link $coletec_1_probe"
 echo "  Test config     -> $coletec_0_test_config"
 if [ "$assume_yes" = false ]; then
 	printf 'Flash both COLETEC surrogates concurrently? [y/N] '
@@ -108,9 +108,9 @@ coletec_1_status=0
 wait "$coletec_0_pid" || coletec_0_status=$?
 wait "$coletec_1_pid" || coletec_1_status=$?
 
-[ "$coletec_0_status" -eq 0 ] && echo "COLETEC-0 flash passed" || echo "COLETEC-0 flash FAILED" >&2
-[ "$coletec_1_status" -eq 0 ] && echo "COLETEC-1 flash passed" || echo "COLETEC-1 flash FAILED" >&2
+[ "$coletec_0_status" -eq 0 ] && echo "fake-COLETEC-0 flash passed" || echo "fake-COLETEC-0 flash FAILED" >&2
+[ "$coletec_1_status" -eq 0 ] && echo "fake-COLETEC-1 flash passed" || echo "fake-COLETEC-1 flash FAILED" >&2
 if [ "$coletec_0_status" -ne 0 ] || [ "$coletec_1_status" -ne 0 ]; then
 	exit 1
 fi
-echo "Both COLETEC surrogate images flashed successfully."
+echo "Both fake-COLETEC surrogate images flashed successfully."

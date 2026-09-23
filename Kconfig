@@ -3,11 +3,12 @@ mainmenu "Atletec DWM3001C UWB bench firmware"
 config DWM_COLETEC_INSTANCE
 	int
 	range 0 1
-	default 1 if BOARD_COLETEC_1
+	default 1 if BOARD_FAKE_COLETEC_1
 	default 0
 	help
 	  Select the on-air COLETEC peer identity for a fake-COLETEC DWM surrogate.
-	  The coletec_0 and coletec_1 board targets set this value to 0 and 1.
+	  The fake_coletec_0 and fake_coletec_1 board targets set this value to 0
+	  and 1 respectively.
 	  These targets are responders and must never be used as RECEPTEC.
 
 config RECEPTEC_SLOTTED_AUTOSTART

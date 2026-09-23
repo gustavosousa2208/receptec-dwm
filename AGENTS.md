@@ -5,7 +5,7 @@ Part of the **Atletec EPTS** workspace — read the workspace `../AGENTS.md` and
 
 This repo owns the two DWM3001C fake-COLETEC surrogate tags (nRF52833 + DW3110)
 and the RECEPTEC Type2AB receiver under `firmware/receptec/`. It builds explicit
-**COLETEC-0** and **COLETEC-1** surrogate images, plus a distinct
+**fake-COLETEC-0** and **fake-COLETEC-1** surrogate images, plus a distinct
 `receptec/nrf52840` board target. RECEPTEC has a QM33120W/DW3720 driver, a
 manual SYNC initiator and peer registry; periodic scheduling, DATA collection,
 and Pi data export are not implemented. Never build or flash a DWM as
