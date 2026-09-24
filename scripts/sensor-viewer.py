@@ -112,6 +112,9 @@ def main() -> int:
     ap.add_argument("--port", help="serial port of the RECEPTEC shell (default: RTT)")
     ap.add_argument("--period-ms", type=int, default=1000, help="uwb poll period (default 1000)")
     ap.add_argument("--seconds", type=int, default=0, help="stop after this long (default: until Ctrl-C)")
+    ap.add_argument("--only-peer", metavar="EUI64",
+                    help="unregister every slot, then register this EUI-64 in slot 0 "
+                         "(production COLETEC: 02:00:00:00:00:00:00:02)")
     ap.add_argument("--no-poll", action="store_true", help="do not start/stop the poll; only stream")
     ap.add_argument("--json", type=Path, help="also append each decoded record to this JSONL file")
     ap.add_argument("--raw", action="store_true", help="print the hex payload too")
@@ -124,6 +127,11 @@ def main() -> int:
     jsonl = open(args.json, "a") if args.json else None
     received = 0
     try:
+        if args.only_peer:
+            for slot in range(4):
+                shell.run(f"uwb peer unregister {slot}", max_wait=1.5)
+            out, _ = shell.run(f"uwb peer register 0 {args.only_peer}", max_wait=2.0)
+            print("register:", " | ".join(l.strip() for l in out.splitlines()[1:-1]) or "(no output)")
         if not args.no_poll:
             out, _ = shell.run(f"uwb poll start {args.period_ms}", max_wait=3.0)
             print("poll start:", " | ".join(l.strip() for l in out.splitlines()[1:-1]) or "(no output)")
@@ -150,6 +158,9 @@ def main() -> int:
     finally:
         try:
             shell.run("uwb poll stream off", max_wait=2.0)
+            if not args.no_poll:
+                out, _ = shell.run("uwb poll stats", max_wait=3.0)
+                print("\n".join(l for l in out.splitlines() if l.startswith(("poll", "slot"))))
             if not args.no_poll:
                 shell.run("uwb poll stop", max_wait=5.0)
         finally:

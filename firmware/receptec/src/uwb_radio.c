@@ -151,6 +151,22 @@ static int initialize_qorvo_driver(void)
 		printk("QM33120W: PHY configuration failed\n");
 		return -EIO;
 	}
+	/*
+	 * Hand QM33120W GPIO5 to the receive front-end. It powers up as a plain
+	 * high-impedance GPIO; on this carrier GPIO5 feeds the QM14068 VCTRL
+	 * through a 10k/12.1k divider (Projeto Receptor, sheet 4, net R_VCTRL), so
+	 * left alone the LNAs stay off. The COLETEC had the same defect: enabling
+	 * it measured +13.8 dB (nrf52-bringup-fw docs/bench.md).
+	 */
+	dwt_setlnapamode(DWT_LNA_ENABLE);
+	{
+		uint32_t gpio_mode = dwt_read_reg(GPIO_MODE_ID);
+
+		printk("QM33120W: external LNA %s (GPIO_MODE=0x%08X)\n",
+		       (gpio_mode & GPIO_MODE_MSGP5_MODE_BIT_MASK) != 0U ?
+			       "enabled, GPIO5=PDoA_SW1" : "NOT enabled",
+		       gpio_mode);
+	}
 	dwt_configuretxrf(&tx_config);
 	dwt_settxantennadelay(UWB_TX_ANTENNA_DELAY);
 	dwt_setrxantennadelay(UWB_RX_ANTENNA_DELAY);
