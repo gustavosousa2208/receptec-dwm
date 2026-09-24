@@ -192,18 +192,21 @@ if [ "$assume_yes" = false ]; then
 fi
 
 if [ "$backup" = true ]; then
-	command -v nrfjprog >/dev/null 2>&1 || {
-		echo "nrfjprog not found; cannot back up RECEPTEC before flashing." >&2
+	command -v lstty >/dev/null 2>&1 || {
+		echo "lstty not found; cannot back up RECEPTEC before flashing." >&2
 		exit 1
 	}
 	backup_dir="$app_dir/backups/real-receptec-$probe-$(date -u +%Y%m%dT%H%M%SZ)"
 	mkdir -p "$backup_dir"
-	if ! nrfjprog -s "$probe" --readcode "$backup_dir/flash.hex" \
-		>"$backup_dir/readcode.log" 2>&1 || [ ! -s "$backup_dir/flash.hex" ]; then
-		echo "RECEPTEC backup FAILED (see $backup_dir/readcode.log); nothing flashed." >&2
+	# Flash (1 MiB) and UICR (4 KiB) of the nRF52840, read over SWD with JLinkExe.
+	# Never nrfjprog: it opens a probe-selection window and blocks.
+	if ! { lstty jlink dump "$probe" 0 0x100000 -o "$backup_dir/flash.bin" &&
+		lstty jlink dump "$probe" 0x10001000 0x1000 -o "$backup_dir/uicr.bin"; } \
+		>"$backup_dir/readback.log" 2>&1 || [ ! -s "$backup_dir/flash.bin" ]; then
+		echo "RECEPTEC backup FAILED (see $backup_dir/readback.log); nothing flashed." >&2
 		exit 1
 	fi
-	echo "RECEPTEC flash backed up to $backup_dir/flash.hex"
+	echo "RECEPTEC flash backed up to $backup_dir/flash.bin (+ uicr.bin)"
 fi
 
 if west flash -d "$build_dir" --runner jlink --dev-id "$probe" \
