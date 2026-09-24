@@ -15,7 +15,6 @@ are the result.
 
 import argparse
 import re
-import socket
 import statistics
 import subprocess
 import sys
@@ -23,10 +22,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import serial
 
-ANSI = re.compile(r"\x1b\[[0-9;]*m")
 PROMPT = re.compile(r"(rtt|uart):~\$ ")
+sys.path.insert(0, str(Path.home() / "source/dotfiles/scripts"))
+from benchlib.console import ShellRunner, open_console  # noqa: E402
 SYNC_DONE = re.compile(r"SYNC/ACK (passed|failed)")
 SYNC_FAIL = re.compile(r"SYNC/ACK failed: (-?\d+)")
 
@@ -41,127 +40,14 @@ def reset_board(nick):
                    timeout=90, check=True)
 
 
-class Shell:
-    """A Zephyr shell over some transport. Subclasses provide _recv and _send."""
-
-    def __init__(self, name, log):
-        self.name = name
-        self.log = log
-
-    def _note(self, text):
-        self.log.write(f"[{self.name}] {text}")
-        self.log.flush()
-
-    def drain(self, quiet=0.3):
-        last = time.monotonic()
-        while time.monotonic() - last < quiet:
-            if self._recv():
-                last = time.monotonic()
-
-    def run(self, command, stop_re=PROMPT, max_wait=3.0):
-        """Send one line; return (output after the echo, seconds)."""
-        self.drain(0.15)
-        self._note(f"\n>>> {command}\n")
-        start = time.monotonic()
-        self._send(command.encode() + b"\r")
-        out = ""
-        while time.monotonic() - start < max_wait:
-            out += self._recv()
-            after = out.split(command, 1)[1] if command in out else ""
-            if after and stop_re.search(after):
-                break
-        return ANSI.sub("", out.replace("\r", "")), time.monotonic() - start
-
-    def close(self):
-        pass
-
-
-class SerialShell(Shell):
-    def __init__(self, name, port, log, baud=115200):
-        super().__init__(name, log)
-        self.port = serial.Serial(port, baud, timeout=0.05)
-        self.port.reset_input_buffer()
-        self._send(b"\r")
-        self.drain(0.4)
-
-    def _recv(self):
-        data = self.port.read(4096)
-        text = data.decode("utf-8", "replace")
-        if text:
-            self._note(text)
-        return text
-
-    def _send(self, data):
-        self.port.write(data)
-        self.port.flush()
-
-    def close(self):
-        self.port.close()
-
-
-class RttShell(Shell):
-    """RTT telnet port of a J-Link GDB server, for boards without a serial port."""
-
-    def __init__(self, name, nick, log, rtt_port=19021, gdb_port=3331):
-        super().__init__(name, log)
-        self.server = subprocess.Popen(
-            ["JLinkGDBServerCLExe", "-select", f"USB={lstty('jlink', 'get', nick)}",
-             "-device", lstty("jlink", "get", nick, "--field", "device"),
-             "-if", "SWD", "-speed", "4000", "-nohalt", "-noir", "-silent",
-             "-port", str(gdb_port), "-swoport", str(gdb_port + 1),
-             "-telnetport", str(gdb_port + 2), "-RTTTelnetPort", str(rtt_port)],
-            stdout=log, stderr=subprocess.STDOUT)
-        end = time.monotonic() + 15
-        while True:
-            if self.server.poll() is not None:
-                raise RuntimeError(f"{name}: J-Link GDB server exited")
-            try:
-                self.sock = socket.create_connection(("127.0.0.1", rtt_port), 1.0)
-                break
-            except OSError:
-                if time.monotonic() > end:
-                    raise RuntimeError(f"{name}: RTT port never opened")
-                time.sleep(0.3)
-        self.sock.settimeout(0.05)
-        time.sleep(0.6)
-        self.drain(0.4)
-        self._send(b"\r")  # clears any banner bytes the server put on the input line
-        self.drain(0.4)
-
-    def _recv(self):
-        try:
-            data = self.sock.recv(4096)
-        except socket.timeout:
-            return ""
-        if not data:
-            raise ConnectionError(f"{self.name}: RTT connection closed")
-        text = data.decode("utf-8", "replace")
-        self._note(text)
-        return text
-
-    def _send(self, data):
-        # The RTT down buffer is small (about 16 bytes): send long lines in pieces.
-        for i in range(0, len(data), 8):
-            self.sock.sendall(data[i:i + 8])
-            time.sleep(0.15)
-
-    def close(self):
-        self.sock.close()
-        self.server.terminate()
-        try:
-            self.server.wait(5)
-        except subprocess.TimeoutExpired:
-            self.server.kill()
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--count", type=int, default=50, help="SYNCs per slot (default 50)")
     ap.add_argument("--slots", default="0,1", help="slots to alternate (default 0,1)")
     ap.add_argument("--receptec-port", help="serial port of the RECEPTEC shell (default: RTT)")
-    ap.add_argument("--fake-0-port", default=str(Path.home() / ".serial" / "fake-coletec-0"))
-    ap.add_argument("--fake-1-port", default=str(Path.home() / ".serial" / "fake-coletec-1"))
+    ap.add_argument("--fake-0-port", help="serial device of fake-coletec-0 (default: found by lstty nickname)")
+    ap.add_argument("--fake-1-port", help="serial device of fake-coletec-1 (default: found by lstty nickname)")
     ap.add_argument("--poll-ms", type=int,
                     help="instead of manual SYNCs, run `uwb poll start <ms>` on the RECEPTEC")
     ap.add_argument("--duration", type=int, default=30, help="poll run length in seconds")
@@ -184,15 +70,13 @@ def main():
                     reset_board(nick)
                 time.sleep(2.0)
             fakes = []
-            for name, port in (("fake-coletec-0", args.fake_0_port),
-                               ("fake-coletec-1", args.fake_1_port)):
-                sh = SerialShell(name, port, log)
+            for nick, port in (("fake-coletec-0", args.fake_0_port), ("fake-coletec-1", args.fake_1_port)):
+                sh = ShellRunner(open_console(port or nick, log=log))
+                sh.name = nick
                 shells.append(sh)
                 fakes.append(sh)
-            if args.receptec_port:
-                rx = SerialShell("receptec", args.receptec_port, log)
-            else:
-                rx = RttShell("receptec", "receptec", log)
+            rx = ShellRunner(open_console(args.receptec_port or "receptec", log=log))
+            rx.name = "receptec"
             shells.append(rx)
 
             if not args.no_start:
@@ -206,7 +90,7 @@ def main():
 
             if args.poll_ms:
                 out, _ = rx.run(f"uwb poll start {args.poll_ms}", max_wait=3.0)
-                print("poll start:", " | ".join(l.strip() for l in out.splitlines()[1:-1]) or "(no output)")
+                print("poll start:", " | ".join(l.strip() for l in out.splitlines()) or "(no output)")
                 end = time.monotonic() + args.duration
                 while time.monotonic() < end:
                     time.sleep(min(10, max(0.0, end - time.monotonic())))

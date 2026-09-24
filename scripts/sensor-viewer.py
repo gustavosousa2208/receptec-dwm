@@ -18,8 +18,10 @@ import struct
 import sys
 import time
 from datetime import datetime
-from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+
+sys.path.insert(0, str(Path.home() / "source/dotfiles/scripts"))
+from benchlib.console import ShellRunner, open_console  # noqa: E402
 
 DATA_LINE = re.compile(r"DATA slot=(\d+) n=(\d+) len=(\d+) ([0-9A-Fa-f]+)")
 
@@ -33,15 +35,6 @@ AHRS = struct.Struct("<hhhBbBB")
 BIO = struct.Struct("<BBBBBB")
 STAMP = struct.Struct("<I")
 BLOCKS = ("gps", "imu", "metrics", "windows", "ahrs", "bio")
-
-
-def load_shells():
-    """Reuse the RTT and serial shell helpers of sync-sweep.py."""
-    path = Path(__file__).with_name("sync-sweep.py")
-    spec = spec_from_file_location("sync_sweep", path)
-    module = module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def decode_payload(payload: bytes) -> dict:
@@ -122,30 +115,29 @@ def main() -> int:
     ap.add_argument("--raw", action="store_true", help="print the hex payload too")
     args = ap.parse_args()
 
-    ss = load_shells()
     log = open(Path(__file__).resolve().parent.parent / "logs" /
                f"sensor-viewer-{datetime.now().strftime('%Y%m%dT%H%M%S')}.log", "w")
-    shell = ss.SerialShell("receptec", args.port, log) if args.port else ss.RttShell("receptec", "receptec", log)
+    shell = ShellRunner(open_console(args.port or "receptec", log=log))
     jsonl = open(args.json, "a") if args.json else None
     received = 0
     try:
         for command in args.cmd:
             out, _ = shell.run(command, max_wait=2.0)
-            print(f"{command}:", " | ".join(l.strip() for l in out.splitlines()[1:-1]) or "(no output)")
+            print(f"{command}:", " | ".join(l.strip() for l in out.splitlines()) or "(no output)")
         if args.only_peer:
             for slot in range(4):
                 shell.run(f"uwb peer unregister {slot}", max_wait=1.5)
             out, _ = shell.run(f"uwb peer register 0 {args.only_peer}", max_wait=2.0)
-            print("register:", " | ".join(l.strip() for l in out.splitlines()[1:-1]) or "(no output)")
+            print("register:", " | ".join(l.strip() for l in out.splitlines()) or "(no output)")
         if not args.no_poll:
             out, _ = shell.run(f"uwb poll start {args.period_ms}", max_wait=3.0)
-            print("poll start:", " | ".join(l.strip() for l in out.splitlines()[1:-1]) or "(no output)")
+            print("poll start:", " | ".join(l.strip() for l in out.splitlines()) or "(no output)")
         shell.run("uwb poll stream on", max_wait=2.0)
         print("streaming; Ctrl-C to stop")
         end = time.monotonic() + args.seconds if args.seconds else None
         buffer = ""
         while end is None or time.monotonic() < end:
-            buffer += shell._recv().replace("\r", "")
+            buffer += shell.recv()
             while "\n" in buffer:
                 line, buffer = buffer.split("\n", 1)
                 m = DATA_LINE.search(re.sub(r"\x1b\[[0-9;]*m", "", line))
