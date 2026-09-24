@@ -4,6 +4,7 @@
 #define RECEPTEC_UWB_RADIO_H_
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "uwb_peer_registry.h"
@@ -46,5 +47,10 @@ struct receptec_uwb_poll_status {
 int receptec_uwb_poll_start(uint32_t period_ms);
 int receptec_uwb_poll_stop(void);
 void receptec_uwb_poll_get(struct receptec_uwb_poll_status *out);
+/* Print every received DATA payload as one `DATA slot=..` line. */
+void receptec_uwb_poll_stream(bool enable);
+/* Latest DATA payload of a peer; -ENODATA until one has arrived. */
+int receptec_uwb_poll_last(uint8_t slot, uint8_t *payload, size_t capacity,
+			   size_t *length, uint32_t *count, uint32_t *age_ms);
 
 #endif /* RECEPTEC_UWB_RADIO_H_ */

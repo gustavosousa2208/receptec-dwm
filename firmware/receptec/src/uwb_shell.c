@@ -266,6 +266,47 @@ static int cmd_uwb_poll_stats(const struct shell *shell, size_t argc, char **arg
 	return 0;
 }
 
+static int cmd_uwb_poll_stream(const struct shell *shell, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	if (strcmp(argv[1], "on") == 0) {
+		receptec_uwb_poll_stream(true);
+	} else if (strcmp(argv[1], "off") == 0) {
+		receptec_uwb_poll_stream(false);
+	} else {
+		shell_error(shell, "usage: uwb poll stream on|off");
+		return -EINVAL;
+	}
+	shell_print(shell, "stream %s", argv[1]);
+	return 0;
+}
+
+static int cmd_uwb_poll_last(const struct shell *shell, size_t argc, char **argv)
+{
+	uint8_t payload[RECEPTEC_UWB_MAX_PAYLOAD_SIZE];
+	size_t length;
+	uint32_t count;
+	uint32_t age_ms;
+	uint8_t slot;
+	int ret;
+
+	ARG_UNUSED(argc);
+	ret = parse_slot(shell, argv[1], &slot);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = receptec_uwb_poll_last(slot, payload, sizeof(payload), &length,
+				     &count, &age_ms);
+	if (ret < 0) {
+		shell_error(shell, "no DATA payload for slot %u yet (%d)", slot, ret);
+		return ret;
+	}
+	shell_print(shell, "slot %u: n=%u age=%u ms len=%u", slot, count, age_ms,
+		    (uint32_t)length);
+	shell_hexdump(shell, payload, length);
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_poll,
 	SHELL_CMD_ARG(start, NULL,
@@ -273,6 +314,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      cmd_uwb_poll_start, 1, 1),
 	SHELL_CMD(stop, NULL, "Stop polling", cmd_uwb_poll_stop),
 	SHELL_CMD(stats, NULL, "Show polling counters", cmd_uwb_poll_stats),
+	SHELL_CMD_ARG(stream, NULL, "Print each received DATA payload: stream on|off",
+		      cmd_uwb_poll_stream, 2, 0),
+	SHELL_CMD_ARG(last, NULL, "Hexdump the latest DATA payload: last <slot>",
+		      cmd_uwb_poll_last, 2, 0),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(

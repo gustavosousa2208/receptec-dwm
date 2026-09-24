@@ -433,6 +433,14 @@ BUILD_ASSERT(UWB_POLL_OFFSET_MAX_US + UWB_POLL_RESPONSE_TIMEOUT_US <=
 	     "the last attempt and its response window must fit inside the slot");
 
 static struct receptec_uwb_poll_status poll_status;
+/* Latest DATA payload per peer, for `uwb poll last` and the PC viewer. */
+static struct {
+	uint8_t payload[RECEPTEC_UWB_MAX_PAYLOAD_SIZE];
+	size_t length;
+	uint32_t count;
+	int64_t uptime_ms;
+} poll_last[RECEPTEC_UWB_MAX_PEERS];
+static atomic_t poll_stream_enabled = ATOMIC_INIT(0);
 static atomic_t poll_stop_requested = ATOMIC_INIT(0);
 static K_SEM_DEFINE(poll_start_sem, 0, 1);
 
@@ -469,7 +477,7 @@ static uint32_t decode_u32_le(const uint8_t *input)
 }
 
 static int poll_check_data(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
-			   uint8_t sequence,
+			   uint8_t slot, uint8_t sequence,
 			   struct receptec_uwb_poll_peer_stats *stats)
 {
 	struct receptec_uwb_frame frame;
@@ -496,6 +504,10 @@ static int poll_check_data(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 	}
 
 	stats->payload_bytes += frame.payload_length;
+	memcpy(poll_last[slot].payload, frame.payload, frame.payload_length);
+	poll_last[slot].length = frame.payload_length;
+	poll_last[slot].count++;
+	poll_last[slot].uptime_ms = k_uptime_get();
 	if (frame.payload_length >= UWB_POLL_DIAG_COUNTER_OFFSET + 4U &&
 	    memcmp(frame.payload, peer_eui64, RECEPTEC_UWB_EUI64_SIZE) == 0) {
 		uint32_t sample = decode_u32_le(
@@ -512,7 +524,8 @@ static int poll_check_data(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 
 /* One DATA_REQ attempt: delayed TX at target_dx, then wait for the DATA frame. */
 static int poll_attempt(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
-			uint8_t sequence, uint32_t target_dx, uint16_t dt_us,
+			uint8_t slot, uint8_t sequence, uint32_t target_dx,
+			uint16_t dt_us,
 			struct receptec_uwb_poll_peer_stats *stats)
 {
 	/* The delayed TX may be up to a slot ahead; never wait longer than that. */
@@ -550,7 +563,7 @@ static int poll_attempt(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 		(void)dw3720_wait_event(K_MSEC(remaining_ms));
 		radio_status = dwt_readsysstatuslo();
 		if ((radio_status & DWT_INT_RXFCG_BIT_MASK) != 0U) {
-			status = poll_check_data(peer_eui64, sequence, stats);
+			status = poll_check_data(peer_eui64, slot, sequence, stats);
 			break;
 		}
 		if ((radio_status & SYS_STATUS_ALL_RX_TO) != 0U) {
@@ -569,6 +582,19 @@ static int poll_attempt(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 	return status;
 }
 
+/* One line per received DATA: `DATA slot=N n=COUNT len=L HEX` (see sensor-viewer.py). */
+static void print_stream_line(uint8_t slot)
+{
+	char hex[2U * RECEPTEC_UWB_MAX_PAYLOAD_SIZE + 1U];
+
+	for (size_t i = 0U; i < poll_last[slot].length; ++i) {
+		snprintk(&hex[2U * i], 3U, "%02X", poll_last[slot].payload[i]);
+	}
+	hex[2U * poll_last[slot].length] = '\0';
+	printk("DATA slot=%u n=%u len=%u %s\n", slot, poll_last[slot].count,
+	       (uint32_t)poll_last[slot].length, hex);
+}
+
 /* One transaction: up to UWB_POLL_ATTEMPTS attempts inside the peer's slot. */
 static void poll_transaction(uint8_t slot,
 			     const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
@@ -585,7 +611,7 @@ static void poll_transaction(uint8_t slot,
 	stats->transactions++;
 	draw_backoff_offsets(offsets_us);
 	for (size_t attempt = 0U; attempt < UWB_POLL_ATTEMPTS; ++attempt) {
-		int ret = poll_attempt(peer_eui64, sequence,
+		int ret = poll_attempt(peer_eui64, slot, sequence,
 				       slot_epoch_dx +
 					       us_to_dx_time(offsets_us[attempt]),
 				       offsets_us[attempt], stats);
@@ -593,6 +619,9 @@ static void poll_transaction(uint8_t slot,
 		if (ret == 0) {
 			stats->completed++;
 			stats->completed_on_attempt[attempt]++;
+			if (atomic_get(&poll_stream_enabled) != 0) {
+				print_stream_line(slot);
+			}
 			return;
 		}
 	}
@@ -714,6 +743,7 @@ int receptec_uwb_poll_start(uint32_t period_ms)
 		goto unlock;
 	}
 	memset(&poll_status, 0, sizeof(poll_status));
+	memset(poll_last, 0, sizeof(poll_last));
 	poll_status.period_us = period_us;
 	atomic_set(&poll_stop_requested, 0);
 	poll_running = true;
@@ -749,4 +779,32 @@ void receptec_uwb_poll_get(struct receptec_uwb_poll_status *out)
 		out->stopped_ms = k_uptime_get();
 	}
 	k_mutex_unlock(&uwb_peer_mutex);
+}
+
+void receptec_uwb_poll_stream(bool enable)
+{
+	atomic_set(&poll_stream_enabled, enable ? 1 : 0);
+}
+
+int receptec_uwb_poll_last(uint8_t slot, uint8_t *payload, size_t capacity,
+			   size_t *length, uint32_t *count, uint32_t *age_ms)
+{
+	int ret = 0;
+
+	if (slot >= RECEPTEC_UWB_MAX_PEERS) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (poll_last[slot].count == 0U) {
+		ret = -ENODATA;
+	} else if (capacity < poll_last[slot].length) {
+		ret = -EMSGSIZE;
+	} else {
+		memcpy(payload, poll_last[slot].payload, poll_last[slot].length);
+		*length = poll_last[slot].length;
+		*count = poll_last[slot].count;
+		*age_ms = (uint32_t)(k_uptime_get() - poll_last[slot].uptime_ms);
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
 }
