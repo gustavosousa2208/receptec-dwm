@@ -3,7 +3,7 @@
 
 Starts `uwb poll` on the RECEPTEC, turns on `uwb poll stream`, and decodes each
 `DATA slot=N n=COUNT len=L HEX` line as UWB sensor payload v1
-(nrf52-bringup-fw/docs/uwb-sensor-payload-v1.md): an 8-byte header plus the STM32
+(contracts/protocol/uwb-receptec-coletec/payload-v1.md): an 8-byte header plus the STM32
 `ipc_summary_data_t`. This is the COLETEC to RECEPTEC half of the interface; how the
 RECEPTEC hands the payload to the Raspberry Pi is a separate piece of work.
 
@@ -35,6 +35,10 @@ AHRS = struct.Struct("<hhhBbBB")
 BIO = struct.Struct("<BBBBBB")
 STAMP = struct.Struct("<I")
 BLOCKS = ("gps", "imu", "metrics", "windows", "ahrs", "bio")
+# The hand-copied layout must add up to the 88-byte summary of the contract; a change to
+# ipc_summary_data_t that is not mirrored here fails at start instead of decoding garbage.
+SUMMARY_SIZE = sum(s.size for s in (HEADER, GPS, IMU, METRICS, WINDOWS, AHRS, BIO, STAMP))
+assert SUMMARY_SIZE == 88, f"summary layout is {SUMMARY_SIZE} bytes, contract says 88"
 
 
 def decode_payload(payload: bytes) -> dict:
