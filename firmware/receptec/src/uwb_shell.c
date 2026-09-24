@@ -188,12 +188,100 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		     cmd_uwb_peer_unregister, 2, 0),
 	SHELL_SUBCMD_SET_END);
 
+static int cmd_uwb_poll_start(const struct shell *shell, size_t argc,
+			      char **argv)
+{
+	unsigned long period_ms = 1000UL;
+	char *end;
+	int ret;
+
+	if (argc > 1U) {
+		errno = 0;
+		period_ms = strtoul(argv[1], &end, 10);
+		if (errno != 0 || end == argv[1] || *end != '\0' ||
+		    period_ms == 0UL || period_ms > 60000UL) {
+			shell_error(shell, "usage: uwb poll start [period_ms 1..60000]");
+			return -EINVAL;
+		}
+	}
+	ret = receptec_uwb_poll_start((uint32_t)period_ms);
+	if (ret < 0) {
+		shell_error(shell, "poll start failed: %d (-%d busy, -%d no peer, -%d "
+			    "period shorter than the last slot)", ret, EBUSY, ENOENT,
+			    EINVAL);
+		return ret;
+	}
+	shell_print(shell, "polling every %lu ms; `uwb poll stats`, `uwb poll stop`",
+		    period_ms);
+	return 0;
+}
+
+static int cmd_uwb_poll_stop(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	ret = receptec_uwb_poll_stop();
+	if (ret < 0) {
+		shell_error(shell, "poll thread did not stop: %d", ret);
+		return ret;
+	}
+	shell_print(shell, "polling stopped");
+	return 0;
+}
+
+static int cmd_uwb_poll_stats(const struct shell *shell, size_t argc, char **argv)
+{
+	struct receptec_uwb_poll_status status;
+	int64_t elapsed_ms;
+	uint8_t slot;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	receptec_uwb_poll_get(&status);
+	elapsed_ms = status.started_ms == 0 ? 0 : status.stopped_ms - status.started_ms;
+	shell_print(shell, "poll running=%u period=%u ms elapsed=%u ms cycles=%u overruns=%u",
+		    status.running, status.period_us / 1000U, (uint32_t)elapsed_ms,
+		    status.cycles, status.overruns);
+	for (slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
+		const struct receptec_uwb_poll_peer_stats *p = &status.peer[slot];
+		uint32_t permille = p->transactions == 0U ? 0U :
+			(uint32_t)(((uint64_t)p->completed * 1000ULL) / p->transactions);
+
+		if (p->transactions == 0U) {
+			continue;
+		}
+		shell_print(shell,
+			    "slot %u: transactions=%u ok=%u (%u.%u%%) by_attempt=%u/%u/%u "
+			    "attempts=%u timeouts=%u rx_err=%u bad=%u late=%u exhausted=%u "
+			    "bytes=%u sample_gaps=%u",
+			    slot, p->transactions, p->completed, permille / 10U,
+			    permille % 10U, p->completed_on_attempt[0],
+			    p->completed_on_attempt[1], p->completed_on_attempt[2],
+			    p->attempts, p->timeouts, p->rx_errors, p->bad_frames,
+			    p->late_schedules, p->exhausted, (uint32_t)p->payload_bytes,
+			    p->sample_gaps);
+	}
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+	sub_poll,
+	SHELL_CMD_ARG(start, NULL,
+		      "Poll all registered peers with DATA_REQ: start [period_ms]",
+		      cmd_uwb_poll_start, 1, 1),
+	SHELL_CMD(stop, NULL, "Stop polling", cmd_uwb_poll_stop),
+	SHELL_CMD(stats, NULL, "Show polling counters", cmd_uwb_poll_stats),
+	SHELL_SUBCMD_SET_END);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_uwb,
 	SHELL_CMD(status, NULL, "Show RECEPTEC radio state", cmd_uwb_status),
 	SHELL_CMD_ARG(sync, NULL, "Send one SYNC and validate ACK: sync <slot>",
 		     cmd_uwb_sync, 2, 0),
 	SHELL_CMD(peer, &sub_peer, "Manage registered COLETEC peers", NULL),
+	SHELL_CMD(poll, &sub_poll, "Periodic DATA_REQ polling", NULL),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(uwb, &sub_uwb, "RECEPTEC UWB controls", NULL);

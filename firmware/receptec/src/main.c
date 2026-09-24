@@ -1,15 +1,46 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
+#include <zephyr/devicetree.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/hwinfo.h>
+#include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
 #include <stdint.h>
 
 #include "uwb_radio.h"
 
+/*
+ * Blue LED (D300): solid once the firmware has booted. Green LED (D301): toggles
+ * from a timer, so it only blinks while the kernel is running; 1 Hz after the UWB
+ * radio initialized (or was disabled), 5 Hz if its initialization failed.
+ */
+static const struct gpio_dt_spec led_blue = GPIO_DT_SPEC_GET(DT_NODELABEL(receptec_led_blue), gpios);
+static const struct gpio_dt_spec led_green = GPIO_DT_SPEC_GET(DT_NODELABEL(receptec_led_green), gpios);
+
+static void heartbeat_expired(struct k_timer *timer)
+{
+	ARG_UNUSED(timer);
+	(void)gpio_pin_toggle_dt(&led_green);
+}
+
+static K_TIMER_DEFINE(heartbeat_timer, heartbeat_expired, NULL);
+
+static void indicators_start(k_timeout_t half_period)
+{
+	if (gpio_is_ready_dt(&led_blue) && gpio_is_ready_dt(&led_green) &&
+	    gpio_pin_configure_dt(&led_blue, GPIO_OUTPUT_ACTIVE) == 0 &&
+	    gpio_pin_configure_dt(&led_green, GPIO_OUTPUT_INACTIVE) == 0) {
+		k_timer_start(&heartbeat_timer, half_period, half_period);
+	} else {
+		printk("Status LEDs unavailable\n");
+	}
+}
+
 int main(void)
 {
 	uint8_t id[8];
+	k_timeout_t heartbeat = K_MSEC(500);
 	ssize_t length = hwinfo_get_device_id(id, sizeof(id));
 
 	printk("RECEPTEC Type2AB baseline\n");
@@ -29,9 +60,11 @@ int main(void)
 		printk("UWB radio: initialized; use 'uwb peer list' and 'uwb sync <slot>'\n");
 	} else {
 		printk("UWB radio initialization failed: %d\n", ret);
+		heartbeat = K_MSEC(100);
 	}
 #else
 	printk("UWB radio: disabled by configuration\n");
 #endif
+	indicators_start(heartbeat);
 	return 0;
 }

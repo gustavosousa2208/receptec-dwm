@@ -28,6 +28,22 @@
 		zephyr,console = &uart1;
 		zephyr,shell-uart = &uart1;
 	};
+
+	/*
+	 * On-board LEDs (Projeto Receptor, sheet 4). Each is switched by a BC847 NPN
+	 * transistor whose base is the nRF pin, so the pin drives them active high.
+	 */
+	leds {
+		compatible = "gpio-leds";
+
+		receptec_led_blue: led_blue {
+			gpios = <&gpio1 8 GPIO_ACTIVE_HIGH>;
+		};
+
+		receptec_led_green: led_green {
+			gpios = <&gpio1 9 GPIO_ACTIVE_HIGH>;
+		};
+	};
 };
 
 &pinctrl {

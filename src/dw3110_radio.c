@@ -45,8 +45,11 @@ BUILD_ASSERT(RECEPTEC_PROTOCOL_ATTEMPT_OFFSET_MAX_US +
 #define RECEPTEC_PEER_COUNT DW3110_RADIO_PEER_COUNT
 
 /* The four fixed slots have to fit inside one sampling period. */
+/* Below 100 ms only the first two slots are used (bench throughput runs). */
+#define DW3110_ACTIVE_SLOTS \
+	(CONFIG_RECEPTEC_TEST_SAMPLING_PERIOD_MS < 100 ? 2U : DW3110_RADIO_PEER_COUNT)
 BUILD_ASSERT(DW3110_SAMPLING_PERIOD_US >=
-		     DW3110_RADIO_PEER_COUNT * DW3110_SLOT_DURATION_US,
+		     DW3110_ACTIVE_SLOTS * DW3110_SLOT_DURATION_US,
 	     "sampling period must hold every fixed slot");
 /* These tests were written for the normal 1 s period. */
 BUILD_ASSERT(CONFIG_RECEPTEC_TEST_SILENCE_AFTER == 0 ||
