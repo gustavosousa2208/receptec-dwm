@@ -1,8 +1,9 @@
-# Atletec UWB bench firmware
+# receptec-dwm — RECEPTEC firmware and COLETEC test bench
 
-This repository contains the DWM3001C fake-COLETEC responders and the
-RECEPTEC Type2AB bring-up baseline for the Atletec EPTS UWB bench. Production
-COLETEC firmware remains separate in `nrf52-bringup-fw`.
+This repository holds the firmware of the RECEPTEC (a real engineering-sample
+board, Murata Type 2AB, nRF52840 + QM33120W, in `firmware/receptec`) and the
+DWM3001C fake-COLETEC responder images used to test it on the Atletec EPTS UWB
+bench. Production COLETEC firmware remains separate in `nrf52-bringup-fw`.
 
 ## Bench topology
 
@@ -18,8 +19,9 @@ configuration, and `receptec.overlay` for the Type2AB carrier. It assigns the
 UARTE1 Pi UART pins and builds the UWB frame codec and Qorvo DW3720 radio driver
 for its QM33120W.
 A manual `uwb sync 0|1` command sends one SYNC and waits for a matching ACK;
-both fake COLETEC identities have passed on the bench. Periodic scheduling,
-DATA collection/export, and full contract qualification remain future work.
+both fake COLETEC identities have passed on the bench. Periodic DATA_REQ polling
+(`uwb poll`, see "Operate the bench") is implemented. Pi UART export and full
+contract qualification remain future work.
 Neither DWM board may be flashed as RECEPTEC.
 
 The two surrogate images have distinct compiled identities:
@@ -44,9 +46,11 @@ scope and porting status.
 
 ## Branch model
 
-The shared ATLETEC rule is to land work on `gusta-develop` in every repository.
-Only the owner opens a pull request to advance `master`. Preserve the current
-RECEPTEC feature branch until its work has been tested on hardware.
+Work lands on `gusta-develop` in this repository, as in every ATLETEC
+repository. `develop` belongs to other people and is not used. Only the owner
+opens a pull request to advance `master`. The canonical remote is Bitbucket. The
+RECEPTEC feature branch (`feature/receptec-board-payload-export`) folds into
+`gusta-develop`, and nothing is pushed before it has been tested on hardware.
 
 ## Source of truth
 
@@ -141,8 +145,10 @@ After building and committing the source:
 
 It flashes the two fake COLETECs and the real RECEPTEC at once, each to the probe
 nicknamed `fake-coletec-0`, `fake-coletec-1` and `receptec` in `lstty`. `--backup` reads the
-real RECEPTEC's flash back to `backups/real-receptec-<probe>-<UTC>/` first and
-cancels the flash if that fails (it needs a working `nrfjprog`). `--no-receptec` flashes only the
+real RECEPTEC's flash (1 MiB) and UICR back to
+`backups/real-receptec-<probe>-<UTC>/` (`flash.bin`, `uicr.bin`) first, using
+`lstty jlink dump`, and cancels the flash if that fails. Never `nrfjprog`.
+`--no-receptec` flashes only the
 fakes. Override the mapping when necessary:
 
 ```sh

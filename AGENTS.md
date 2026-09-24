@@ -1,16 +1,19 @@
-# atletec-uwb-dwm-bench — agent instructions
+# receptec-dwm (RECEPTEC + fake-COLETEC bench) — agent instructions
 
 Part of the **Atletec EPTS** workspace — read the workspace `../AGENTS.md` and the
 `contracts/` submodule first.
 
-This repo owns the two DWM3001C fake-COLETEC surrogate tags (nRF52833 + DW3110)
-and the RECEPTEC Type2AB receiver under `firmware/receptec/`. It builds explicit
-**fake-COLETEC-0** and **fake-COLETEC-1** surrogate images, plus a distinct
-`receptec/nrf52840` board target. RECEPTEC has a QM33120W/DW3720 driver, a
-manual SYNC initiator and peer registry; periodic scheduling, DATA collection,
-and Pi data export are not implemented. Never build or flash a DWM as
-RECEPTEC. The production COLETEC endpoint remains separate in
-`nrf52-bringup-fw`.
+This repo is the **RECEPTEC** repository: the firmware of the real receiver, an
+engineering-sample board (Murata Type 2AB, nRF52840 + QM33120W) headed for
+production, under `firmware/receptec/`. It also owns the two DWM3001C
+fake-COLETEC surrogate tags (nRF52833 + DW3110) used to test it, built as
+explicit **fake-COLETEC-0** and **fake-COLETEC-1** images. The RECEPTEC has its
+own `receptec/nrf52840` board target, a QM33120W/DW3720 driver, a peer
+registry, a manual SYNC initiator and periodic DATA_REQ polling with retries
+(`uwb poll start|stop|stats|stream|last`); Pi data export is not implemented.
+Never build or flash a DWM as RECEPTEC. The production COLETEC endpoint remains
+separate in `nrf52-bringup-fw`. The canonical remote is Bitbucket
+(`atletec-uwb-dwm-bench.git`, the repository's historical name).
 
 ## Contract this repo implements
 
@@ -18,7 +21,7 @@ Pinned in `contracts/`; follow `contracts/VERSIONS.md` to change it.
 
 - **UWB RECEPTEC↔COLETEC** — the DWM apps implement two surrogate **COLETEC**
   ends and the RECEPTEC app implements the initiator-side PHY, peer registry,
-  frame codec, and manual SYNC/ACK operation:
+  frame codec, manual SYNC/ACK operation and periodic DATA_REQ polling:
   `contracts/protocol/uwb-receptec-coletec/`. Run the **same active PHY profile**
   as the COLETEC (Ch 9, 6.8 Mbit/s, PRF 64 MHz, preamble 128 / code 9, STS
   disabled — the protocol doc is the authority). DATA remains a COLETEC-owned
@@ -82,6 +85,8 @@ Commits (`feat(uwb): ...`, `fix(main): ...`).
 ## Gitflow
 
 Follow the shared ATLETEC `AGENTS.md`: `gusta-develop` is the integration
-branch, and only the owner opens a pull request to advance `master`. No merge
-or push without a hardware test. Preserve the current feature branch and all
-uncommitted work during this migration.
+branch in this repo too (owner decision, 2026-09-24: not `develop`, which
+belongs to other people), and only the owner opens a pull request to advance
+`master`. The canonical remote is Bitbucket. No merge or push without a
+hardware test. Preserve feature branches and all uncommitted work; the branch
+`feature/receptec-board-payload-export` folds into `gusta-develop`.
