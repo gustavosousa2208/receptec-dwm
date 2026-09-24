@@ -127,12 +127,12 @@ check_probe()
 	role=$2
 	want=$3
 	if [ "$have_lstty" = true ]; then
-		if ! lstty jlink connected 2>/dev/null | grep -q "^$serial"; then
-			echo "J-Link $serial ($role) is not connected." >&2
-			return 1
-		fi
-		device=$(lstty jlink names 2>/dev/null | awk -F'\t' -v s="$serial" \
-			'index($2, s) == 1 { split($2, a, " · "); print a[2]; exit }')
+		info=$(lstty jlink get --serial "$serial" --json 2>/dev/null || true)
+		case "$info" in
+		*'"connected": true'*) ;;
+		*) echo "J-Link $serial ($role) is not connected or has no lstty nickname." >&2; return 1 ;;
+		esac
+		device=$(lstty jlink get --serial "$serial" --field device 2>/dev/null || true)
 		if [ -n "$device" ] && [ "$device" != "$want" ]; then
 			echo "J-Link $serial is registered as $device, but $role needs $want." >&2
 			return 1

@@ -155,12 +155,12 @@ else
 fi
 
 if [ "$have_lstty" = true ]; then
-	if ! lstty jlink connected 2>/dev/null | grep -q "^$probe"; then
-		echo "J-Link $probe ($role) is not connected." >&2
-		exit 1
-	fi
-	device=$(lstty jlink names 2>/dev/null | awk -F'\t' -v s="$probe" \
-		'index($2, s) == 1 { split($2, a, " · "); print a[2]; exit }')
+	info=$(lstty jlink get --serial "$probe" --json 2>/dev/null || true)
+	case "$info" in
+	*'"connected": true'*) ;;
+	*) echo "J-Link $probe ($role) is not connected or has no lstty nickname." >&2; exit 1 ;;
+	esac
+	device=$(lstty jlink get --serial "$probe" --field device 2>/dev/null || true)
 	if [ -n "$device" ] && [ "$device" != "$want" ]; then
 		echo "J-Link $probe is registered as $device, but $role needs $want." >&2
 		exit 1

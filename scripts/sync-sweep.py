@@ -36,13 +36,9 @@ def lstty(*args):
 
 
 def reset_board(nick):
-    """System reset through a plain JLinkExe session (no GDB server)."""
-    serial_no = lstty("jlink", "get", nick)
-    device = lstty("jlink", "get", nick, "--field", "device")
-    subprocess.run(["JLinkExe", "-USB", serial_no, "-device", device, "-if", "SWD",
-                    "-speed", "4000", "-autoconnect", "1", "-NoGui", "1"],
-                   input="r\ng\nexit\n", text=True, stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL, timeout=60, check=True)
+    """System reset through `lstty jlink reset` (no GDB server, no hand-built command file)."""
+    subprocess.run(["lstty", "jlink", "reset", nick], stdout=subprocess.DEVNULL,
+                   timeout=90, check=True)
 
 
 class Shell:
