@@ -824,3 +824,18 @@ int receptec_uwb_poll_last(uint8_t slot, uint8_t *payload, size_t capacity,
 	k_mutex_unlock(&uwb_peer_mutex);
 	return ret;
 }
+
+/* Bench A/B switch for the external receive LNA (QM33120W GPIO5). */
+int receptec_uwb_radio_set_lna(bool enable)
+{
+	int ret = 0;
+
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!radio_ready) {
+		ret = -EAGAIN;
+	} else {
+		dwt_setlnapamode(enable ? DWT_LNA_ENABLE : 0);
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}

@@ -307,6 +307,24 @@ static int cmd_uwb_poll_last(const struct shell *shell, size_t argc, char **argv
 	return 0;
 }
 
+static int cmd_uwb_lna(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	ARG_UNUSED(argc);
+	if (strcmp(argv[1], "on") != 0 && strcmp(argv[1], "off") != 0) {
+		shell_error(shell, "usage: uwb lna on|off");
+		return -EINVAL;
+	}
+	ret = receptec_uwb_radio_set_lna(strcmp(argv[1], "on") == 0);
+	if (ret < 0) {
+		shell_error(shell, "lna failed: %d", ret);
+		return ret;
+	}
+	shell_print(shell, "external LNA %s", argv[1]);
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_poll,
 	SHELL_CMD_ARG(start, NULL,
@@ -327,6 +345,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		     cmd_uwb_sync, 2, 0),
 	SHELL_CMD(peer, &sub_peer, "Manage registered COLETEC peers", NULL),
 	SHELL_CMD(poll, &sub_poll, "Periodic DATA_REQ polling", NULL),
+	SHELL_CMD_ARG(lna, NULL, "External receive LNA (bench A/B): lna on|off",
+		      cmd_uwb_lna, 2, 0),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(uwb, &sub_uwb, "RECEPTEC UWB controls", NULL);

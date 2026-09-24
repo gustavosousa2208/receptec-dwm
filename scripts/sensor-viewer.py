@@ -115,6 +115,8 @@ def main() -> int:
     ap.add_argument("--only-peer", metavar="EUI64",
                     help="unregister every slot, then register this EUI-64 in slot 0 "
                          "(production COLETEC: 02:00:00:00:00:00:00:02)")
+    ap.add_argument("--cmd", action="append", default=[],
+                    help="RECEPTEC shell command to run before polling (repeatable), e.g. 'uwb lna off'")
     ap.add_argument("--no-poll", action="store_true", help="do not start/stop the poll; only stream")
     ap.add_argument("--json", type=Path, help="also append each decoded record to this JSONL file")
     ap.add_argument("--raw", action="store_true", help="print the hex payload too")
@@ -127,6 +129,9 @@ def main() -> int:
     jsonl = open(args.json, "a") if args.json else None
     received = 0
     try:
+        for command in args.cmd:
+            out, _ = shell.run(command, max_wait=2.0)
+            print(f"{command}:", " | ".join(l.strip() for l in out.splitlines()[1:-1]) or "(no output)")
         if args.only_peer:
             for slot in range(4):
                 shell.run(f"uwb peer unregister {slot}", max_wait=1.5)

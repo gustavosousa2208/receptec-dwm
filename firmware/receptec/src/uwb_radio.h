@@ -16,6 +16,8 @@ int receptec_uwb_peer_unregister(uint8_t slot);
 int receptec_uwb_peer_get(uint8_t slot,
 			  uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
 int receptec_uwb_radio_send_sync(uint8_t peer_slot);
+/* Bench A/B: switch the external receive LNA (GPIO5) on or off. */
+int receptec_uwb_radio_set_lna(bool enable);
 
 struct receptec_uwb_poll_peer_stats {
 	uint32_t transactions;
