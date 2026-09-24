@@ -64,8 +64,9 @@ Before creating or applying a patch, inspect `git -C "$ZEPHYR_BASE" status
 --short`. If the target files already contain unrelated changes, stop and work
 around them or request direction rather than merging them into the patch.
 
-Build output belongs in this application's build directories and must not be
-placed in the Zephyr source tree.
+Use fresh build directories under the existing west workspace's
+`build/atletec/receptec-dwm/`. Older in-repo build directories retain paths
+from before the Dell move and need reconfiguration before reuse.
 
 ## Conventions
 
@@ -80,16 +81,7 @@ Commits (`feat(uwb): ...`, `fix(main): ...`).
 
 ## Gitflow
 
-Use the normal Gitflow branch model:
-
-- `main` is the protected release branch.
-- `develop` is the active integration branch and the destination for completed
-  feature and fix work.
-- Create `feature/*` branches from `develop` and merge them back into `develop`.
-- Create `release/*` branches from `develop`. Merge a completed release into
-  `main` through a pull request, then merge it back into `develop`.
-- Create `hotfix/*` branches from `main`. Merge a completed hotfix into `main`
-  through a pull request and also merge it into `develop`.
-- Never merge or push feature work directly to `main`.
-- Never merge or push `develop` directly to `main`; that integration must go
-  through a pull request.
+Follow the shared ATLETEC `AGENTS.md`: `gusta-develop` is the integration
+branch, and only the owner opens a pull request to advance `master`. No merge
+or push without a hardware test. Preserve the current feature branch and all
+uncommitted work during this migration.
