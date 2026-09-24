@@ -2,6 +2,13 @@
 
 set -eu
 
+# Load the ATLETEC workspace environment (west, SDK, paths) when it is not loaded
+# already. The Dell has no direnv; the Mac normally gets this from direnv.
+if [ -z "${ATLETEC_ZEPHYR_WORKSPACE:-}" ] && [ -f "$HOME/source/atletec/.envrc" ]; then
+	# shellcheck disable=SC1091
+	. "$HOME/source/atletec/.envrc"
+fi
+
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 app_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 patch_dir="$app_dir/patches/zephyr"
