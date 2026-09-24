@@ -1,6 +1,11 @@
 #!/bin/sh
 set -u
 
+# Agents often run scripts without sourcing the workspace env first.
+if [ -z "${ATLETEC_ZEPHYR_WORKSPACE:-}" ] && [ -f "$HOME/source/atletec/.envrc" ]; then
+	. "$HOME/source/atletec/.envrc"
+fi
+
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 app_dir=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 coletec_0_build="$app_dir/build-fake-coletec-0"
@@ -90,6 +95,11 @@ echo "Flash mapping:"
 echo "  fake-COLETEC-0 image -> J-Link $coletec_0_probe"
 echo "  fake-COLETEC-1 image -> J-Link $coletec_1_probe"
 echo "  Test config     -> $coletec_0_test_config"
+if [ -n "${ATLETEC_NONINTERACTIVE:-}" ]; then
+	assume_yes=true
+elif [ "$assume_yes" = false ] && [ ! -t 0 ]; then
+	assume_yes=true
+fi
 if [ "$assume_yes" = false ]; then
 	printf 'Flash both COLETEC surrogates concurrently? [y/N] '
 	IFS= read -r answer

@@ -2,6 +2,11 @@
 
 set -u
 
+# Agents often run scripts without sourcing the workspace env first.
+if [ -z "${ATLETEC_ZEPHYR_WORKSPACE:-}" ] && [ -f "$HOME/source/atletec/.envrc" ]; then
+	. "$HOME/source/atletec/.envrc"
+fi
+
 script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 app_dir=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 coletec_0_build="$app_dir/build-fake-coletec-0"
