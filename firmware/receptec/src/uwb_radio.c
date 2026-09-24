@@ -425,16 +425,19 @@ unlock:
  * backoff schedule measured from the slot epoch, so a retransmission never
  * moves the next cycle, and every attempt carries its own offset as DT_sampling.
  *
- * The timings are bench values ported from the DWM harness (T_slot 20 ms,
- * T_timeout 3 ms, T_base 3 ms, T_jitter_max 0.5 ms); the specification leaves
- * them TBD (OI-04, OI-05). OI-01 (response-loss retry) still applies: a COLETEC
+ * The timings are bench values (T_slot 20 ms, T_timeout 3 ms, T_base 5 ms,
+ * T_jitter_max 0.5 ms); the specification leaves them TBD (OI-04, OI-05).
+ * T_base must exceed T_timeout by more than the DATA_REQ airtime and the
+ * per-attempt setup: with T_base 3 ms (equal to T_timeout) attempt 1 was still
+ * waiting when attempt 2 was due, so every retry failed to schedule (late) and
+ * a lost first attempt was never recovered (by_attempt=N/0/0). OI-01 (response-loss retry) still applies: a COLETEC
  * that shuts its receiver after answering will miss the retry of a lost reply.
  */
 #define UWB_POLL_SLOT_US 20000U
 #define UWB_POLL_RESPONSE_TIMEOUT_US 3000U
 #define UWB_POLL_SETUP_US 5000U
 #define UWB_POLL_ATTEMPTS 3U
-#define UWB_POLL_BACKOFF_BASE_US 3000U
+#define UWB_POLL_BACKOFF_BASE_US 5000U
 #define UWB_POLL_JITTER_MAX_US 500U
 #define UWB_POLL_OFFSET_MAX_US \
 	(UWB_POLL_BACKOFF_BASE_US * ((1U << (UWB_POLL_ATTEMPTS - 1U)) - 1U) + \
