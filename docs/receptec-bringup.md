@@ -23,8 +23,8 @@ must not be flashed or reused as a board definition.
 - On 2026-09-23, RECEPTEC probe `802008564` initialized the QM33120W over RTT:
   device ID `0xDECA0314`, part ID `0xCA415713`, PHY ready.
 - One-shot transactions passed against both fake identities: `uwb sync 0`
-  against COLETEC-0 (probe `760216755`, sequence 2) and `uwb sync 1` against
-  COLETEC-1 (probe `760216737`, sequence 3). RECEPTEC reported valid FCS,
+  against fake-COLETEC-0 (probe `760216755`, sequence 2) and `uwb sync 1` against
+  fake-COLETEC-1 (probe `760216737`, sequence 3). RECEPTEC reported valid FCS,
   expected peer address, and matching ACK for both. DWM RTT confirmed each
   target identity and its hardware destination filter (`…40` / `…41`). An
   earlier attempt timed out while COLETEC-0 was in its periodic discovery
