@@ -186,6 +186,8 @@ found by `lstty` nickname (`fake-coletec-0`, `fake-coletec-1`, `receptec`).
 | `scripts/flash-both.sh` | Flash the two fakes and the RECEPTEC; `--dry-run` runs every check only |
 | `scripts/sweep.sh [--poll-ms 200,100,50] [--duration S]` | Per period: build the fakes with the matching `.conf`, flash, run the poll and print the counters |
 | `scripts/sync-sweep.py [--poll-ms P --duration S]` | Reset the boards, start the fakes, then run manual SYNCs or the poll |
+| `scripts/sensor-viewer.py [--only-peer EUI --seconds S]` | Live decode of the COLETEC sensor payload v1 on the PC |
+| `scripts/accept-sensor-path.py [--samples N --min-delivery F]` | Acceptance check of COLETEC to RECEPTEC to PC: delivery, late, decode, sequence, fresh summary. PASS / FAIL / SKIP (exit 0 / 1 / 77); a check that cannot run is SKIP, never PASS |
 
 The flash scripts refuse a dirty tree, a stale image, and a probe whose target
 device does not match the role. `--allow-dirty` accepts changes that do not touch
