@@ -14,7 +14,7 @@ app_dir=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 # different source path and cannot be reused.
 build_root=${ATLETEC_BUILD_ROOT:-}
 if [ -z "$build_root" ] && [ -n "${ATLETEC_ZEPHYR_WORKSPACE:-}" ]; then
-	build_root="$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec-dwm"
+	build_root="$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec"
 fi
 if [ -n "$build_root" ]; then
 	coletec_0_build="$build_root/fake-coletec-0"

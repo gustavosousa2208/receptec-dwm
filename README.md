@@ -1,4 +1,4 @@
-# receptec-dwm — RECEPTEC firmware and COLETEC test bench
+# receptec — RECEPTEC firmware and COLETEC test bench
 
 This repository holds the firmware of the RECEPTEC (a real engineering-sample
 board, Murata Type 2AB, nRF52840 + QM33120W, in `firmware/receptec`) and the
@@ -121,7 +121,7 @@ cmake -S firmware/receptec/tests -B build-receptec-tests
 cmake --build build-receptec-tests
 ctest --test-dir build-receptec-tests --output-on-failure
 west build -p always -b receptec/nrf52840 \
-  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec-dwm/receptec-board" \
+  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec/receptec-board" \
   firmware/receptec
 ```
 

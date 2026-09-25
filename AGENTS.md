@@ -1,4 +1,4 @@
-# receptec-dwm (RECEPTEC + fake-COLETEC bench) — agent instructions
+# receptec (RECEPTEC + fake-COLETEC bench) — agent instructions
 
 Part of the **Atletec EPTS** workspace — read the workspace `../AGENTS.md` and the
 `contracts/` submodule first.
@@ -13,7 +13,8 @@ registry, a manual SYNC initiator and periodic DATA_REQ polling with retries
 (`uwb poll start|stop|stats|stream|last`); Pi data export is not implemented.
 Never build or flash a DWM as RECEPTEC. The production COLETEC endpoint remains
 separate in `nrf52-bringup-fw`. The canonical remote is Bitbucket
-(`atletec-uwb-dwm-bench.git`, the repository's historical name).
+(`receptec.git`). The repository was called `coletec-dwm`, then `atletec-uwb-dwm-bench`
+and `receptec-dwm`; the GitHub remote still carries the name `receptec-dwm`.
 
 ## Contract this repo implements
 
@@ -68,7 +69,7 @@ Before creating or applying a patch, inspect `git -C "$ZEPHYR_BASE" status
 around them or request direction rather than merging them into the patch.
 
 Use fresh build directories under the existing west workspace's
-`build/atletec/receptec-dwm/`. Older in-repo build directories retain paths
+`build/atletec/receptec/`. Older in-repo build directories retain paths
 from before the Dell move and need reconfiguration before reuse.
 
 ## Conventions

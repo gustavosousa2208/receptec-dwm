@@ -15,7 +15,7 @@ app_dir=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 # different source path and cannot be reused.
 build_root=${ATLETEC_BUILD_ROOT:-}
 if [ -z "$build_root" ] && [ -n "${ATLETEC_ZEPHYR_WORKSPACE:-}" ]; then
-	build_root="$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec-dwm"
+	build_root="$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec"
 fi
 if [ -n "$build_root" ]; then
 	coletec_0_build="$build_root/fake-coletec-0"
@@ -41,7 +41,7 @@ the same bounded repository-owned fault scenario to both fake COLETECs; the
 RECEPTEC image never takes a test configuration. --no-receptec skips it.
 
 Output goes to $ATLETEC_BUILD_ROOT, else
-$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec-dwm (fake-coletec-0, fake-coletec-1,
+$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec (fake-coletec-0, fake-coletec-1,
 receptec-board), else build-*/ in this repository. $RECEPTEC_BUILD_DIR overrides
 only the RECEPTEC directory.
 EOF
