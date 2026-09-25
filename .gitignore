@@ -21,3 +21,8 @@ logs/
 # Operator planning and qualification notes stay on this machine
 /TODO.md
 /TESTS.md
+
+# Bench evidence and local tooling; never committed
+backups/
+.claude/
+build-fake-coletec.log
