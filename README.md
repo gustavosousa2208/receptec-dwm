@@ -188,6 +188,7 @@ found by `lstty` nickname (`fake-coletec-0`, `fake-coletec-1`, `receptec`).
 | `scripts/sync-sweep.py [--poll-ms P --duration S]` | Reset the boards, start the fakes, then run manual SYNCs or the poll |
 | `scripts/sensor-viewer.py [--only-peer EUI --seconds S]` | Live decode of the COLETEC sensor payload v1 on the PC |
 | `scripts/accept-sensor-path.py [--samples N --min-delivery F]` | Acceptance check of COLETEC to RECEPTEC to PC: delivery, late, decode, sequence, fresh summary. PASS / FAIL / SKIP (exit 0 / 1 / 77); a check that cannot run is SKIP, never PASS |
+| `scripts/uwb-long-test.py start\|status\|stop\|report` | Long UWB run against the COLETEC, detached: `start --hours 2 --sample-s 30` returns at once; samples the RECEPTEC poll counters and the COLETEC Nordic RTT log (RSL, clock drift, IPC checksum errors) to `logs/long-<UTC>-<name>/samples.csv`, and writes `summary.md/json` at the end. Range accuracy and thermal drift are reported SKIP (not measurable with protocol v1.0) |
 
 The flash scripts refuse a dirty tree, a stale image, and a probe whose target
 device does not match the role. `--allow-dirty` accepts changes that do not touch
