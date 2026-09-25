@@ -1,0 +1,14 @@
+identifier: receptec/nrf52840
+name: Atletec RECEPTEC Type2AB receiver
+type: mcu
+arch: arm
+ram: 256
+flash: 1024
+toolchain:
+  - zephyr
+  - gnuarmemb
+supported:
+  - gpio
+  - spi
+  - watchdog
+vendor: atletec

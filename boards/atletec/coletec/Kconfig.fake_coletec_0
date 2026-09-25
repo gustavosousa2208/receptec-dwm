@@ -1,0 +1,2 @@
+config BOARD_FAKE_COLETEC_0
+	select SOC_NRF52833_QDAA

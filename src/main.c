@@ -8,15 +8,10 @@
 #include <receptec/dw3110_radio.h>
 
 #define DEVICE_ID_SIZE 8U
-#define RECEPTEC_ROLE_LED_NODE DT_ALIAS(led3)
+#define COLETEC_ROLE_LED_NODE DT_ALIAS(coletec_role_led)
 
-enum device_role {
-	DEVICE_ROLE_COLETEC,
-	DEVICE_ROLE_RECEPTEC,
-};
-
-static const struct gpio_dt_spec receptec_role_led =
-	GPIO_DT_SPEC_GET(RECEPTEC_ROLE_LED_NODE, gpios);
+static const struct gpio_dt_spec coletec_role_led =
+	GPIO_DT_SPEC_GET(COLETEC_ROLE_LED_NODE, gpios);
 
 static void print_device_id(const uint8_t *device_id, size_t length)
 {
@@ -27,44 +22,33 @@ static void print_device_id(const uint8_t *device_id, size_t length)
 	printk("\n");
 }
 
-static enum device_role get_device_role(void)
-{
-	return IS_ENABLED(CONFIG_RECEPTEC_ROLE_RECEPTEC) ?
-		DEVICE_ROLE_RECEPTEC : DEVICE_ROLE_COLETEC;
-}
-
-static void configure_role_indicator(enum device_role role)
+static void configure_role_indicator(void)
 {
 	int status;
 
-	if (!gpio_is_ready_dt(&receptec_role_led)) {
-		printk("RECEPTEC blue role LED GPIO is not ready\n");
+	if (!gpio_is_ready_dt(&coletec_role_led)) {
+		printk("COLETEC blue role LED GPIO is not ready\n");
 		return;
 	}
-
-	status = gpio_pin_configure_dt(&receptec_role_led,
+	status = gpio_pin_configure_dt(&coletec_role_led,
 				       GPIO_OUTPUT_INACTIVE);
 	if (status < 0) {
-		printk("Failed to configure RECEPTEC blue role LED: %d\n",
+		printk("Failed to configure COLETEC blue role LED: %d\n",
 		       status);
 		return;
 	}
 
-	if (role == DEVICE_ROLE_RECEPTEC) {
-		status = gpio_pin_set_dt(&receptec_role_led, 1);
-		if (status < 0) {
-			printk("Failed to light RECEPTEC blue role LED: %d\n",
-			       status);
-			return;
-		}
-		printk("Role indicator: blue LED on\n");
+	status = gpio_pin_set_dt(&coletec_role_led, 1);
+	if (status < 0) {
+		printk("Failed to light COLETEC blue role LED: %d\n", status);
+		return;
 	}
+	printk("Role indicator: blue LED on\n");
 }
 
 int main(void)
 {
 	uint8_t device_id[DEVICE_ID_SIZE];
-	enum device_role role;
 	ssize_t length;
 
 	length = hwinfo_get_device_id(device_id, sizeof(device_id));
@@ -79,19 +63,20 @@ int main(void)
 		return -1;
 	}
 
+	printk("Atletec DWM UWB bench\n");
 	printk("Board: %s\n", CONFIG_BOARD_TARGET);
+	printk("Build: %s contracts: %s\n", DWM_BENCH_GIT_REV,
+	       DWM_BENCH_CONTRACTS_REV);
 	print_device_id(device_id, (size_t)length);
 
-	role = get_device_role();
-	printk("Role source: build configuration\n");
-	printk("Role: %s\n",
-	       role == DEVICE_ROLE_RECEPTEC ? "RECEPTEC" : "COLETEC");
-	configure_role_indicator(role);
+	printk("Role: fake-COLETEC-%u surrogate (on-air COLETEC-%u)\n",
+	       CONFIG_DWM_COLETEC_INSTANCE, CONFIG_DWM_COLETEC_INSTANCE);
+	configure_role_indicator();
 
 	if (dw3110_radio_init() < 0) {
 		printk("DW3110 bring-up failed\n");
 		return -1;
 	}
 
-	return dw3110_radio_start_protocol(role == DEVICE_ROLE_RECEPTEC);
+	return dw3110_radio_start_protocol(false);
 }

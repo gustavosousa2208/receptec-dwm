@@ -1,7 +1,7 @@
 # Qorvo DW3XXX driver provenance
 
-This directory contains the subset of Qorvo's DW3XXX device driver required for
-the DW3000 family used by the DWM3001C/DW3110.
+This directory contains the Qorvo DW3XXX driver subset used by the DWM3001C
+(DW3110) and RECEPTEC Type2AB (QM33120W/DW3720) applications.
 
 - Driver version: `08.19.02` (`DRIVER_VERSION_HEX 0x081902`)
 - File-level license identifier: `LicenseRef-QORVO-2`
@@ -12,15 +12,14 @@ the DW3000 family used by the DWM3001C/DW3110.
 - Official Qorvo download record: <https://www.qorvo.com/products/d/da008582>
 
 The imported vendor files are byte-for-byte copies of that committed snapshot.
-Only the common, DW3000-family, and qmath files were imported; DW3720 sources
-are not needed by this DWM3001C application.
+The common, DW3000-family, DW3720-family, and qmath files were imported from
+that snapshot. The DW3720-family files are required by the RECEPTEC app.
 
 `LicenseRef-QORVO-2` is a proprietary Qorvo license, not an open-source SPDX
-license. The source snapshot available in the workspace did not include the
-corresponding license text. Use and redistribution of these files must comply
-with the Qorvo agreement under which the official package was obtained. Obtain
-the complete current license from the official package before distributing the
-vendor sources outside the authorized project.
+license. The license text supplied with the official archive is retained at
+`LICENSES/LicenseRef-QORVO-2.txt`. Use and redistribution must comply with its
+terms; do not distribute outside the authorized project without confirming
+the applicable grant.
 
 The checksums in `SHA256SUMS` cover the imported vendor files and exclude this
 provenance document and the checksum file itself.

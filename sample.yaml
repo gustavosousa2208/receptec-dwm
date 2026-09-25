@@ -1,11 +1,20 @@
 sample:
-  description: DWM3001C identity and UWB hardware bring-up application
-  name: DWM3001C identity bring-up
+  description: Two DWM3001C fake-COLETEC surrogates for the Atletec UWB bench
+  name: Atletec fake-COLETEC DWM bench
 tests:
-  application.receptec.build:
+  application.dwm_uwb_bench.fake_coletec_0.build:
     build_only: true
     platform_allow:
-      - decawave_dwm3001cdk/nrf52833
+      - fake_coletec_0/nrf52833
     tags:
       - uwb
       - protocol
+      - coletec
+  application.dwm_uwb_bench.fake_coletec_1.build:
+    build_only: true
+    platform_allow:
+      - fake_coletec_1/nrf52833
+    tags:
+      - uwb
+      - protocol
+      - coletec

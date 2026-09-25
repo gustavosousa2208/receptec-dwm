@@ -1,412 +1,112 @@
-# ATLETEC DWM3001C UWB firmware
+# receptec — RECEPTEC firmware and COLETEC test bench
 
-Build-selected UWB firmware for the Atletec EPTS RECEPTEC and the DWM COLETEC
-bench surrogate. A firmware image has exactly one role; physical board identity
-never selects or changes it.
+This repository holds the firmware of the RECEPTEC (a real engineering-sample
+board, Murata Type 2AB, nRF52840 + QM33120W, in `firmware/receptec`) and the
+DWM3001C fake-COLETEC responder images used to test it on the Atletec EPTS UWB
+bench. Production COLETEC firmware remains separate in `nrf52-bringup-fw`.
 
-The RECEPTEC initiates scheduled request/response transactions with one or
-more COLETEC tags. This application runs on a Qorvo DWM3001C module
-(nRF52833 host + DW3110 UWB transceiver).
+## Bench topology
+
+| Bench name | Hardware | Protocol role | Firmware source |
+|---|---|---|---|
+| RECEPTEC | Production receiver, nRF52840 + QM33120W | Manual SYNC initiator (bring-up stage) | `firmware/receptec` |
+| Fake COLETEC-0 | DWM3001C, nRF52833 + DW3110 | Surrogate responder (on-air identity COLETEC-0) | This repository, target `fake_coletec_0/nrf52833` |
+| Fake COLETEC-1 | DWM3001C, nRF52833 + DW3110 | Surrogate responder (on-air identity COLETEC-1) | This repository, target `fake_coletec_1/nrf52833` |
+| COLETEC | Production tag, nRF52840 + QM33120W | Production responder | `nrf52-bringup-fw` |
+
+The RECEPTEC application has its own `receptec/nrf52840` board target, board
+configuration, and `receptec.overlay` for the Type2AB carrier. It assigns the
+UARTE1 Pi UART pins and builds the UWB frame codec and Qorvo DW3720 radio driver
+for its QM33120W.
+A manual `uwb sync 0|1` command sends one SYNC and waits for a matching ACK;
+both fake COLETEC identities have passed on the bench. Periodic DATA_REQ polling
+(`uwb poll`, see "Operate the bench") is implemented. Pi UART export and full
+contract qualification remain future work.
+Neither DWM board may be flashed as RECEPTEC.
+
+The two surrogate images have distinct compiled identities:
+
+| Target | EUI-64 | lstty nickname | J-Link (this bench) |
+|---|---|---|---:|
+| `fake_coletec_0/nrf52833` (fake-COLETEC-0) | `31:5D:02:D5:15:8C:FA:40` | `fake-coletec-0` | `760216755` |
+| `fake_coletec_1/nrf52833` (fake-COLETEC-1) | `31:5D:02:D5:15:8C:FA:41` | `fake-coletec-1` | `760216737` |
+| `receptec/nrf52840` (real RECEPTEC, Murata Type 2AB) | n/a | `receptec` | `802008564` |
+
+Every DWM3001C on the bench is a **fake COLETEC**; the real RECEPTEC is the Type 2AB.
+The nicknames come from `lstty` (see the workspace instructions). The serial
+numbers above are a record of this bench, not defaults: the flash script takes
+them from `lstty`, an environment variable or an option.
+
+Both EUI-64 addresses must be registered in the real RECEPTEC configuration.
+
+The RECEPTEC board target uses the nRF52840 SoC with its own board files; the
+application overlay assigns UART P0.05/P0.06 and QM33120W SPIM3/CS/reset/IRQ/wake
+pins. See [`docs/receptec-bringup.md`](docs/receptec-bringup.md) for hardware
+scope and porting status.
+
+## Branch model
+
+Work lands on `gusta-develop` in this repository, as in every ATLETEC
+repository. `develop` belongs to other people and is not used. Only the owner
+opens a pull request to advance `master`. The canonical remote is Bitbucket. The
+RECEPTEC feature branch (`feature/receptec-board-payload-export`) folds into
+`gusta-develop`, and nothing is pushed before it has been tested on hardware.
 
 ## Source of truth
 
-This README is an operational cheat sheet for development and communication.
-If a value here differs from the contract, the contract wins.
+The canonical protocol is
+[`contracts/protocol/uwb-receptec-coletec/protocol-v1.0.md`](contracts/protocol/uwb-receptec-coletec/protocol-v1.0.md).
+Read it before changing frames, timing, addressing, retries, or PHY settings.
+Contract versions and conformance status live in
+[`contracts/VERSIONS.md`](contracts/VERSIONS.md) and
+[`CONTRACTS.md`](CONTRACTS.md).
 
-The active baseline is **UWB RECEPTEC↔COLETEC v1.0**. Shared or tunable values
-must be changed on both endpoints through the process in
-[`contracts/VERSIONS.md`](contracts/VERSIONS.md).
+## Setup
 
-> **Which document is canonical is disputed, and it matters here.** This README
-> has named
-> [`HANDOFF.md`](contracts/protocol/uwb-receptec-coletec/HANDOFF.md) as canonical.
-> The workspace `AGENTS.md`, `nrf52-bringup-fw` and `contracts/VERSIONS.md` all
-> name
-> [`protocol-v1.0.md`](contracts/protocol/uwb-receptec-coletec/protocol-v1.0.md)
-> as canonical and treat `HANDOFF.md` as an informal companion that contradicts
-> it in at least three places. This firmware follows `HANDOFF.md`, so the two
-> readings give different verdicts on whether this repo conforms — see the table
-> below. Tracked as A4/A7/A8 in
-> `../nrf52-bringup-fw/docs/consolidation-backlog.md`, pending a tech-lead
-> decision. Do not resolve it by editing this line.
-
-### Bench results must name the contract revision they were taken against
-
-This board is the test environment for both ends of the link, and what is
-validated here gets ported into the real COLETEC firmware. A measurement is only
-reusable if the reader can tell which revision of the contract it was taken
-against, so **record the `contracts/` commit alongside any result you intend to
-carry upstream** — in `MILESTONES.md`, in the soak logs, or in the commit
-message that lands the change.
+Keep this repository under `~/source/atletec/` and use the existing west
+workspace. On Mac it is `~/zephyrproject/`; on Dell it is
+`~/source/zephyr-v4.3.0/`. The source root's `.envrc` selects that workspace
+when direnv is enabled. In an agent shell without direnv, run:
 
 ```sh
-git -C contracts rev-parse --short HEAD    # the revision a result was taken against
-git submodule status --recursive           # full chain, including common/
+export ATLETEC_ZEPHYR_WORKSPACE="$HOME/zephyrproject" # Dell: "$HOME/source/zephyr-v4.3.0"
+export ZEPHYR_BASE="$ATLETEC_ZEPHYR_WORKSPACE/zephyr"
+export ZEPHYR_TOOLCHAIN_VARIANT=zephyr
+export ZEPHYR_SDK_INSTALL_DIR="$HOME/zephyr-sdk-0.17.4" # Dell: "$HOME/source/zephyr-sdk-0.17.4"
+source "$ATLETEC_ZEPHYR_WORKSPACE/.venv/bin/activate"
 ```
 
-Current pin: **`2014bca`**. This is reachable from `contracts` master and keeps
-the UWB wire format at v1.0. The pin update does not change bench behavior; it
-adds contract-checking coverage and advances shared-code release provenance.
+The contracts submodule is already populated in the migrated checkout.
+Read the source root and repository `AGENTS.md` files before changing it.
 
-### Protocol idea versus current implementation
+Never edit the shared Zephyr tree directly. Application changes belong here;
+unavoidable Zephyr changes must be recorded under `patches/zephyr/`.
 
-The v1.0 wire format is unchanged. The two source documents disagree, so the
-verdict column depends on which one you read:
-
-| Item | `protocol-v1.0.md` | `HANDOFF.md` | Current implementation | Status |
-|---|---:|---:|---:|---|
-| Sampling period | 1,000 ms | 1,000 ms | 1,000 ms | Matches both |
-| Slot duration | 20,000 µs | 20,000 µs | 20,000 µs | Matches both |
-| Attempt offsets | binary exponential backoff + jitter (§4.2) | 0 / 5,000 / 10,000 µs, no jitter | 0 / 5,000 / 10,000 µs | **Matches `HANDOFF.md`, diverges from `protocol-v1.0.md`** — A7 |
-| Response delay | not specified | 2,000 µs (was 1,000) | 2,000 µs | Matches — no longer a deviation |
-| COLETEC RX gating | disable RX after each response (§5.6/5.7, own OI-01 calls this broken) | RX enabled through the whole slot | RX enabled through slot | **Matches `HANDOFF.md`, diverges from `protocol-v1.0.md`** — A8 |
-| Time-unit meaning | SI microseconds | SI microseconds | SI microseconds | Matches both |
-
-The response delay was increased after a 21.8-hour run found 608 COLETEC
-delayed-TX schedules armed too late. With 2,000 µs, a five-minute check completed
-301/301 SYNC/ACK transactions with no new late schedules. That change has since
-been adopted into the contract — `HANDOFF.md` reads 2,000 µs on `contracts`
-master, so this row is settled and was never a `protocol-v1.0.md` value in the
-first place. Clock-drift telemetry and the soak logger are diagnostics only; they
-do not change the v1.0 wire format.
-
-The two remaining rows are the ones that matter for porting. Both are behavioural,
-not tunable constants, and both would travel upstream into `nrf52-bringup-fw` with
-any port of this code. Audit against `protocol-v1.0.md` before carrying either
-one up.
-
-## Terms to use
-
-| Term | Meaning |
-|---|---|
-| RECEPTEC | Fixed initiator/base station that schedules requests |
-| COLETEC | Mobile responder/tag assigned to one slot |
-| Sampling cycle | Complete repeating schedule; currently 1,000 ms |
-| Slot | Time reserved for one COLETEC; currently 20 ms |
-| RX interval | COLETEC receive time around its slot, including guard |
-| Attempt | One request transmission within a slot |
-| RMARKER | UWB hardware timestamp for the physical frame reference point |
-| SNIFF | Firmware discovery duty cycle; **not** Qorvo hardware SNIFF mode |
-| EUI-64 | Eight-byte UWB protocol address |
-| J-Link serial | Debug-probe identifier; **not** an on-air address |
-
-Do not call the 2,000 µs response delay a slot. The current slot is 20,000 µs.
-
-## Bench IDs
-
-EUI-64 arrays in the firmware and the bytes transmitted over the air are in
-**least-significant-octet-first order**. Nordic factory IDs are printed in the
-opposite, human-readable order.
-
-| Role | Slot | Nordic ID as printed | EUI-64 in on-air order | J-Link serial |
-|---|---:|---|---|---:|
-| RECEPTEC DWM3001C | — | `40:FA:8C:15:D5:02:5D:31` | `41:16:A8:06:82:F3:C6:3E` | `760216755` |
-| DWM COLETEC surrogate | 0 | `3E:C6:F3:82:06:A8:16:41` | `31:5D:02:D5:15:8C:FA:40` | `760216737` |
-| Production COLETEC | 1 | Not used as its protocol address | `02:00:00:00:00:00:00:02` | `802003538` |
-| Intentionally missing peer | 2 | — | `03:00:00:00:00:00:00:03` | — |
-| Intentionally missing peer | 3 | — | `04:00:00:00:00:00:00:04` | — |
-
-Example of the byte-order rule:
-
-```text
-Displayed RECEPTEC ID:  3E:C6:F3:82:06:A8:16:41
-On-air EUI-64 bytes:    41 16 A8 06 82 F3 C6 3E
-```
-
-The two missing peers are schedule reservations used to prove fixed timing.
-They are not physical boards.
-
-### Debug connections
-
-| Device | Primary diagnostics |
-|---|---|
-| RECEPTEC | `~/.serial/receptec-0` (J-Link `760216755`) |
-| DWM COLETEC surrogate | `~/.serial/coletec-0` (J-Link `760216737`) |
-| Production COLETEC | J-Link RTT; no available UART |
-
-## Active UWB PHY
-
-Both endpoints must use these values:
-
-| Setting | Value |
-|---|---:|
-| Channel | 9 |
-| Center frequency | 7,987.2 MHz |
-| Data rate | 6.8 Mbit/s |
-| PRF | 64 MHz |
-| TX preamble | 128 symbols |
-| TX/RX preamble code | 9 |
-| RX PAC | 8 |
-| SFD | Qorvo proprietary 8-symbol SFD |
-| SFD timeout | 129 symbols |
-| PHR mode/rate | Standard / standard |
-| STS | Disabled |
-| PDOA | Disabled |
-| Maximum PSDU | 127 bytes, including FCS |
-| FCS | Hardware IEEE 802.15.4 CRC-16 |
-| IEEE MAC ACK request | Disabled |
-| Hardware frame filtering | COLETEC destination EUI-64 enabled; RECEPTEC disabled |
-
-Initial board/radio tuning values are not wire-format constants:
-
-| Setting | Value |
-|---|---:|
-| TX pulse-generator delay | `0x34` |
-| TX power register | `0xFDFDFDFD` |
-| TX antenna delay | 16,385 |
-| RX antenna delay | 16,385 |
-| DWM fast SPI clock | 32 MHz |
-| DWM initialization SPI clock | 2 MHz |
-
-TX power must comply with the deployment region, and antenna delays still
-require calibration for the final hardware.
-
-## Frame numbers
-
-All protocol messages use the same IEEE 802.15.4 Data Frame layout. The packet
-type and payload change; the MAC layout does not.
-
-| Offset | Size | Field |
-|---:|---:|---|
-| 0 | 2 | Frame Control bytes `41 EC` |
-| 2 | 1 | Sequence number |
-| 3 | 8 | Destination EUI-64 |
-| 11 | 8 | Source EUI-64 |
-| 19 | 1 | Reserved/type byte |
-| 20 | 0–105 | Opaque payload |
-| End | 2 | Hardware-generated FCS |
-
-Frame Control is numeric `0xEC41`, transmitted as `41 EC`. The low nibble of
-byte 19 contains the packet type. Its high nibble must be zero.
-
-| Packet | Type ID | Direction | Payload | Logical bytes without FCS | Radio PSDU bytes with FCS |
-|---|---:|---|---:|---:|---:|
-| `DATA_REQ` | `0x0` | RECEPTEC → COLETEC | 2 | 22 | 24 |
-| `SYNC` | `0x1` | RECEPTEC → COLETEC | 2 | 22 | 24 |
-| `DATA` | `0x2` | COLETEC → RECEPTEC | 0–105 | 20–125 | 22–127 |
-| `ACK` | `0x3` | COLETEC → RECEPTEC | 0 | 20 | 22 |
-| `STOP` | `0x4` | RECEPTEC → COLETEC | 0 | 20 | 22 |
-| `STOP_ACK` | `0x5` | COLETEC → RECEPTEC | 0 | 20 | 22 |
-| Reserved | `0x6`–`0xF` | — | — | — | — |
-
-`DATA_REQ` and `SYNC` carry `DT_sampling` as a 16-bit little-endian
-microsecond value. The received PHY length defines the DATA payload length;
-there is no separate payload-length field.
-
-The sequence number is unsigned 8-bit, wraps modulo 256, and is maintained
-independently for each COLETEC. Retries keep the same sequence number.
-
-## Timing numbers
-
-| Symbol | Meaning | Value |
-|---|---|---:|
-| `T_sampling` | Sampling cycle | 1,000 ms |
-| `T_slot` | One COLETEC slot | 20,000 µs |
-| `T_response_delay` | Request RX RMARKER to response TX RMARKER | 2,000 µs |
-| `T_timeout` | RECEPTEC response timeout | 3,000 µs |
-| `N_attempts_max` | Total attempts, including the first | 3 |
-| Attempt offsets | Request positions inside the slot | 0 / 5,000 / 10,000 µs |
-| `T_guard` | Initial guard on each side of the slot | 500 µs |
-| `DT_guard` | Added guard after each missed slot | 100 µs |
-| `N_cnt_guard_max` | Consecutive misses before discovery | 5 |
-| `T_on_init` | Initial continuous COLETEC RX | 10 s |
-| `T_sniff_on` | Discovery RX-on period | 2 s |
-| `T_sniff_off` | Base discovery RX-off period | 2 s |
-| `N_sniff_cycles_per_step` | Failed ON periods before increasing OFF time | 3 |
-| `N_cnt_sniff_off_max` | Maximum OFF multiplier | 5 |
-
-The response is scheduled in the UWB hardware time domain:
-
-```text
-response_tx_rmarker = request_rx_rmarker + 2,000 us
-```
-
-The request retry positions are fixed:
-
-```text
-attempt 1 = slot_start +     0 us
-attempt 2 = slot_start + 5,000 us
-attempt 3 = slot_start + 10,000 us
-```
-
-The synchronization correction is:
-
-```text
-DT_sampling = scheduled_request_tx_rmarker - nominal_slot_start
-next_slot_start = request_rx_rmarker + 1,000,000 us - DT_sampling
-```
-
-Normal `DT_sampling` values are therefore 0, 5,000, or 10,000 µs.
-
-## Current four-peer schedule
-
-The normal qualification schedule has two real responders and two intentionally
-missing peers:
-
-```text
-1,000 ms sampling cycle
-├─ slot 0,   0–20 ms: DWM COLETEC surrogate
-├─ slot 1,  20–40 ms: production COLETEC
-├─ slot 2,  40–60 ms: intentionally missing
-├─ slot 3,  60–80 ms: intentionally missing
-└─ 80–1,000 ms: no configured slot
-```
-
-Slots are not compressed when a peer is absent. At 20 ms per slot, the v1
-profile allows at most 50 slots in one 1-second sampling cycle.
-
-A synchronized COLETEC receives only around its assigned slot:
-
-```text
-expanded_guard = 500 us + missed_slots * 100 us
-RX interval = [slot_start - expanded_guard,
-               slot_start + 20,000 us + expanded_guard]
-```
-
-After the fifth consecutive missed slot, the COLETEC enters discovery. Its
-RX-off duration progresses through 2, 4, 6, 8, and 10 seconds, increasing one
-step after every three failed 2-second RX-on periods. A valid addressed
-request resets the discovery counters and resynchronizes the COLETEC.
-
-## Transaction behavior
-
-| Request | Expected response | Required behavior |
-|---|---|---|
-| `DATA_REQ` | `DATA` | Freeze one opaque payload for all retries in the slot |
-| `SYNC` | `ACK` | Apply the same timing and retry rules as DATA_REQ |
-| `STOP` | `STOP_ACK` | ACK duplicates through the slot deadline, then enter STOPPED |
-
-STOPPED is exited by reset, power cycle, or a separately implemented external
-wake source. Protocol v1.0 has no over-the-air resume message.
-
-A frame is accepted only when FCS, length, Frame Control, reserved bits, type,
-payload length, destination, source, sequence, expected response, and current
-protocol state are all valid. Rejected frames do not produce a response or
-alter protocol timing/state.
-
-## UWB execution context
-
-The application uses:
-
-| Item | Current value |
-|---|---:|
-| Dedicated UWB thread stack | 4,096 bytes |
-| UWB thread priority | Preemptive priority 0 |
-| Main thread stack | 2,048 bytes |
-| Radio event handling | GPIO interrupt wakes the UWB thread |
-| Timing source | DW3110 40-bit hardware timestamps |
-| Request/response scheduling | DW3110 delayed TX/RX |
-
-Thread wake-up time is not used as the protocol timestamp. Interrupt handling
-collects the event; RMARKER timestamps and delayed radio operations enforce
-the wire timing.
-
-## Runtime UWB shell
-
-The RECEPTEC exposes a UART shell at 115,200 bit/s. Shell callbacks never
-operate the DW3110 directly. They queue work for the exclusive UWB protocol
-thread, which applies each command at a safe cycle boundary.
-
-```text
-uwb status
-uwb peers
-uwb slotted start
-uwb slotted stop
-uwb sync start <peer-slot>
-uwb sync stop
-uwb data_req <peer-slot>
-uwb test list
-```
-
-The normal image boots with the slotted schedule stopped and the radio idle.
-The operator starts traffic with `uwb slotted start`. Periodic SYNC is
-independent: it can replace DATA_REQ in one peer's slot while the normal
-schedule runs, or run by itself while the normal schedule is stopped. Results
-are asynchronous and print from the UWB owner thread.
-
-`uwb test stop <peer-slot>` sends the protocol STOP message. A successful STOP
-leaves that COLETEC stopped until it is reset.
-
-### Production COLETEC clock-drift soak
-
-For a single production COLETEC (QM33120W/DW3720, registered as peer slot 1),
-leave the normal four-peer schedule stopped and start only its periodic SYNC:
-
-```text
-uwb slotted stop
-uwb sync start 1
-```
-
-The RECEPTEC is monitored over its UART. The production COLETEC has no UART
-console, so the monitor starts SEGGER RTT Logger against its J-Link probe:
+## Build both surrogate boards
 
 ```sh
-python scripts/qualify-soak.py \
-  --receptec ~/.serial/receptec-0 \
-  --coletec-rtt-probe 802003538 \
-  --duration-hours 24
+./scripts/build-both.sh
 ```
 
-Do not leave RTT Viewer, another RTT logger, a debugger, or a flashing process
-connected to that probe while the soak monitor is running. The old DWM COLETEC
-PoC can still be monitored over UART with `--coletec ~/.serial/coletec-0`.
+Equivalent direct commands:
 
-The production COLETEC compares each request's DW3720 RX RMARKER against the
-slot predicted from the previous request, before re-anchoring its schedule.
-Since the sampling period is exactly one second, the mean phase error in
-microseconds per cycle is numerically equal to relative frequency error in
-ppm. The CSV and checkpoint contain the latest phase sample, cumulative
-minimum/maximum/sum, sample count, and relative ppm. Positive ppm means request
-arrival advances in the COLETEC clock domain relative to its prediction;
-negative ppm means it falls behind.
+```sh
+west build -b fake_coletec_0/nrf52833 -d build-fake-coletec-0 .
+west build -b fake_coletec_1/nrf52833 -d build-fake-coletec-1 .
+```
 
-Stop the RECEPTEC traffic after the soak with:
+Outputs:
 
 ```text
-uwb sync stop
+build-fake-coletec-0/zephyr/zephyr.hex
+build-fake-coletec-1/zephyr/zephyr.hex
 ```
 
-## Validation status
+The build script verifies the compiled identity of each image and records the
+source commit, contracts pin, and optional test configuration in each build
+directory.
 
-The current bench has qualified:
-
-- `DATA_REQ/DATA`, `SYNC/ACK`, and `STOP/STOP_ACK` on final COLETEC hardware;
-- two live COLETECs in fixed slots 0 and 1, with slots 2 and 3 absent;
-- 0 / 5,000 / 10,000 µs retry positions and duplicate responses;
-- guarded slot reception, fifth-miss synchronization loss, discovery backoff,
-  and automatic re-entry;
-- rejection of a correctly addressed request transmitted outside the assigned
-  RX interval;
-- DW3110 and QM33120W hardware rejection of wrong destination EUI-64 values,
-  followed by normal-traffic recovery;
-- maximum-size DATA, sequence wraparound, and hardware FCS.
-
-The scenario matrix currently reports **89% coverage**. This is scenario
-coverage, not a claim that production hardware is 89% qualified. Remaining
-work includes connected-BLE load, intentional same-slot collision, RF
-range/interference measurements, and a minimum 1,000-transaction production
-soak.
-
-See [`TESTS.md`](TESTS.md) for the test procedure, evidence, scoring method,
-limitations, and remaining cases.
-
-## Build and test
-
-Build the COLETEC variant:
-
-```sh
-west build -b decawave_dwm3001cdk/nrf52833 -d build-coletec . -- \
-  -DEXTRA_CONF_FILE=boards/coletec.conf
-```
-
-Build the RECEPTEC variant:
-
-```sh
-west build -b decawave_dwm3001cdk/nrf52833 -d build-receptec . -- \
-  -DEXTRA_CONF_FILE=boards/receptec.conf
-```
-
-Run the host protocol tests:
+Run host protocol tests separately:
 
 ```sh
 cmake -S tests -B build-tests
@@ -414,18 +114,135 @@ cmake --build build-tests
 ctest --test-dir build-tests --output-on-failure
 ```
 
-Build both role-specific images and flash the configured DWM J-Link probes:
+Run RECEPTEC codec tests and build its provisional baseline separately:
 
 ```sh
+cmake -S firmware/receptec/tests -B build-receptec-tests
+cmake --build build-receptec-tests
+ctest --test-dir build-receptec-tests --output-on-failure
+west build -p always -b receptec/nrf52840 \
+  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec/receptec-board" \
+  firmware/receptec
+```
+
+Generated build directories copied from Dell contain the former absolute
+source path. Configure a fresh build directory before using those outputs.
+
+The planned data path and its still-open payload decisions are summarized in
+[`docs/receptec-data-export.md`](docs/receptec-data-export.md). This is a design
+note, not a wire-format contract; tag payload content is owned by COLETEC and
+the normative schema belongs in the shared contracts repository.
+
+## Flash the bench
+
+After building and committing the source:
+
+```sh
+./scripts/build-both.sh          # fake-COLETEC-0, fake-COLETEC-1 and the real RECEPTEC
+./scripts/flash-both.sh --dry-run  # every check, no flashing
 ./scripts/flash-both.sh
 ```
 
-## UWB driver
+It flashes the two fake COLETECs and the real RECEPTEC at once, each to the probe
+nicknamed `fake-coletec-0`, `fake-coletec-1` and `receptec` in `lstty`. `--backup` reads the
+real RECEPTEC's flash (1 MiB) and UICR back to
+`backups/real-receptec-<probe>-<UTC>/` (`flash.bin`, `uicr.bin`) first, using
+`lstty jlink dump`, and cancels the flash if that fails. Never `nrfjprog`.
+`--no-receptec` flashes only the
+fakes. Override the mapping when necessary:
 
-Upstream Zephyr provides the DWM3001CDK nRF52833 board resources but not the
-DW3110 UWB driver used by this application. The board's existing
-`zephyr,ieee802154` choice is the Nordic 2.4 GHz radio and is not used by this
-protocol.
+```sh
+./scripts/flash-both.sh \
+  --fake-coletec-0-probe <serial> \
+  --fake-coletec-1-probe <serial> \
+  --receptec-probe <serial>
+```
 
-This application pins Qorvo DW3XXX driver 08.19.02 under `vendor/qorvo`. See
-its README for provenance and proprietary license information.
+The script rejects duplicate probe serials, probes whose registered target
+device does not match the role (a DWM can never receive the RECEPTEC image),
+stale images, mismatched compiled identities, and fake-COLETEC builds made from
+different test configurations. It never uses
+USB enumeration order to decide which image belongs to a board.
+
+For a repository-owned fault scenario, apply the same fragment to both
+surrogates:
+
+```sh
+./scripts/build-both.sh --test-conf tests/m7-drop-two-acks.conf
+```
+
+Rebuild without `--test-conf` immediately after fault testing.
+
+## Operate the bench
+
+Build, flash and measure with the scripts; do not call `west flash` or
+`nrfjprog` by hand (`nrfjprog` opens a probe-selection window). Probes are
+found by `lstty` nickname (`fake-coletec-0`, `fake-coletec-1`, `receptec`).
+
+| Script | Use |
+|---|---|
+| `scripts/build-both.sh [--test-conf tests/throughput-<P>ms.conf] [--no-receptec]` | Build both fake COLETECs and the real RECEPTEC into the west workspace |
+| `scripts/flash-one.sh <fake-coletec-0\|fake-coletec-1\|receptec>` | Flash one board; no prompt when stdin is not a tty |
+| `scripts/flash-both.sh` | Flash the two fakes and the RECEPTEC; `--dry-run` runs every check only |
+| `scripts/sweep.sh [--poll-ms 200,100,50] [--duration S]` | Per period: build the fakes with the matching `.conf`, flash, run the poll and print the counters |
+| `scripts/sync-sweep.py [--poll-ms P --duration S]` | Reset the boards, start the fakes, then run manual SYNCs or the poll |
+| `scripts/sensor-viewer.py [--only-peer EUI --seconds S]` | Live decode of the COLETEC sensor payload v1 on the PC |
+| `scripts/accept-sensor-path.py [--samples N --min-delivery F]` | Acceptance check of COLETEC to RECEPTEC to PC: delivery, late, decode, sequence, fresh summary. PASS / FAIL / SKIP (exit 0 / 1 / 77); a check that cannot run is SKIP, never PASS |
+
+The flash scripts refuse a dirty tree, a stale image, and a probe whose target
+device does not match the role. `--allow-dirty` accepts changes that do not touch
+image sources (docs, scripts). A DWM can never receive the RECEPTEC image.
+
+Shells: the fake COLETECs have a UART shell on their J-Link serial port
+(`~/.serial/fake-coletec-N`, prompt `uart:~$`). The RECEPTEC has no serial port on
+the bench yet, so its shell is on SEGGER RTT (`./scripts/rtt-shell.sh receptec`,
+prompt `rtt:~$`). The RTT input buffer is about 16 bytes: paste long commands in
+pieces (`sync-sweep.py` does).
+
+Start both surrogate responders first, then traffic on the real RECEPTEC:
+
+```text
+fake-COLETEC-0 / -1 shell:   uwb coletec start
+RECEPTEC shell:              uwb poll start [period_ms]   (default 1000)
+                             uwb poll stats
+                             uwb poll stop
+```
+
+A responder listens continuously for 10 s after reset or `start`, so start polling
+within that window. `uwb poll` sends DATA_REQ to every registered peer once per
+period (slot N at N x 20 ms, up to 3 attempts with backoff, DT_sampling per
+attempt). **The period must equal the fakes' `T_sampling`**, which is a build
+setting: build them with the matching `tests/throughput-<P>ms.conf` (a mismatch
+gave 20% success at 200 ms against 1000 ms fakes). Manual `uwb sync <slot>` is
+refused while polling. Below 100 ms only two slots fit in a period.
+
+Reference bench result, 2026-09-24, RECEPTEC and two fake COLETECs, 105-byte DATA,
+30 to 60 s per period: 200 ms, 100 ms and 50 ms all completed every transaction on
+the first attempt. The retry path has not been exercised.
+
+The RECEPTEC board LEDs: blue (D300, P1.08) solid once booted; green (D301, P1.09)
+blinks at 1 Hz while the kernel runs, 5 Hz if the UWB radio failed to initialize.
+
+Open an individual fake shell over RTT with
+`./scripts/rtt-shell.sh <lstty nickname or J-Link serial>`. The startup log prints
+the fake's role and on-air identity, source and contracts revisions, Nordic device
+ID and UWB frame-filter address.
+
+## Code map
+
+| Path | Responsibility |
+|---|---|
+| `boards/atletec/coletec/` | `fake_coletec_0/nrf52833` and `fake_coletec_1/nrf52833` board targets |
+| `src/main.c` | Startup and compiled surrogate identity |
+| `src/dw3110_radio.c` | DW3110 owner and COLETEC responder behavior |
+| `src/protocol.c` | Protocol frame codec and timing helpers |
+| `src/coletec_sync.c` | COLETEC synchronization, guards, and discovery |
+| `src/dw3110_port.c` | SPI, GPIO, interrupt, and timing bridge |
+| `src/uwb_shell.c` | Operator shell |
+| `tests/` | Host tests and bounded hardware fault configurations |
+| `scripts/` | Dual build, flash, RTT, and analysis tooling |
+| `vendor/qorvo/` | Pinned Qorvo DW3XXX driver and provenance |
+| `firmware/receptec/` | RECEPTEC Type2AB baseline, UWB codec, QM33120W driver, and manual SYNC initiator |
+
+Qualification evidence and unfinished test results remain outside repository
+tracking until the validation campaign is complete.

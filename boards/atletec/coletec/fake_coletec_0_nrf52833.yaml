@@ -1,0 +1,16 @@
+identifier: fake_coletec_0/nrf52833
+name: fake-COLETEC-0 UWB bench surrogate
+type: mcu
+arch: arm
+ram: 128
+flash: 512
+toolchain:
+  - zephyr
+  - gnuarmemb
+supported:
+  - adc
+  - usb_device
+  - ble
+  - gpio
+  - watchdog
+vendor: atletec

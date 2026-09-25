@@ -185,3 +185,40 @@ bool receptec_protocol_attempt_offset_valid(uint16_t dt_sampling_us)
 {
 	return dt_sampling_us <= RECEPTEC_PROTOCOL_ATTEMPT_OFFSET_MAX_US;
 }
+
+int receptec_protocol_validate_request(
+	const struct receptec_frame *frame,
+	const uint8_t expected_destination[RECEPTEC_PROTOCOL_EUI64_SIZE],
+	const uint8_t expected_source[RECEPTEC_PROTOCOL_EUI64_SIZE],
+	uint16_t *dt_sampling_us)
+{
+	uint16_t decoded_dt = 0U;
+
+	if (frame == NULL || expected_destination == NULL ||
+	    expected_source == NULL || dt_sampling_us == NULL) {
+		return RECEPTEC_PROTOCOL_ERR_ARGUMENT;
+	}
+	if (memcmp(frame->destination, expected_destination,
+		   RECEPTEC_PROTOCOL_EUI64_SIZE) != 0 ||
+	    memcmp(frame->source, expected_source,
+		   RECEPTEC_PROTOCOL_EUI64_SIZE) != 0) {
+		return RECEPTEC_PROTOCOL_ERR_ADDRESS;
+	}
+
+	switch (frame->type) {
+	case RECEPTEC_PACKET_STOP:
+		break;
+	case RECEPTEC_PACKET_DATA_REQ:
+	case RECEPTEC_PACKET_SYNC:
+		decoded_dt = receptec_protocol_decode_dt_sampling(frame->payload);
+		if (!receptec_protocol_attempt_offset_valid(decoded_dt)) {
+			return RECEPTEC_PROTOCOL_ERR_DT_SAMPLING;
+		}
+		break;
+	default:
+		return RECEPTEC_PROTOCOL_ERR_TYPE;
+	}
+
+	*dt_sampling_us = decoded_dt;
+	return RECEPTEC_PROTOCOL_OK;
+}

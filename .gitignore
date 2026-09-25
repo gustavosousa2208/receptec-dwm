@@ -1,6 +1,7 @@
 # Zephyr and native build output
 build/
 build-*/
+/firmware/receptec/build/
 
 # Editor and operating-system files
 .cache/
@@ -16,3 +17,12 @@ __pycache__/
 
 # Qualification logs are local test artifacts
 logs/
+
+# Operator planning and qualification notes stay on this machine
+/TODO.md
+/TESTS.md
+
+# Bench evidence and local tooling; never committed
+backups/
+.claude/
+build-fake-coletec.log

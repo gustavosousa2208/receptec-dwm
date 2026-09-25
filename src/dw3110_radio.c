@@ -24,9 +24,10 @@
 #define DW3110_TX_ANTENNA_DELAY 16385U
 #define DW3110_RX_ANTENNA_DELAY 16385U
 #define DW3110_REQUEST_SETUP_US 2000U
+#define DW3110_TEST_SETUP_US 10000U
 #define DW3110_RESPONSE_DELAY_US 2000U
 #define DW3110_RESPONSE_TIMEOUT_US 3000U
-#define DW3110_SAMPLING_PERIOD_US 1000000U
+#define DW3110_SAMPLING_PERIOD_US (CONFIG_RECEPTEC_TEST_SAMPLING_PERIOD_MS * 1000U)
 #define DW3110_SLOT_DURATION_US 20000U
 #define DW3110_OUT_OF_SLOT_PROBE_US 200000U
 
@@ -42,6 +43,21 @@ BUILD_ASSERT(RECEPTEC_PROTOCOL_ATTEMPT_OFFSET_MAX_US +
 	     "backoff schedule must finish inside the COLETEC slot");
 #define DW3110_ATTEMPT_COUNT RECEPTEC_PROTOCOL_ATTEMPT_COUNT
 #define RECEPTEC_PEER_COUNT DW3110_RADIO_PEER_COUNT
+
+/* The four fixed slots have to fit inside one sampling period. */
+/* Below 100 ms only the first two slots are used (bench throughput runs). */
+#define DW3110_ACTIVE_SLOTS \
+	(CONFIG_RECEPTEC_TEST_SAMPLING_PERIOD_MS < 100 ? 2U : DW3110_RADIO_PEER_COUNT)
+BUILD_ASSERT(DW3110_SAMPLING_PERIOD_US >=
+		     DW3110_ACTIVE_SLOTS * DW3110_SLOT_DURATION_US,
+	     "sampling period must hold every fixed slot");
+/* These tests were written for the normal 1 s period. */
+BUILD_ASSERT(CONFIG_RECEPTEC_TEST_SILENCE_AFTER == 0 ||
+		     CONFIG_RECEPTEC_TEST_SAMPLING_PERIOD_MS == 1000,
+	     "the Kconfig silence test assumes a 1 s sampling period");
+BUILD_ASSERT(CONFIG_RECEPTEC_TEST_OUT_OF_SLOT_AFTER == 0 ||
+		     DW3110_SAMPLING_PERIOD_US > DW3110_OUT_OF_SLOT_PROBE_US,
+	     "the out-of-slot probe must land before the next cycle");
 #define DW3110_TIMESTAMP_MASK ((1ULL << 40) - 1ULL)
 #define DW3110_IRQ_EVENT_MASK \
 	(DWT_INT_TXFRS_BIT_MASK | DWT_INT_RXFCG_BIT_MASK | \
@@ -99,6 +115,9 @@ enum receptec_command_kind {
 	RECEPTEC_COMMAND_TEST_WRONG_EUI,
 	RECEPTEC_COMMAND_TEST_OUT_OF_SLOT,
 	RECEPTEC_COMMAND_TEST_SILENCE,
+	RECEPTEC_COMMAND_TEST_REJECTION,
+	RECEPTEC_COMMAND_TEST_SEQUENCE_WRAP,
+	RECEPTEC_COMMAND_TEST_WINDOW,
 	RECEPTEC_COMMAND_ABORT,
 };
 
@@ -141,9 +160,17 @@ static void draw_attempt_offsets(uint16_t offsets_us[DW3110_ATTEMPT_COUNT])
 static const uint8_t receptec_eui[RECEPTEC_PROTOCOL_EUI64_SIZE] = {
 	0x41, 0x16, 0xA8, 0x06, 0x82, 0xF3, 0xC6, 0x3E,
 };
+#if CONFIG_DWM_COLETEC_INSTANCE == 0
 static const uint8_t coletec_eui[RECEPTEC_PROTOCOL_EUI64_SIZE] = {
 	0x31, 0x5D, 0x02, 0xD5, 0x15, 0x8C, 0xFA, 0x40,
 };
+#define COLETEC_EUI_TEXT "31:5D:02:D5:15:8C:FA:40"
+#else
+static const uint8_t coletec_eui[RECEPTEC_PROTOCOL_EUI64_SIZE] = {
+	0x31, 0x5D, 0x02, 0xD5, 0x15, 0x8C, 0xFA, 0x41,
+};
+#define COLETEC_EUI_TEXT "31:5D:02:D5:15:8C:FA:41"
+#endif
 
 /* DW3xxx time is based on 499.2 MHz: 1 us = 319488 / 5 DTU. */
 static uint64_t us_to_dtu(uint64_t us)
@@ -181,8 +208,9 @@ static int configure_coletec_frame_filter(void)
 		return -EIO;
 	}
 	dwt_configureframefilter(DWT_FF_ENABLE_802_15_4, DWT_FF_DATA_EN);
-	printk("COLETEC hardware frame filter enabled: "
-	       "destination=31:5D:02:D5:15:8C:FA:40 type=DATA\n");
+	printk("COLETEC-%u hardware frame filter enabled: "
+	       "destination=%s type=DATA\n",
+	       CONFIG_DWM_COLETEC_INSTANCE, COLETEC_EUI_TEXT);
 #endif
 	return 0;
 }
@@ -335,6 +363,19 @@ static int load_protocol_frame(const struct receptec_frame *frame)
 
 	radio_length = (uint16_t)(logical_length + RECEPTEC_PROTOCOL_FCS_SIZE);
 	if (dwt_writetxdata(radio_length, bytes, 0U) != DWT_SUCCESS) {
+		return -EIO;
+	}
+	dwt_writetxfctrl(radio_length, 0U, 0U);
+	return 0;
+}
+
+static int load_raw_frame(const uint8_t *bytes, size_t logical_length)
+{
+	uint16_t radio_length = (uint16_t)(logical_length +
+					   RECEPTEC_PROTOCOL_FCS_SIZE);
+
+	if (logical_length > RECEPTEC_PROTOCOL_MAX_LOGICAL_SIZE ||
+	    dwt_writetxdata(radio_length, bytes, 0U) != DWT_SUCCESS) {
 		return -EIO;
 	}
 	dwt_writetxfctrl(radio_length, 0U, 0U);
@@ -1074,6 +1115,271 @@ static void print_wrong_destination_result(
 	       result->radio_status);
 }
 
+static const char *rejection_case_name(enum dw3110_radio_rejection_case test)
+{
+	switch (test) {
+	case DW3110_RADIO_REJECT_WRONG_SOURCE:
+		return "wrong-source";
+	case DW3110_RADIO_REJECT_WRONG_TYPE:
+		return "wrong-type";
+	case DW3110_RADIO_REJECT_RESERVED_BITS:
+		return "reserved-bits";
+	case DW3110_RADIO_REJECT_SHORT_PAYLOAD:
+		return "short-payload";
+	case DW3110_RADIO_REJECT_DT_SAMPLING:
+		return "dt-sampling-range";
+	default:
+		return "unknown";
+	}
+}
+
+static void run_rejection_probe(struct receptec_peer_runtime *peer,
+				uint32_t slot_epoch,
+				enum dw3110_radio_rejection_case test)
+{
+	uint8_t bytes[RECEPTEC_PROTOCOL_MAX_LOGICAL_SIZE];
+	uint8_t dt_sampling[RECEPTEC_PROTOCOL_DT_SAMPLING_SIZE];
+	struct protocol_counters counters = { 0 };
+	struct receptec_slot_result baseline;
+	struct receptec_slot_result recovery;
+	struct receptec_frame request = {
+		.type = RECEPTEC_PACKET_DATA_REQ,
+		.payload = dt_sampling,
+		.payload_length = sizeof(dt_sampling),
+	};
+	uint8_t payload[RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE];
+	size_t payload_length = 0U;
+	size_t logical_length = 0U;
+	uint32_t radio_status = 0U;
+	uint32_t sample_counter = 0U;
+	bool payload_frozen = false;
+	uint32_t malformed_epoch;
+	int status;
+
+	/* Test preparation is intentionally verbose; keep delayed TX in future. */
+	slot_epoch += us_to_dx_time(DW3110_TEST_SETUP_US);
+
+	/* Establish the peer's nominal schedule before testing rejection. */
+	run_receptec_peer_data(peer, slot_epoch, &baseline);
+	if (baseline.status != 0) {
+		printk("P-02 %s INCONCLUSIVE: baseline=%d\n",
+		       rejection_case_name(test), baseline.status);
+		return;
+	}
+	malformed_epoch = slot_epoch +
+		us_to_dx_time(DW3110_SAMPLING_PERIOD_US);
+	request.sequence = ++peer->sequence;
+	memcpy(request.destination, peer->eui, sizeof(request.destination));
+	memcpy(request.source, receptec_eui, sizeof(request.source));
+	receptec_protocol_encode_dt_sampling(0U, dt_sampling);
+	status = receptec_protocol_encode(bytes, sizeof(bytes), &request,
+					  &logical_length);
+	if (status != RECEPTEC_PROTOCOL_OK) {
+		printk("P-02 %s INCONCLUSIVE: encode=%d\n",
+		       rejection_case_name(test), status);
+		return;
+	}
+
+	switch (test) {
+	case DW3110_RADIO_REJECT_WRONG_SOURCE:
+		bytes[11] ^= 0x80U;
+		break;
+	case DW3110_RADIO_REJECT_WRONG_TYPE:
+		bytes[FRAME_TYPE_OFFSET] = RECEPTEC_PACKET_DATA;
+		break;
+	case DW3110_RADIO_REJECT_RESERVED_BITS:
+		bytes[FRAME_TYPE_OFFSET] |= 0x10U;
+		break;
+	case DW3110_RADIO_REJECT_SHORT_PAYLOAD:
+		logical_length--;
+		break;
+	case DW3110_RADIO_REJECT_DT_SAMPLING:
+		receptec_protocol_encode_dt_sampling(
+			RECEPTEC_PROTOCOL_ATTEMPT_OFFSET_MAX_US + 1U,
+			&bytes[RECEPTEC_PROTOCOL_HEADER_SIZE]);
+		break;
+	default:
+		printk("P-02 rejection INCONCLUSIVE: invalid case\n");
+		return;
+	}
+
+	status = load_raw_frame(bytes, logical_length);
+	if (status == 0) {
+		dwt_forcetrxoff();
+		clear_radio_events();
+		dwt_setrxaftertxdelay(0U);
+		dwt_setrxtimeout(us_to_rx_timeout(DW3110_RESPONSE_TIMEOUT_US));
+		dwt_setdelayedtrxtime(malformed_epoch);
+		status = dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED) ==
+			 DWT_SUCCESS ? 0 : -ETIME;
+	}
+	if (status == 0) {
+		status = poll_for_matching_data(
+			request.sequence, peer->eui, peer->diagnostic_payload,
+			&counters, &radio_status, payload, &payload_length,
+			&payload_frozen, &sample_counter);
+	}
+	if (status != -ETIMEDOUT) {
+		printk("P-02 %s FAIL: malformed request status=%d radio=0x%08X\n",
+		       rejection_case_name(test), status, radio_status);
+		return;
+	}
+
+	/* A valid request in the following nominal window must still work. */
+	run_receptec_peer_data(peer,
+			       slot_epoch +
+				       2U * us_to_dx_time(DW3110_SAMPLING_PERIOD_US),
+			       &recovery);
+	if (recovery.status == 0) {
+		printk("P-02 %s PASS: response=none recovery=ok seq=%u\n",
+		       rejection_case_name(test), recovery.sequence);
+	} else {
+		printk("P-02 %s FAIL: response=none recovery=%d\n",
+		       rejection_case_name(test), recovery.status);
+	}
+}
+
+static void run_sequence_wrap_probe(struct receptec_peer_runtime *peer,
+				    uint32_t slot_epoch)
+{
+	static const uint8_t sequence[] = { 254U, 255U, 0U, 1U };
+	int status[ARRAY_SIZE(sequence)];
+
+	slot_epoch += us_to_dx_time(DW3110_TEST_SETUP_US);
+	for (size_t i = 0U; i < ARRAY_SIZE(sequence); ++i) {
+		peer->sequence = sequence[i];
+		status[i] = run_receptec_sync(
+			peer, slot_epoch +
+				      (uint32_t)i *
+					      us_to_dx_time(DW3110_SAMPLING_PERIOD_US));
+	}
+
+	for (size_t i = 0U; i < ARRAY_SIZE(sequence); ++i) {
+		if (status[i] != 0) {
+			printk("P-04 FAIL: seq=%u status=%d\n", sequence[i],
+			       status[i]);
+			return;
+		}
+	}
+	printk("P-04 PASS: sequence=254,255,0 recovery=1 responses=matching\n");
+}
+
+static const char *window_case_name(enum dw3110_radio_window_case test)
+{
+	switch (test) {
+	case DW3110_RADIO_WINDOW_BEFORE:
+		return "before";
+	case DW3110_RADIO_WINDOW_INSIDE:
+		return "inside";
+	case DW3110_RADIO_WINDOW_END:
+		return "end";
+	case DW3110_RADIO_WINDOW_AFTER:
+		return "after";
+	default:
+		return "unknown";
+	}
+}
+
+static int32_t window_case_offset_us(enum dw3110_radio_window_case test)
+{
+	switch (test) {
+	case DW3110_RADIO_WINDOW_BEFORE:
+		return -(int32_t)(COLETEC_BASE_GUARD_US + 100U);
+	case DW3110_RADIO_WINDOW_INSIDE:
+		return 0;
+	case DW3110_RADIO_WINDOW_END:
+		return (int32_t)(DW3110_SLOT_DURATION_US +
+				 COLETEC_BASE_GUARD_US);
+	case DW3110_RADIO_WINDOW_AFTER:
+		return (int32_t)(DW3110_SLOT_DURATION_US +
+				 COLETEC_BASE_GUARD_US + 100U);
+	default:
+		return 0;
+	}
+}
+
+static uint32_t add_signed_us_to_dx(uint32_t epoch, int32_t offset_us)
+{
+	if (offset_us < 0) {
+		return epoch - us_to_dx_time((uint32_t)-offset_us);
+	}
+	return epoch + us_to_dx_time((uint32_t)offset_us);
+}
+
+static void run_window_probe(struct receptec_peer_runtime *peer,
+			     uint32_t slot_epoch,
+			     enum dw3110_radio_window_case test)
+{
+	struct protocol_counters counters = { 0 };
+	struct receptec_slot_result baseline;
+	struct receptec_slot_result recovery;
+	uint8_t dt_sampling[RECEPTEC_PROTOCOL_DT_SAMPLING_SIZE];
+	struct receptec_frame request = {
+		.type = RECEPTEC_PACKET_DATA_REQ,
+		.payload = dt_sampling,
+		.payload_length = sizeof(dt_sampling),
+	};
+	uint8_t payload[RECEPTEC_PROTOCOL_MAX_PAYLOAD_SIZE];
+	size_t payload_length = 0U;
+	uint32_t radio_status = 0U;
+	uint32_t sample_counter = 0U;
+	uint32_t nominal_epoch;
+	uint32_t probe_epoch;
+	int32_t offset_us = window_case_offset_us(test);
+	bool payload_frozen = false;
+	bool expect_response = test == DW3110_RADIO_WINDOW_INSIDE;
+	int status;
+
+	slot_epoch += us_to_dx_time(DW3110_TEST_SETUP_US);
+	run_receptec_peer_data(peer, slot_epoch, &baseline);
+	if (baseline.status != 0) {
+		printk("P-05 %s INCONCLUSIVE: baseline=%d\n",
+		       window_case_name(test), baseline.status);
+		return;
+	}
+
+	nominal_epoch = slot_epoch + us_to_dx_time(DW3110_SAMPLING_PERIOD_US);
+	probe_epoch = add_signed_us_to_dx(nominal_epoch, offset_us);
+	request.sequence = ++peer->sequence;
+	memcpy(request.destination, peer->eui, sizeof(request.destination));
+	memcpy(request.source, receptec_eui, sizeof(request.source));
+	receptec_protocol_encode_dt_sampling(0U, dt_sampling);
+	status = load_protocol_frame(&request);
+	if (status == 0) {
+		dwt_forcetrxoff();
+		clear_radio_events();
+		dwt_setrxaftertxdelay(0U);
+		dwt_setrxtimeout(us_to_rx_timeout(DW3110_RESPONSE_TIMEOUT_US));
+		dwt_setdelayedtrxtime(probe_epoch);
+		status = dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED) ==
+			 DWT_SUCCESS ? 0 : -ETIME;
+	}
+	if (status == 0) {
+		status = poll_for_matching_data(
+			request.sequence, peer->eui, peer->diagnostic_payload,
+			&counters, &radio_status, payload, &payload_length,
+			&payload_frozen, &sample_counter);
+	}
+
+	run_receptec_peer_data(peer,
+			       slot_epoch +
+				       2U * us_to_dx_time(DW3110_SAMPLING_PERIOD_US),
+			       &recovery);
+	if (((expect_response && status == 0) ||
+	     (!expect_response && status == -ETIMEDOUT)) &&
+	    recovery.status == 0) {
+		printk("P-05 %s PASS: offset=%d us response=%s recovery=ok\n",
+		       window_case_name(test), offset_us,
+		       expect_response ? "yes" : "none");
+		return;
+	}
+	printk("P-05 %s FAIL: offset=%d us expected=%s status=%d "
+	       "radio=0x%08X recovery=%d\n",
+	       window_case_name(test), offset_us,
+	       expect_response ? "response" : "silence", status,
+	       radio_status, recovery.status);
+}
+
 static bool wrong_destination_probe_ready(void)
 {
 	uint32_t selected =
@@ -1112,13 +1418,19 @@ enum receptec_cycle_slot_operation {
 	RECEPTEC_SLOT_SYNC,
 	RECEPTEC_SLOT_STOP,
 	RECEPTEC_SLOT_WRONG_EUI,
+	RECEPTEC_SLOT_REJECTION,
+	RECEPTEC_SLOT_SEQUENCE_WRAP,
+	RECEPTEC_SLOT_WINDOW,
 };
 
 static bool command_is_action(enum receptec_command_kind kind)
 {
 	return kind == RECEPTEC_COMMAND_DATA_REQ || kind == RECEPTEC_COMMAND_TEST_SYNC ||
 	       kind == RECEPTEC_COMMAND_TEST_STOP || kind == RECEPTEC_COMMAND_TEST_WRONG_EUI ||
-	       kind == RECEPTEC_COMMAND_TEST_OUT_OF_SLOT || kind == RECEPTEC_COMMAND_TEST_SILENCE;
+	       kind == RECEPTEC_COMMAND_TEST_OUT_OF_SLOT || kind == RECEPTEC_COMMAND_TEST_SILENCE ||
+	       kind == RECEPTEC_COMMAND_TEST_REJECTION ||
+	       kind == RECEPTEC_COMMAND_TEST_SEQUENCE_WRAP ||
+	       kind == RECEPTEC_COMMAND_TEST_WINDOW;
 }
 
 static void clear_runtime_operation(struct receptec_control_runtime *control)
@@ -1174,6 +1486,7 @@ static void apply_receptec_command(struct receptec_control_runtime *control,
 		if (command_is_action(command->kind)) {
 			control->action = *command;
 			control->action_ready = true;
+			control->epoch_reset = true;
 		}
 		break;
 	}
@@ -1405,6 +1718,30 @@ static int run_receptec_data(void)
 					run_wrong_destination_probe(peer, slot_epoch,
 								    &wrong_results[slot]);
 					continue;
+				case RECEPTEC_COMMAND_TEST_REJECTION:
+					printk("ONE-SHOT P-02: cycle=%u slot=%u peer=%s case=%s\n",
+					       cycle, slot, peer->name,
+					       rejection_case_name(control.action.argument));
+					slot_operations[slot] = RECEPTEC_SLOT_REJECTION;
+					run_rejection_probe(peer, slot_epoch,
+						(enum dw3110_radio_rejection_case)
+							control.action.argument);
+					continue;
+				case RECEPTEC_COMMAND_TEST_SEQUENCE_WRAP:
+					printk("ONE-SHOT P-04: cycle=%u slot=%u peer=%s\n",
+					       cycle, slot, peer->name);
+					slot_operations[slot] = RECEPTEC_SLOT_SEQUENCE_WRAP;
+					run_sequence_wrap_probe(peer, slot_epoch);
+					continue;
+				case RECEPTEC_COMMAND_TEST_WINDOW:
+					printk("ONE-SHOT P-05: cycle=%u slot=%u peer=%s case=%s\n",
+					       cycle, slot, peer->name,
+					       window_case_name(control.action.argument));
+					slot_operations[slot] = RECEPTEC_SLOT_WINDOW;
+					run_window_probe(peer, slot_epoch,
+						(enum dw3110_radio_window_case)
+							control.action.argument);
+					continue;
 				default:
 					break;
 				}
@@ -1426,7 +1763,8 @@ static int run_receptec_data(void)
 				(void)run_receptec_sync(peer, slot_epoch);
 				continue;
 			}
-			if (control.slotted_running) {
+			if (control.slotted_running &&
+			    (CONFIG_RECEPTEC_TEST_POLL_PEER_MASK & (1U << slot)) != 0U) {
 				slot_operations[slot] = RECEPTEC_SLOT_DATA;
 				run_receptec_peer_data(peer, slot_epoch, &results[slot]);
 			}
@@ -1596,23 +1934,12 @@ static int read_coletec_request(uint32_t radio_status,
 	logical_length = frame_length - RECEPTEC_PROTOCOL_FCS_SIZE;
 	dwt_readrxdata(protocol_rx_bytes, logical_length, 0U);
 	status = receptec_protocol_decode(protocol_rx_bytes, logical_length, request);
-	if (status != RECEPTEC_PROTOCOL_OK ||
-	    memcmp(request->destination, coletec_eui, sizeof(coletec_eui)) != 0 ||
-	    memcmp(request->source, receptec_eui, sizeof(receptec_eui)) != 0) {
+	if (status != RECEPTEC_PROTOCOL_OK) {
 		return -EBADMSG;
 	}
-	if (request->type == RECEPTEC_PACKET_STOP) {
-		*dt_sampling_us = 0U;
-	} else if (request->type == RECEPTEC_PACKET_DATA_REQ ||
-		   request->type == RECEPTEC_PACKET_SYNC) {
-		*dt_sampling_us =
-			receptec_protocol_decode_dt_sampling(request->payload);
-	} else {
-		return -EBADMSG;
-	}
-	if ((request->type == RECEPTEC_PACKET_DATA_REQ ||
-	     request->type == RECEPTEC_PACKET_SYNC) &&
-	    !receptec_protocol_attempt_offset_valid(*dt_sampling_us)) {
+	status = receptec_protocol_validate_request(
+		request, coletec_eui, receptec_eui, dt_sampling_us);
+	if (status != RECEPTEC_PROTOCOL_OK) {
 		return -EBADMSG;
 	}
 	*request_rx_timestamp = read_rx_timestamp();
@@ -2378,6 +2705,24 @@ int dw3110_radio_run_test(enum dw3110_radio_test test, uint8_t peer_slot, uint32
 		command.kind = RECEPTEC_COMMAND_TEST_SILENCE;
 		command.peer_slot = 0U;
 		operation = DW3110_RADIO_OPERATION_TEST_SILENCE;
+		break;
+	case DW3110_RADIO_TEST_REJECTION:
+		if (argument >= DW3110_RADIO_REJECT_CASE_COUNT) {
+			return -EINVAL;
+		}
+		command.kind = RECEPTEC_COMMAND_TEST_REJECTION;
+		operation = DW3110_RADIO_OPERATION_TEST_REJECTION;
+		break;
+	case DW3110_RADIO_TEST_SEQUENCE_WRAP:
+		command.kind = RECEPTEC_COMMAND_TEST_SEQUENCE_WRAP;
+		operation = DW3110_RADIO_OPERATION_TEST_SEQUENCE_WRAP;
+		break;
+	case DW3110_RADIO_TEST_WINDOW:
+		if (argument >= DW3110_RADIO_WINDOW_CASE_COUNT) {
+			return -EINVAL;
+		}
+		command.kind = RECEPTEC_COMMAND_TEST_WINDOW;
+		operation = DW3110_RADIO_OPERATION_TEST_WINDOW;
 		break;
 	default:
 		return -EINVAL;

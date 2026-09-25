@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+
+description: Qorvo QM33120W UWB transceiver in the Murata Type 2AB module
+
+compatible: "qorvo,qm33120w"
+
+include: spi-device.yaml
+
+properties:
+  irq-gpios:
+    type: phandle-array
+    required: true
+    description: Active-high interrupt output from the QM33120W.
+
+  reset-gpios:
+    type: phandle-array
+    required: true
+    description: Active-low reset input to the QM33120W.
+
+  wakeup-gpios:
+    type: phandle-array
+    required: true
+    description: Active-high wake input to the QM33120W.

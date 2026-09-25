@@ -1,38 +1,47 @@
-# receptec-dwm — agent instructions
+# receptec (RECEPTEC + fake-COLETEC bench) — agent instructions
 
 Part of the **Atletec EPTS** workspace — read the workspace `../AGENTS.md` and the
 `contracts/` submodule first.
 
-> **The directory is `coletec-dwm/`; the repo is `receptec-dwm`.** The name is
-> historical and misleading — this is the RECEPTEC, not the COLETEC. Docs name
-> the repo; paths need the directory.
-
-This repo is the **RECEPTEC**: the fixed UWB base station (Qorvo DWM3001C =
-nRF52833 + DW3110). It is the receiver end of the UWB link with the COLETEC tag,
-whose UWB endpoint is `nrf52-bringup-fw`. It also carries a COLETEC-role build
-used for bench testing.
+This repo is the **RECEPTEC** repository: the firmware of the real receiver, an
+engineering-sample board (Murata Type 2AB, nRF52840 + QM33120W) headed for
+production, under `firmware/receptec/`. It also owns the two DWM3001C
+fake-COLETEC surrogate tags (nRF52833 + DW3110) used to test it, built as
+explicit **fake-COLETEC-0** and **fake-COLETEC-1** images. The RECEPTEC has its
+own `receptec/nrf52840` board target, a QM33120W/DW3720 driver, a peer
+registry, a manual SYNC initiator and periodic DATA_REQ polling with retries
+(`uwb poll start|stop|stats|stream|last`); Pi data export is not implemented.
+Never build or flash a DWM as RECEPTEC. The production COLETEC endpoint remains
+separate in `nrf52-bringup-fw`. The canonical remote is Bitbucket
+(`receptec.git`). The repository was called `coletec-dwm`, then `atletec-uwb-dwm-bench`
+and `receptec-dwm`; the GitHub remote still carries the name `receptec-dwm`.
 
 ## Contract this repo implements
 
 Pinned in `contracts/`; follow `contracts/VERSIONS.md` to change it.
 
-- **UWB RECEPTEC↔COLETEC** — this repo is the **RECEPTEC** end:
+- **UWB RECEPTEC↔COLETEC** — the DWM apps implement two surrogate **COLETEC**
+  ends and the RECEPTEC app implements the initiator-side PHY, peer registry,
+  frame codec, manual SYNC/ACK operation and periodic DATA_REQ polling:
   `contracts/protocol/uwb-receptec-coletec/`. Run the **same active PHY profile**
   as the COLETEC (Ch 9, 6.8 Mbit/s, PRF 64 MHz, preamble 128 / code 9, STS
-  disabled — the protocol doc is the authority). Hardware facts:
-  `contracts/hardware/receptec-dwm.md`.
+  disabled — the protocol doc is the authority). DATA remains a COLETEC-owned
+  application payload; its schema and RECEPTEC export to maleta are future
+  contract work. The production COLETEC source remains in `nrf52-bringup-fw`.
 
 **When implementing or modifying the UWB protocol, read the canonical doc from
 `contracts/` — not a local copy.** If you find a contract doc outside `contracts/`,
 move it into `contracts/` and delete the stray (no duplicates, no symlinks).
 
 `contracts/protocol/uwb-receptec-coletec/protocol-v1.0.md` is the canonical spec.
-The `HANDOFF.md` sitting beside it contradicts it on three points, two of which
-land in this repo's code: the retry/backoff model (RECEPTEC role) and whether
-COLETEC keeps RX enabled through the slot (bench role). Those are tracked as
-**A7** and **A8** in `../nrf52-bringup-fw/docs/consolidation-backlog.md`, blocked
-on a tech-lead decision. Audit against `protocol-v1.0.md` specifically —
-matching `HANDOFF.md` is not evidence of conformance.
+The `HANDOFF.md` sitting beside it contradicts it on the retry/backoff model and
+whether COLETEC keeps RX enabled through the slot. This repo now follows the
+canonical exponential-backoff rule. It keeps COLETEC RX enabled through the
+slot, while the canonical text requires immediate shutdown but flags that rule
+as broken in OI-01. The document conflicts remain tracked as **A7** and **A8**
+in `../nrf52-bringup-fw/docs/consolidation-backlog.md`. Audit against
+`protocol-v1.0.md` specifically — matching `HANDOFF.md` is not evidence of
+conformance.
 
 ## Zephyr source changes
 
@@ -59,8 +68,9 @@ Before creating or applying a patch, inspect `git -C "$ZEPHYR_BASE" status
 --short`. If the target files already contain unrelated changes, stop and work
 around them or request direction rather than merging them into the patch.
 
-Build output belongs in this application's build directories and must not be
-placed in the Zephyr source tree.
+Use fresh build directories under the existing west workspace's
+`build/atletec/receptec/`. Older in-repo build directories retain paths
+from before the Dell move and need reconfiguration before reuse.
 
 ## Conventions
 
@@ -73,5 +83,11 @@ Code/comments/docs in **English**; commit messages in **PT-BR** Conventional
 Commits (`feat(uwb): ...`, `fix(main): ...`).
 `AGENTS.md` is the real file; `CLAUDE.md` is a symlink to it.
 
-Any future merge from a development branch to `master` must go through a pull
-request. Never merge or push that integration directly to `master`.
+## Gitflow
+
+Follow the shared ATLETEC `AGENTS.md`: `gusta-develop` is the integration
+branch in this repo too (owner decision, 2026-09-24: not `develop`, which
+belongs to other people), and only the owner opens a pull request to advance
+`master`. The canonical remote is Bitbucket. No merge or push without a
+hardware test. Preserve feature branches and all uncommitted work; the branch
+`feature/receptec-board-payload-export` folds into `gusta-develop`.

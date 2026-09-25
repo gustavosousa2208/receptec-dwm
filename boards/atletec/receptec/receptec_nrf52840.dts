@@ -1,0 +1,14 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/dts-v1/;
+#include <nordic/nrf52840_qiaa.dtsi>
+#include <nordic/nrf52840_partition.dtsi>
+
+/ {
+    model = "Atletec RECEPTEC Type2AB receiver";
+    compatible = "atletec,receptec-nrf52840";
+
+    chosen {
+        zephyr,ieee802154 = &ieee802154;
+    };
+};
