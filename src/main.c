@@ -69,7 +69,8 @@ int main(void)
 	       DWM_BENCH_CONTRACTS_REV);
 	print_device_id(device_id, (size_t)length);
 
-	printk("Role: COLETEC-%u surrogate\n", CONFIG_DWM_COLETEC_INSTANCE);
+	printk("Role: fake-COLETEC-%u surrogate (on-air COLETEC-%u)\n",
+	       CONFIG_DWM_COLETEC_INSTANCE, CONFIG_DWM_COLETEC_INSTANCE);
 	configure_role_indicator();
 
 	if (dw3110_radio_init() < 0) {

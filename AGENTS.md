@@ -1,23 +1,32 @@
-# atletec-uwb-dwm-bench — agent instructions
+# receptec-dwm (RECEPTEC + fake-COLETEC bench) — agent instructions
 
 Part of the **Atletec EPTS** workspace — read the workspace `../AGENTS.md` and the
 `contracts/` submodule first.
 
-This repo owns the two DWM3001C surrogate tags in the UWB bench (nRF52833 +
-DW3110). It builds explicit **COLETEC-0** and **COLETEC-1** images from the same
-commit. The bench initiator is the real RECEPTEC running firmware from its own
-repository; never build or flash a DWM as RECEPTEC. The production COLETEC
-endpoint remains `nrf52-bringup-fw`.
+This repo is the **RECEPTEC** repository: the firmware of the real receiver, an
+engineering-sample board (Murata Type 2AB, nRF52840 + QM33120W) headed for
+production, under `firmware/receptec/`. It also owns the two DWM3001C
+fake-COLETEC surrogate tags (nRF52833 + DW3110) used to test it, built as
+explicit **fake-COLETEC-0** and **fake-COLETEC-1** images. The RECEPTEC has its
+own `receptec/nrf52840` board target, a QM33120W/DW3720 driver, a peer
+registry, a manual SYNC initiator and periodic DATA_REQ polling with retries
+(`uwb poll start|stop|stats|stream|last`); Pi data export is not implemented.
+Never build or flash a DWM as RECEPTEC. The production COLETEC endpoint remains
+separate in `nrf52-bringup-fw`. The canonical remote is Bitbucket
+(`atletec-uwb-dwm-bench.git`, the repository's historical name).
 
 ## Contract this repo implements
 
 Pinned in `contracts/`; follow `contracts/VERSIONS.md` to change it.
 
-- **UWB RECEPTEC↔COLETEC** — this repo implements two surrogate **COLETEC** ends:
+- **UWB RECEPTEC↔COLETEC** — the DWM apps implement two surrogate **COLETEC**
+  ends and the RECEPTEC app implements the initiator-side PHY, peer registry,
+  frame codec, manual SYNC/ACK operation and periodic DATA_REQ polling:
   `contracts/protocol/uwb-receptec-coletec/`. Run the **same active PHY profile**
   as the COLETEC (Ch 9, 6.8 Mbit/s, PRF 64 MHz, preamble 128 / code 9, STS
-  disabled — the protocol doc is the authority). The real RECEPTEC is outside
-  this repository.
+  disabled — the protocol doc is the authority). DATA remains a COLETEC-owned
+  application payload; its schema and RECEPTEC export to maleta are future
+  contract work. The production COLETEC source remains in `nrf52-bringup-fw`.
 
 **When implementing or modifying the UWB protocol, read the canonical doc from
 `contracts/` — not a local copy.** If you find a contract doc outside `contracts/`,
@@ -58,8 +67,9 @@ Before creating or applying a patch, inspect `git -C "$ZEPHYR_BASE" status
 --short`. If the target files already contain unrelated changes, stop and work
 around them or request direction rather than merging them into the patch.
 
-Build output belongs in this application's build directories and must not be
-placed in the Zephyr source tree.
+Use fresh build directories under the existing west workspace's
+`build/atletec/receptec-dwm/`. Older in-repo build directories retain paths
+from before the Dell move and need reconfiguration before reuse.
 
 ## Conventions
 
@@ -74,16 +84,9 @@ Commits (`feat(uwb): ...`, `fix(main): ...`).
 
 ## Gitflow
 
-Use the normal Gitflow branch model:
-
-- `main` is the protected release branch.
-- `develop` is the active integration branch and the destination for completed
-  feature and fix work.
-- Create `feature/*` branches from `develop` and merge them back into `develop`.
-- Create `release/*` branches from `develop`. Merge a completed release into
-  `main` through a pull request, then merge it back into `develop`.
-- Create `hotfix/*` branches from `main`. Merge a completed hotfix into `main`
-  through a pull request and also merge it into `develop`.
-- Never merge or push feature work directly to `main`.
-- Never merge or push `develop` directly to `main`; that integration must go
-  through a pull request.
+Follow the shared ATLETEC `AGENTS.md`: `gusta-develop` is the integration
+branch in this repo too (owner decision, 2026-09-24: not `develop`, which
+belongs to other people), and only the owner opens a pull request to advance
+`master`. The canonical remote is Bitbucket. No merge or push without a
+hardware test. Preserve feature branches and all uncommitted work; the branch
+`feature/receptec-board-payload-export` folds into `gusta-develop`.

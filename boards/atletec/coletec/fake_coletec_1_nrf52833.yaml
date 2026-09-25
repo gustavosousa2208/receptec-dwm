@@ -1,5 +1,5 @@
-identifier: coletec_0/nrf52833
-name: COLETEC-0 UWB bench surrogate
+identifier: fake_coletec_1/nrf52833
+name: fake-COLETEC-1 UWB bench surrogate
 type: mcu
 arch: arm
 ram: 128

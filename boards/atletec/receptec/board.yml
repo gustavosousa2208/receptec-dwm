@@ -1,0 +1,6 @@
+boards:
+  - name: receptec
+    full_name: Atletec RECEPTEC Type2AB receiver
+    vendor: atletec
+    socs:
+      - name: nrf52840
