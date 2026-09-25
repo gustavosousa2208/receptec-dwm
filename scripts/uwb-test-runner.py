@@ -167,7 +167,12 @@ def parse_coletec_counters(text):
 def count_coletec_events(text):
     """How many times each COLETEC discovery-state line appears in the text."""
     clean = ANSI.sub("", text)
-    return {name: clean.count(marker) for name, marker in COLETEC_EVENTS.items()}
+    counts = {name: clean.count(marker) for name, marker in COLETEC_EVENTS.items()}
+    # The order matters: a reentry that happened before the COLETEC went to discovery (the
+    # warm-up starts from a peer that lost sync while the poll was stopped) proves nothing.
+    entered = clean.find(COLETEC_EVENTS["entering-discovery"])
+    counts["reentry-after-entry"] = int(entered >= 0 and clean.find(COLETEC_EVENTS["reentry"], entered) >= 0)
+    return counts
 
 
 def evidence_delta(before, after):
@@ -332,6 +337,7 @@ def run_suite(transport, slot, selection, out_dir=None, clock=time.monotonic):
             t0 = clock()
             text = transport.run(f"uwb test {label} {slot}", timeout, stop_re=STOP_RE)
             text += transport.drain(0.7)  # a second result line after the first is a defect
+            window_end = mark()  # the COLETEC's own lines up to here belong to this test
             verdict, reason, fields = judge(text, name, slot)
             if verdict == "FAIL" and reason == "no-result" and clock() - t0 >= timeout - 0.5:
                 reason = "runner-timeout"
@@ -341,9 +347,12 @@ def run_suite(transport, slot, selection, out_dir=None, clock=time.monotonic):
             delta = evidence_delta(previous, current)
             previous = current or previous
             if name == "discovery" and verdict != "SKIP":
-                events = count_coletec_events(text_since(window_start))
+                window = text_since(window_start)
+                if window_end > window_start:
+                    window = window[: window_end - window_start]
+                events = count_coletec_events(window)
                 entry["coletec_events"] = events
-                if verdict == "PASS" and (events["entering-discovery"] < 1 or events["reentry"] < 1):
+                if verdict == "PASS" and not events["reentry-after-entry"]:
                     # The RECEPTEC only saw silence and then an answer; without the COLETEC's own
                     # lines the transition is a guess, so it is not a pass.
                     entry.update(verdict="FAIL", reason="no-evidence-discovery")
@@ -384,7 +393,8 @@ def render(summary):
         detail = " ".join(f"{k}={v}" for k, v in r.get("fields", {}).items())
         if r.get("coletec_events"):
             e = r["coletec_events"]
-            detail += f" | coletec entered-discovery={e['entering-discovery']} reentry={e['reentry']} off-windows={e['discovery-off']}"
+            detail += (f" | coletec entered-discovery={e['entering-discovery']} reentry={e['reentry']} "
+                       f"reentry-after-entry={e['reentry-after-entry']} off-windows={e['discovery-off']}")
         if r.get("coletec"):
             c = r["coletec"]
             detail += f" | coletec rx+{c['rx']} tx+{c['tx']} unanswered={c['unanswered']} err+{c['err']} to+{c['to']}"

@@ -171,11 +171,22 @@ class DiscoveryEvidenceTest(unittest.TestCase):
     def test_count_events(self):
         text = "UWB synchronization lost: entering discovery x\nUWB discovery OFF: cycle=1\nUWB discovery reentry: sequence=9\n"
         self.assertEqual(runner.count_coletec_events(text),
-                         {"entering-discovery": 1, "discovery-off": 1, "reentry": 1})
+                         {"entering-discovery": 1, "discovery-off": 1, "reentry": 1, "reentry-after-entry": 1})
 
     def test_pass_needs_the_coletec_to_report_entry_and_reentry(self):
         both = "UWB synchronization lost: entering discovery\nUWB discovery reentry: sequence=9\n"
         self.assertTrue(self.suite(both)["ok"])
+
+    def test_a_reentry_before_the_entry_does_not_count(self):
+        wrong_order = ("UWB discovery reentry: sequence=1\n"
+                       "UWB synchronization lost: entering discovery\n")
+        s = self.suite(wrong_order)
+        self.assertFalse(s["ok"])
+        self.assertEqual(s["results"][0]["reason"], "no-evidence-discovery")
+        warm_up_then_real = ("UWB discovery reentry: sequence=1\n"
+                             "UWB synchronization lost: entering discovery\n"
+                             "UWB discovery reentry: sequence=9\n")
+        self.assertTrue(self.suite(warm_up_then_real)["ok"])
 
     def test_silence_then_an_answer_without_coletec_lines_is_not_a_pass(self):
         s = self.suite("")

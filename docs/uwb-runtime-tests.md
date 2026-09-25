@@ -108,8 +108,8 @@ The runner stops the poll before each test and at the end, waits for exactly one
 line, and writes `logs/uwb-tests-<UTC>/` (`raw.log`, `console.log*`, `summary.json`,
 `summary.md`). Exit code 0 only if every selected test passed; a test that cannot run is SKIP and a
 SKIP is never a pass; 2 if it could not start. It never runs STOP, never flashes, resets or
-power-cycles a board. `python3 -m unittest discover -s scripts/tests` runs its 37 unit tests
-(no hardware).
+power-cycles a board. `python3 -m unittest discover -s scripts/tests` runs its 38 unit tests
+(no hardware, 38 tests).
 
 Host tests of the firmware helpers: `cmake -S firmware/receptec/tests -B <dir> && cmake --build <dir> &&
 ctest --test-dir <dir>`.
@@ -119,14 +119,24 @@ Long-duration runs (packet statistics, link, clock drift over hours) are a diffe
 
 ## Evidence
 
-2026-09-25, real RECEPTEC and the production COLETEC, slot 0, 1 s poll, link RSL about -78 dBm.
-Suite runs (`logs/uwb-tests-2026092*`): the first one failed every test with `duplicate-result`
-because the shell's own "armed" message mentioned the name UWB_TEST and the runner counted it
-(runner bug, fixed); the next two passed 10 of 10 implemented tests; one later run failed
-`bad_length` because a result line arrived split across two reads (runner bug, fixed); the last
-run before `discovery` passed 10 of 10 again. With the COLETEC counters attached, each mutation
-showed `unanswered=1` and every other test `unanswered=0` with `rx = tx`.
+2026-09-25, real RECEPTEC (`336c6ca`+) and the production COLETEC, slot 0, 1 s poll, link RSL
+about -78 dBm. Runs are in `logs/uwb-tests-2026092*`.
 
-One run showed the COLETEC leaving three received requests unanswered during `retry 1`
-(`rx+8 tx+5`) and answering the accepted response only on the third attempt; it passed on the
-other runs and the cause is not explained.
+- Four earlier suite runs exposed defects in the runner, not in the firmware, and were fixed:
+  every test failed `duplicate-result` (the shell's own "armed" message mentioned the name
+  UWB_TEST), and `bad_length` once failed because a result line arrived split across two reads.
+- With the fixed runner and the `discovery` test in place, three consecutive full suites gave
+  11 of 12 passed, 1 skipped (`rx_boundary`), 0 failed, every time: 33 executions of the 11
+  implemented tests without a failure.
+- With the COLETEC counters attached, each mutation showed `unanswered=1` and every other test
+  `unanswered=0` with `rx = tx`. `discovery` showed the COLETEC entering discovery and then a
+  reentry after it (`reentry-after-entry=1`); the answer to the first probe after 6 silent
+  cycles came at once (`probes=1`).
+- The suite exits 1 while `rx_boundary` is a SKIP: a test that cannot run is never a pass.
+
+One earlier run showed the COLETEC leaving three received requests unanswered during `retry 1`
+(`rx+8 tx+5`) and answering the accepted response only on the third attempt; it did not repeat in
+the later runs and the cause is not explained.
+
+What this does not show: behaviour at a weaker link (the RSL was constant), more than one peer,
+the STM32 in a session, and the window edges (`rx_boundary`).
