@@ -16,6 +16,9 @@
 #include "dw3720_spi.h"
 #include "uwb_peer_registry.h"
 #include <receptec/uwb_protocol.h>
+#include <receptec/uwb_test_frames.h>
+#include <receptec/uwb_test_payload.h>
+#include <receptec/uwb_test_result.h>
 
 #include "deca_device_api.h"
 #include "deca_interface.h"
@@ -615,7 +618,7 @@ static void print_stream_line(uint8_t slot)
 }
 
 /* One transaction: up to UWB_POLL_ATTEMPTS attempts inside the peer's slot. */
-static void poll_transaction(uint8_t slot,
+static bool poll_transaction(uint8_t slot,
 			     const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 			     uint32_t slot_epoch_dx)
 {
@@ -625,7 +628,7 @@ static void poll_transaction(uint8_t slot,
 
 	if (receptec_uwb_peer_registry_next_sequence(&peer_registry, slot,
 						      &sequence) < 0) {
-		return;
+		return false;
 	}
 	stats->transactions++;
 	draw_backoff_offsets(offsets_us);
@@ -641,10 +644,557 @@ static void poll_transaction(uint8_t slot,
 			if (atomic_get(&poll_stream_enabled) != 0) {
 				print_stream_line(slot);
 			}
-			return;
+			return true;
 		}
 	}
 	stats->exhausted++;
+	return false;
+}
+
+/*
+ * Runtime UWB tests, injected into the poll cycle.
+ *
+ * The production COLETEC only listens in the rhythm the RECEPTEC sets, so a test cannot
+ * be fired at an arbitrary moment: it replaces one transaction, in the target peer's own
+ * slot, of a running poll. Each test is three phases on that slot, one transaction per
+ * cycle: WARMUP (two ordinary transactions must succeed, proving there is a baseline),
+ * RUN (the test itself), VERIFY (one ordinary transaction must succeed, proving the test
+ * did not poison the peer). Exactly one UWB_TEST line is printed at the end: PASS, FAIL
+ * with a reason, a timeout or an abort. Everything runs on the poll thread, under the
+ * radio mutex; the shell only arms a test and returns.
+ */
+#define UT_WARMUP_OK 2U
+#define UT_MAX_WARMUP_CYCLES 12U
+#define UT_MAX_CYCLES 40U
+#define UT_VERIFY_TRIES 4U
+/* Delayed TX lands on the requested time within the radio's own granularity (8 ns);
+ * 60 us is generous and still catches a schedule that was really missed. */
+#define UT_TX_TOLERANCE_US 60
+#define UT_PERIOD_MS 1000U
+/* discovery: the COLETEC goes to discovery after 5 missed slots (COLETEC_N_CNT_GUARD_MAX), so
+ * stay silent for one more than that, then probe once per cycle until it answers again. */
+#define UT_DISCOVERY_SILENCE_CYCLES 6U
+#define UT_DISCOVERY_MAX_PROBES 24U
+
+enum ut_kind {
+	UT_MUTATION = 1,
+	UT_RETRY,
+	UT_DATA_PAYLOAD,
+	UT_SEQUENCE_WRAP,
+	UT_DISCOVERY,
+};
+
+enum ut_phase {
+	UT_WARMUP = 0,
+	UT_RUN,
+	UT_VERIFY,
+};
+
+static struct {
+	bool active;
+	enum ut_kind kind;
+	const char *name;
+	enum receptec_uwb_test_mutation mutation;
+	uint8_t ignored; /* valid responses to ignore before accepting one */
+	uint8_t slot;
+	enum ut_phase phase;
+	uint32_t cycles;
+	uint8_t warm_ok;
+	uint8_t verify_fail;
+	uint8_t step;
+	uint8_t probes;
+	uint8_t saved_next_sequence;
+	bool restore_sequence;
+	atomic_t abort;
+	bool have_result;
+	struct receptec_uwb_test_result result;
+} ut;
+
+struct ut_rx {
+	int status; /* 0 frame in rx_bytes, -ETIMEDOUT, -EIO, -EMSGSIZE, -ETIME (late schedule) */
+	uint16_t logical_length;
+	int32_t tx_offset_us; /* measured TX RMARKER relative to the slot epoch */
+	int32_t rx_offset_us; /* measured RX RMARKER relative to the slot epoch */
+};
+
+static int32_t ut_abs(int32_t value)
+{
+	return value < 0 ? -value : value;
+}
+
+static void ut_pass(void)
+{
+	ut.result.outcome = RECEPTEC_UWB_TEST_PASS;
+	ut.have_result = true;
+}
+
+static void ut_fail(const char *reason)
+{
+	ut.result.outcome = RECEPTEC_UWB_TEST_FAIL;
+	ut.result.reason = reason;
+	ut.have_result = true;
+}
+
+static void ut_finish(void)
+{
+	char line[RECEPTEC_UWB_TEST_LINE_SIZE];
+
+	if (ut.restore_sequence) {
+		(void)receptec_uwb_peer_registry_set_next_sequence(
+			&peer_registry, ut.slot, ut.saved_next_sequence);
+		ut.restore_sequence = false;
+	}
+	if (receptec_uwb_test_result_format(&ut.result, line, sizeof(line)) > 0) {
+		printk("%s\n", line);
+	} else {
+		/* Not a UWB_TEST line on purpose: the runner must see no result. */
+		printk("test engine error: result for %s does not format\n", ut.name);
+	}
+	ut.active = false;
+	atomic_set(&poll_stop_requested, 1);
+}
+
+/* One delayed DATA_REQ-shaped transmission whose frame is already loaded, then the wait. */
+static void ut_attempt(uint32_t target_dx, uint32_t epoch_dx, struct ut_rx *rx)
+{
+	int64_t deadline = k_uptime_get() + (int64_t)(UWB_POLL_SLOT_US * 4U / 1000U) + 50;
+
+	memset(rx, 0, sizeof(*rx));
+	dwt_forcetrxoff();
+	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+	dwt_setrxaftertxdelay(0U);
+	dwt_setrxtimeout(us_to_rx_timeout(UWB_POLL_RESPONSE_TIMEOUT_US));
+	dwt_setdelayedtrxtime(target_dx);
+	if (dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED) != DWT_SUCCESS) {
+		rx->status = -ETIME;
+		return;
+	}
+	for (;;) {
+		int64_t remaining_ms = deadline - k_uptime_get();
+		uint32_t radio_status;
+
+		if (remaining_ms <= 0) {
+			rx->status = -ETIMEDOUT;
+			break;
+		}
+		(void)dw3720_wait_event(K_MSEC(remaining_ms));
+		radio_status = dwt_readsysstatuslo();
+		if ((radio_status & DWT_INT_RXFCG_BIT_MASK) != 0U) {
+			uint8_t ranging;
+			uint16_t radio_length = dwt_getframelength(&ranging);
+
+			if (radio_length < RECEPTEC_UWB_FCS_SIZE ||
+			    radio_length > RECEPTEC_UWB_MAX_PSDU_SIZE) {
+				rx->status = -EMSGSIZE;
+			} else {
+				rx->logical_length = radio_length - RECEPTEC_UWB_FCS_SIZE;
+				dwt_readrxdata(rx_bytes, rx->logical_length, 0U);
+				rx->rx_offset_us = (int32_t)dx_diff_to_us(
+					(int32_t)(dwt_readrxtimestamphi32() - epoch_dx));
+				rx->status = 0;
+			}
+			break;
+		}
+		if ((radio_status & SYS_STATUS_ALL_RX_TO) != 0U) {
+			rx->status = -ETIMEDOUT;
+			break;
+		}
+		if ((radio_status & UWB_RX_REARM_ERROR_MASK) != 0U) {
+			rx->status = -EIO;
+			break;
+		}
+	}
+	rx->tx_offset_us = (int32_t)dx_diff_to_us((int32_t)(dwt_readtxtimestamphi32() - epoch_dx));
+	dwt_forcetrxoff();
+	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+}
+
+/* The received frame must be a DATA from this peer to us with the request's sequence. */
+static int ut_check_data(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE], uint8_t sequence,
+			 const struct ut_rx *rx, struct receptec_uwb_frame *frame)
+{
+	if (rx->status != 0) {
+		return rx->status;
+	}
+	if (receptec_uwb_decode(rx_bytes, rx->logical_length, frame) != RECEPTEC_UWB_OK ||
+	    frame->type != RECEPTEC_UWB_DATA || frame->sequence != sequence ||
+	    memcmp(frame->source, peer_eui64, RECEPTEC_UWB_EUI64_SIZE) != 0 ||
+	    memcmp(frame->destination, receptec_eui, RECEPTEC_UWB_EUI64_SIZE) != 0) {
+		return -EBADMSG;
+	}
+	return 0;
+}
+
+/*
+ * retry, duplicate and data_payload: one transaction, one sequence number, the request
+ * repeated on the ordinary backoff schedule after a valid response that is deliberately
+ * ignored, as if it had been lost. PASS needs ignored+1 valid responses with the request's
+ * sequence, byte-identical payloads, every attempt at its generated offset and no response
+ * past the slot end. data_payload also checks the payload v1 layout.
+ */
+static void ut_run_retry(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE], uint32_t epoch_dx)
+{
+	static uint8_t payload[UWB_POLL_ATTEMPTS][RECEPTEC_UWB_MAX_PAYLOAD_SIZE];
+	size_t payload_length[UWB_POLL_ATTEMPTS] = { 0 };
+	uint16_t offsets_us[UWB_POLL_ATTEMPTS];
+	size_t needed = (size_t)ut.ignored + 1U;
+	size_t valid = 0U;
+	int32_t worst_tx_us = 0;
+	int32_t latest_rx_us = 0;
+	uint8_t sequence;
+
+	if (receptec_uwb_peer_registry_next_sequence(&peer_registry, ut.slot, &sequence) < 0) {
+		ut_fail("no-sequence");
+		return;
+	}
+	draw_backoff_offsets(offsets_us);
+	for (size_t attempt = 0U; attempt < UWB_POLL_ATTEMPTS && valid < needed; ++attempt) {
+		struct receptec_uwb_frame frame;
+		struct ut_rx rx;
+		int32_t tx_error_us;
+
+		if (load_request_frame(RECEPTEC_UWB_DATA_REQ, peer_eui64, sequence,
+				       offsets_us[attempt]) < 0) {
+			ut_fail("frame-load");
+			return;
+		}
+		ut_attempt(epoch_dx + us_to_dx_time(offsets_us[attempt]), epoch_dx, &rx);
+		if (rx.status == -ETIME) {
+			ut_fail("late-schedule");
+			return;
+		}
+		tx_error_us = ut_abs(rx.tx_offset_us - (int32_t)offsets_us[attempt]);
+		worst_tx_us = MAX(worst_tx_us, tx_error_us);
+		if (tx_error_us > UT_TX_TOLERANCE_US) {
+			(void)receptec_uwb_test_result_add_u32(&ut.result, "attempt",
+							       (uint32_t)attempt + 1U);
+			(void)receptec_uwb_test_result_add_i32(&ut.result, "tx-error-us", tx_error_us);
+			ut_fail("attempt-timing");
+			return;
+		}
+		if (rx.status != 0) {
+			continue;
+		}
+		if (ut_check_data(peer_eui64, sequence, &rx, &frame) != 0) {
+			ut_fail("bad-response");
+			return;
+		}
+		if (rx.rx_offset_us > (int32_t)UWB_POLL_SLOT_US) {
+			ut_fail("late-response");
+			return;
+		}
+		latest_rx_us = MAX(latest_rx_us, rx.rx_offset_us);
+		memcpy(payload[valid], frame.payload, frame.payload_length);
+		payload_length[valid] = frame.payload_length;
+		valid++;
+	}
+	(void)receptec_uwb_test_result_add_u32(&ut.result, "valid", (uint32_t)valid);
+	if (valid < needed) {
+		(void)receptec_uwb_test_result_add_u32(&ut.result, "needed", (uint32_t)needed);
+		ut_fail("missing-response");
+		return;
+	}
+	for (size_t i = 1U; i < valid; ++i) {
+		enum receptec_uwb_payload_duplicate same = receptec_uwb_payload_compare(
+			payload[0], payload_length[0], payload[i], payload_length[i]);
+
+		if (same != RECEPTEC_UWB_DUPLICATE_SAME) {
+			ut_fail(receptec_uwb_payload_duplicate_reason(same));
+			return;
+		}
+	}
+	if (ut.kind == UT_DATA_PAYLOAD) {
+		struct receptec_uwb_payload_info info;
+		enum receptec_uwb_payload_status status = receptec_uwb_payload_v1_check(
+			payload[0], payload_length[0], &info);
+
+		if (status != RECEPTEC_UWB_PAYLOAD_OK) {
+			ut_fail(receptec_uwb_payload_reason(status));
+			return;
+		}
+		(void)receptec_uwb_test_result_add_u32(&ut.result, "seq", info.sequence);
+		(void)receptec_uwb_test_result_add_u32(&ut.result, "age-ms", info.age_ms);
+		(void)receptec_uwb_test_result_add_u32(&ut.result, "flags", info.flags);
+	}
+	(void)receptec_uwb_test_result_add_i32(&ut.result, "tx-error-us", worst_tx_us);
+	(void)receptec_uwb_test_result_add_i32(&ut.result, "last-rx-us", latest_rx_us);
+	ut_pass();
+}
+
+/* wrong_source, bad_type, bad_reserved, bad_length, bad_dt: no response is the PASS. */
+static void ut_run_mutation(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE], uint32_t epoch_dx)
+{
+	struct ut_rx rx;
+	size_t logical_length = 0U;
+	uint16_t radio_length;
+	uint8_t sequence;
+
+	if (receptec_uwb_peer_registry_next_sequence(&peer_registry, ut.slot, &sequence) < 0) {
+		ut_fail("no-sequence");
+		return;
+	}
+	if (receptec_uwb_test_build_mutation(ut.mutation, peer_eui64, receptec_eui, sequence, 0U,
+					     tx_bytes, sizeof(tx_bytes), &logical_length) < 0) {
+		ut_fail("frame-build");
+		return;
+	}
+	radio_length = (uint16_t)(logical_length + RECEPTEC_UWB_FCS_SIZE);
+	if (dwt_writetxdata(radio_length, tx_bytes, 0U) != DWT_SUCCESS) {
+		ut_fail("frame-load");
+		return;
+	}
+	dwt_writetxfctrl(radio_length, 0U, 0U);
+	ut_attempt(epoch_dx, epoch_dx, &rx);
+	(void)receptec_uwb_test_result_add_u32(&ut.result, "length", (uint32_t)logical_length);
+	switch (rx.status) {
+	case -ETIMEDOUT:
+		(void)receptec_uwb_test_result_add_token(&ut.result, "response", "none");
+		ut_pass();
+		break;
+	case 0:
+		ut_fail("unexpected-response");
+		break;
+	case -ETIME:
+		ut_fail("late-schedule");
+		break;
+	default:
+		ut_fail("rx-error");
+		break;
+	}
+}
+
+/* sequence_wrap: three ordinary transactions with sequences 254, 255 and 0, one per cycle. */
+static void ut_run_wrap(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE], uint32_t epoch_dx)
+{
+	struct receptec_uwb_frame frame;
+	struct ut_rx rx;
+	uint8_t sequence = receptec_uwb_test_wrap_sequence(ut.step);
+
+	if (ut.step == 0U) {
+		uint8_t next;
+
+		if (receptec_uwb_peer_registry_next_sequence(&peer_registry, ut.slot, &next) < 0) {
+			ut_fail("no-sequence");
+			return;
+		}
+		/* next_sequence() consumed `next`; the counter now holds next + 1. */
+		ut.saved_next_sequence = (uint8_t)(next + 1U);
+		ut.restore_sequence = true;
+	}
+	(void)receptec_uwb_test_result_add_u32(&ut.result, "step", ut.step);
+	if (load_request_frame(RECEPTEC_UWB_DATA_REQ, peer_eui64, sequence, 0U) < 0) {
+		ut_fail("frame-load");
+		return;
+	}
+	ut_attempt(epoch_dx, epoch_dx, &rx);
+	if (rx.status == -ETIME) {
+		ut_fail("late-schedule");
+		return;
+	}
+	if (rx.status != 0) {
+		ut_fail("missing-response");
+		return;
+	}
+	if (ut_check_data(peer_eui64, sequence, &rx, &frame) != 0) {
+		ut_fail("bad-response");
+		return;
+	}
+	ut.result.field_count = 0U; /* keep only the final step in the PASS line */
+	ut.step++;
+	if (ut.step == 3U) {
+		(void)receptec_uwb_test_result_add_token(&ut.result, "order", "254-255-0");
+		ut_pass();
+	}
+}
+
+/*
+ * discovery: silence long enough to push the COLETEC into discovery, then one ordinary probe per
+ * cycle until it answers. It is a bounded orchestration of the COLETEC's own behaviour, not a
+ * discovery algorithm: from here the RECEPTEC only sees "no response" and then "a response", so
+ * the transition itself is inferred; the host runner adds the COLETEC's RTT lines as evidence.
+ */
+static void ut_run_discovery(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE], uint32_t epoch_dx)
+{
+	struct receptec_uwb_frame frame;
+	struct ut_rx rx;
+	uint8_t sequence;
+
+	if (ut.step < UT_DISCOVERY_SILENCE_CYCLES) {
+		ut.step++;
+		return;
+	}
+	if (receptec_uwb_peer_registry_next_sequence(&peer_registry, ut.slot, &sequence) < 0) {
+		ut_fail("no-sequence");
+		return;
+	}
+	if (load_request_frame(RECEPTEC_UWB_DATA_REQ, peer_eui64, sequence, 0U) < 0) {
+		ut_fail("frame-load");
+		return;
+	}
+	ut_attempt(epoch_dx, epoch_dx, &rx);
+	ut.probes++;
+	if (rx.status == -ETIME) {
+		ut_fail("late-schedule");
+		return;
+	}
+	if (rx.status == 0) {
+		if (ut_check_data(peer_eui64, sequence, &rx, &frame) != 0) {
+			ut_fail("bad-response");
+			return;
+		}
+		(void)receptec_uwb_test_result_add_u32(&ut.result, "silence-cycles",
+						       UT_DISCOVERY_SILENCE_CYCLES);
+		(void)receptec_uwb_test_result_add_u32(&ut.result, "probes", ut.probes);
+		(void)receptec_uwb_test_result_add_token(&ut.result, "transition", "inferred");
+		ut_pass();
+		return;
+	}
+	if (ut.probes >= UT_DISCOVERY_MAX_PROBES) {
+		(void)receptec_uwb_test_result_add_u32(&ut.result, "probes", ut.probes);
+		ut_fail("no-reentry");
+	}
+}
+
+/* One cycle of the armed test on its slot. Called by the poll thread, mutex held. */
+static void ut_cycle(uint8_t slot, const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
+		     uint32_t epoch_dx)
+{
+	ut.cycles++;
+	if (atomic_get(&ut.abort) != 0) {
+		ut.result.outcome = RECEPTEC_UWB_TEST_ABORT;
+		ut.have_result = true;
+		ut_finish();
+		return;
+	}
+	if (ut.cycles > UT_MAX_CYCLES) {
+		ut.result.outcome = RECEPTEC_UWB_TEST_TIMEOUT;
+		ut.have_result = true;
+		ut_finish();
+		return;
+	}
+	switch (ut.phase) {
+	case UT_WARMUP:
+		ut.warm_ok = poll_transaction(slot, peer_eui64, epoch_dx) ? ut.warm_ok + 1U : 0U;
+		if (ut.warm_ok >= UT_WARMUP_OK) {
+			ut.phase = UT_RUN;
+		} else if (ut.cycles >= UT_MAX_WARMUP_CYCLES) {
+			ut_fail("no-baseline");
+			ut_finish();
+		}
+		break;
+	case UT_RUN:
+		switch (ut.kind) {
+		case UT_MUTATION:
+			ut_run_mutation(peer_eui64, epoch_dx);
+			break;
+		case UT_RETRY:
+		case UT_DATA_PAYLOAD:
+			ut_run_retry(peer_eui64, epoch_dx);
+			break;
+		case UT_SEQUENCE_WRAP:
+			ut_run_wrap(peer_eui64, epoch_dx);
+			break;
+		case UT_DISCOVERY:
+			ut_run_discovery(peer_eui64, epoch_dx);
+			break;
+		default:
+			ut_fail("internal");
+			break;
+		}
+		if (ut.have_result) {
+			ut.phase = UT_VERIFY;
+		}
+		break;
+	case UT_VERIFY:
+		if (poll_transaction(slot, peer_eui64, epoch_dx)) {
+			ut_finish();
+		} else if (++ut.verify_fail >= UT_VERIFY_TRIES) {
+			if (ut.result.outcome == RECEPTEC_UWB_TEST_PASS) {
+				ut_fail("recovery-failed");
+			}
+			ut_finish();
+		}
+		break;
+	}
+}
+
+int receptec_uwb_test_start(const char *name, uint8_t arg, uint8_t slot)
+{
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	int mutation = -1;
+	int ret;
+
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!radio_ready || !peer_registry_ready) {
+		ret = -EAGAIN;
+	} else if (poll_running || ut.active) {
+		ret = -EBUSY;
+	} else if (receptec_uwb_peer_registry_get(&peer_registry, slot, eui64) < 0) {
+		ret = -ENOENT;
+	} else {
+		memset(&ut, 0, sizeof(ut));
+		ret = 0;
+		mutation = receptec_uwb_test_mutation_from_name(name);
+		if (mutation >= 0) {
+			ut.kind = UT_MUTATION;
+			ut.mutation = (enum receptec_uwb_test_mutation)mutation;
+			ut.name = receptec_uwb_test_mutation_name(ut.mutation);
+		} else if (strcmp(name, "retry") == 0 && (arg == 1U || arg == 2U)) {
+			ut.kind = UT_RETRY;
+			ut.ignored = arg;
+			ut.name = "retry";
+		} else if (strcmp(name, "duplicate") == 0) {
+			ut.kind = UT_RETRY;
+			ut.ignored = 1U;
+			ut.name = "duplicate";
+		} else if (strcmp(name, "data_payload") == 0) {
+			ut.kind = UT_DATA_PAYLOAD;
+			ut.ignored = 1U;
+			ut.name = "data_payload";
+		} else if (strcmp(name, "sequence_wrap") == 0) {
+			ut.kind = UT_SEQUENCE_WRAP;
+			ut.name = "sequence_wrap";
+		} else if (strcmp(name, "discovery") == 0) {
+			ut.kind = UT_DISCOVERY;
+			ut.name = "discovery";
+		} else {
+			ret = strcmp(name, "retry") == 0 ? -EINVAL : -ENOTSUP;
+		}
+		if (ret == 0) {
+			ut.slot = slot;
+			ut.phase = UT_WARMUP;
+			receptec_uwb_test_result_init(&ut.result, ut.name, slot);
+			if (ut.kind == UT_RETRY && ut.ignored != 0U) {
+				(void)receptec_uwb_test_result_add_u32(&ut.result, "ignored", ut.ignored);
+			}
+			ut.active = true;
+		}
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	if (ret != 0) {
+		return ret;
+	}
+	ret = receptec_uwb_poll_start(UT_PERIOD_MS);
+	if (ret < 0) {
+		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+		ut.active = false;
+		k_mutex_unlock(&uwb_peer_mutex);
+	}
+	return ret;
+}
+
+int receptec_uwb_test_abort(void)
+{
+	bool active;
+
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	active = ut.active;
+	k_mutex_unlock(&uwb_peer_mutex);
+	if (!active) {
+		return -EINVAL;
+	}
+	atomic_set(&ut.abort, 1);
+	return 0;
 }
 
 static void run_poll(uint32_t period_us)
@@ -692,10 +1242,15 @@ static void run_poll(uint32_t period_us)
 			k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 			if (receptec_uwb_peer_registry_get(&peer_registry, slot,
 							   peer_eui64) == 0) {
-				poll_transaction(slot, peer_eui64,
-						 epoch_dx + us_to_dx_time(
-							(uint32_t)slot *
-							UWB_POLL_SLOT_US));
+				uint32_t slot_epoch_dx = epoch_dx + us_to_dx_time(
+					(uint32_t)slot * UWB_POLL_SLOT_US);
+
+				if (!ut.active) {
+					(void)poll_transaction(slot, peer_eui64,
+							       slot_epoch_dx);
+				} else if (slot == ut.slot) {
+					ut_cycle(slot, peer_eui64, slot_epoch_dx);
+				}
 			}
 			k_mutex_unlock(&uwb_peer_mutex);
 		}
@@ -706,6 +1261,14 @@ static void run_poll(uint32_t period_us)
 	}
 
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (ut.active) {
+		/* `uwb poll stop` (or a stop request) ended the poll under an armed test. */
+		if (!ut.have_result) {
+			ut.result.outcome = RECEPTEC_UWB_TEST_ABORT;
+			ut.have_result = true;
+		}
+		ut_finish();
+	}
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 	(void)dw3720_irq_enable(false);

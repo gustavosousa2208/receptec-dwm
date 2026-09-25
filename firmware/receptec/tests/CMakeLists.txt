@@ -25,3 +25,17 @@ target_compile_options(receptec_uwb_peer_registry_tests PRIVATE
     -Wall -Wextra -Werror -Wpedantic)
 add_test(NAME receptec_uwb_peer_registry_tests
     COMMAND receptec_uwb_peer_registry_tests)
+
+add_executable(receptec_uwb_test_helpers_tests
+    uwb_test_helpers_test.c
+    ../src/uwb_protocol.c
+    ../src/uwb_test_result.c
+    ../src/uwb_test_frames.c
+    ../src/uwb_test_payload.c
+)
+target_include_directories(receptec_uwb_test_helpers_tests PRIVATE ../include)
+target_compile_features(receptec_uwb_test_helpers_tests PRIVATE c_std_11)
+target_compile_options(receptec_uwb_test_helpers_tests PRIVATE
+    -Wall -Wextra -Werror -Wpedantic)
+add_test(NAME receptec_uwb_test_helpers_tests
+    COMMAND receptec_uwb_test_helpers_tests)

@@ -45,4 +45,13 @@ int receptec_uwb_peer_registry_next_sequence(
 	struct receptec_uwb_peer_registry *registry, size_t slot,
 	uint8_t *sequence);
 
+/*
+ * Set the sequence number the next transaction with this peer will use. The runtime
+ * sequence_wrap test uses it to put the counter back where it was after it has
+ * sent 254, 255 and 0, so the next ordinary transaction is not out of step.
+ */
+int receptec_uwb_peer_registry_set_next_sequence(
+	struct receptec_uwb_peer_registry *registry, size_t slot,
+	uint8_t sequence);
+
 #endif /* RECEPTEC_UWB_PEER_REGISTRY_H_ */

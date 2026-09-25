@@ -338,6 +338,110 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		      cmd_uwb_poll_last, 2, 0),
 	SHELL_SUBCMD_SET_END);
 
+/* uwb test <name> [1|2 for retry] <slot>: arms one runtime test; the result is one UWB_TEST line. */
+static int cmd_uwb_test_run(const struct shell *shell, size_t argc, char **argv)
+{
+	const char *name = argv[0];
+	bool takes_count = strcmp(name, "retry") == 0;
+	unsigned long count = 0UL;
+	uint8_t slot;
+	char *end;
+	int ret;
+
+	if (takes_count) {
+		if (argc != 3) {
+			shell_error(shell, "usage: uwb test retry <1|2> <slot>");
+			return -EINVAL;
+		}
+		errno = 0;
+		count = strtoul(argv[1], &end, 10);
+		if (errno != 0 || end == argv[1] || *end != '\0' ||
+		    (count != 1UL && count != 2UL)) {
+			shell_error(shell, "retry takes 1 or 2 ignored responses");
+			return -EINVAL;
+		}
+	}
+	ret = parse_slot(shell, argv[argc - 1], &slot);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = receptec_uwb_test_start(name, (uint8_t)count, slot);
+	switch (ret) {
+	case 0:
+		shell_print(shell, "test %s armed on slot %u: warm-up, test, verify; "
+			    "the result is printed as one result line", name, slot);
+		return 0;
+	case -EBUSY:
+		shell_error(shell, "a poll or a test is running: uwb test abort, or uwb poll stop");
+		break;
+	case -ENOENT:
+		shell_error(shell, "slot %u has no registered peer", slot);
+		break;
+	case -ENOTSUP:
+		shell_error(shell, "test %s is not implemented (see docs/uwb-runtime-tests.md)",
+			    name);
+		break;
+	default:
+		shell_error(shell, "test %s could not start: %d", name, ret);
+		break;
+	}
+	return ret;
+}
+
+static int cmd_uwb_test_abort(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	ret = receptec_uwb_test_abort();
+	if (ret < 0) {
+		shell_error(shell, "no test is running");
+		return ret;
+	}
+	shell_print(shell, "abort requested; the test ends at its next cycle boundary");
+	return 0;
+}
+
+static int cmd_uwb_test_list(const struct shell *shell, size_t argc, char **argv)
+{
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	shell_print(shell, "implemented: data_payload, retry <1|2>, duplicate, sequence_wrap,");
+	shell_print(shell, "             wrong_source, bad_type, bad_reserved, bad_length, bad_dt,");
+	shell_print(shell, "             discovery");
+	shell_print(shell, "not implemented: rx_boundary (the contract does not define its PASS/FAIL)");
+	shell_print(shell, "usage: uwb test <name> <slot>   (needs a registered peer, no poll running)");
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+	sub_test,
+	SHELL_CMD(list, NULL, "List the runtime tests", cmd_uwb_test_list),
+	SHELL_CMD(abort, NULL, "End the running test at its next cycle boundary",
+		  cmd_uwb_test_abort),
+	SHELL_CMD_ARG(data_payload, NULL, "DATA payload v1 layout and duplicate freeze: <slot>",
+		      cmd_uwb_test_run, 2, 0),
+	SHELL_CMD_ARG(retry, NULL, "Ignore 1 or 2 valid responses, then accept: <1|2> <slot>",
+		      cmd_uwb_test_run, 3, 0),
+	SHELL_CMD_ARG(duplicate, NULL, "Repeat a request, require the same response: <slot>",
+		      cmd_uwb_test_run, 2, 0),
+	SHELL_CMD_ARG(sequence_wrap, NULL, "Sequences 254, 255, 0: <slot>", cmd_uwb_test_run, 2, 0),
+	SHELL_CMD_ARG(wrong_source, NULL, "Unknown source, expect no response: <slot>",
+		      cmd_uwb_test_run, 2, 0),
+	SHELL_CMD_ARG(bad_type, NULL, "Reserved packet type, expect no response: <slot>",
+		      cmd_uwb_test_run, 2, 0),
+	SHELL_CMD_ARG(bad_reserved, NULL, "Reserved type bit, expect no response: <slot>",
+		      cmd_uwb_test_run, 2, 0),
+	SHELL_CMD_ARG(bad_length, NULL, "Truncated DT_sampling, expect no response: <slot>",
+		      cmd_uwb_test_run, 2, 0),
+	SHELL_CMD_ARG(bad_dt, NULL, "DT_sampling outside the slot, expect no response: <slot>",
+		      cmd_uwb_test_run, 2, 0),
+	SHELL_CMD_ARG(rx_boundary, NULL, "Not implemented yet: <slot>", cmd_uwb_test_run, 2, 0),
+	SHELL_CMD_ARG(discovery, NULL, "Silence until the COLETEC enters discovery, then reenter: <slot>",
+		      cmd_uwb_test_run, 2, 0),
+	SHELL_SUBCMD_SET_END);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_uwb,
 	SHELL_CMD(status, NULL, "Show RECEPTEC radio state", cmd_uwb_status),
@@ -345,6 +449,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		     cmd_uwb_sync, 2, 0),
 	SHELL_CMD(peer, &sub_peer, "Manage registered COLETEC peers", NULL),
 	SHELL_CMD(poll, &sub_poll, "Periodic DATA_REQ polling", NULL),
+	SHELL_CMD(test, &sub_test, "Runtime UWB tests against the COLETEC", NULL),
 	SHELL_CMD_ARG(lna, NULL, "External receive LNA (bench A/B): lna on|off",
 		      cmd_uwb_lna, 2, 0),
 	SHELL_SUBCMD_SET_END);
