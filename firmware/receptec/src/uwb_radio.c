@@ -671,12 +671,17 @@ static bool poll_transaction(uint8_t slot,
  * 60 us is generous and still catches a schedule that was really missed. */
 #define UT_TX_TOLERANCE_US 60
 #define UT_PERIOD_MS 1000U
+/* discovery: the COLETEC goes to discovery after 5 missed slots (COLETEC_N_CNT_GUARD_MAX), so
+ * stay silent for one more than that, then probe once per cycle until it answers again. */
+#define UT_DISCOVERY_SILENCE_CYCLES 6U
+#define UT_DISCOVERY_MAX_PROBES 24U
 
 enum ut_kind {
 	UT_MUTATION = 1,
 	UT_RETRY,
 	UT_DATA_PAYLOAD,
 	UT_SEQUENCE_WRAP,
+	UT_DISCOVERY,
 };
 
 enum ut_phase {
@@ -697,6 +702,7 @@ static struct {
 	uint8_t warm_ok;
 	uint8_t verify_fail;
 	uint8_t step;
+	uint8_t probes;
 	uint8_t saved_next_sequence;
 	bool restore_sequence;
 	atomic_t abort;
@@ -1001,6 +1007,54 @@ static void ut_run_wrap(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE], uint3
 	}
 }
 
+/*
+ * discovery: silence long enough to push the COLETEC into discovery, then one ordinary probe per
+ * cycle until it answers. It is a bounded orchestration of the COLETEC's own behaviour, not a
+ * discovery algorithm: from here the RECEPTEC only sees "no response" and then "a response", so
+ * the transition itself is inferred; the host runner adds the COLETEC's RTT lines as evidence.
+ */
+static void ut_run_discovery(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE], uint32_t epoch_dx)
+{
+	struct receptec_uwb_frame frame;
+	struct ut_rx rx;
+	uint8_t sequence;
+
+	if (ut.step < UT_DISCOVERY_SILENCE_CYCLES) {
+		ut.step++;
+		return;
+	}
+	if (receptec_uwb_peer_registry_next_sequence(&peer_registry, ut.slot, &sequence) < 0) {
+		ut_fail("no-sequence");
+		return;
+	}
+	if (load_request_frame(RECEPTEC_UWB_DATA_REQ, peer_eui64, sequence, 0U) < 0) {
+		ut_fail("frame-load");
+		return;
+	}
+	ut_attempt(epoch_dx, epoch_dx, &rx);
+	ut.probes++;
+	if (rx.status == -ETIME) {
+		ut_fail("late-schedule");
+		return;
+	}
+	if (rx.status == 0) {
+		if (ut_check_data(peer_eui64, sequence, &rx, &frame) != 0) {
+			ut_fail("bad-response");
+			return;
+		}
+		(void)receptec_uwb_test_result_add_u32(&ut.result, "silence-cycles",
+						       UT_DISCOVERY_SILENCE_CYCLES);
+		(void)receptec_uwb_test_result_add_u32(&ut.result, "probes", ut.probes);
+		(void)receptec_uwb_test_result_add_token(&ut.result, "transition", "inferred");
+		ut_pass();
+		return;
+	}
+	if (ut.probes >= UT_DISCOVERY_MAX_PROBES) {
+		(void)receptec_uwb_test_result_add_u32(&ut.result, "probes", ut.probes);
+		ut_fail("no-reentry");
+	}
+}
+
 /* One cycle of the armed test on its slot. Called by the poll thread, mutex held. */
 static void ut_cycle(uint8_t slot, const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 		     uint32_t epoch_dx)
@@ -1039,6 +1093,9 @@ static void ut_cycle(uint8_t slot, const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_S
 			break;
 		case UT_SEQUENCE_WRAP:
 			ut_run_wrap(peer_eui64, epoch_dx);
+			break;
+		case UT_DISCOVERY:
+			ut_run_discovery(peer_eui64, epoch_dx);
 			break;
 		default:
 			ut_fail("internal");
@@ -1097,6 +1154,9 @@ int receptec_uwb_test_start(const char *name, uint8_t arg, uint8_t slot)
 		} else if (strcmp(name, "sequence_wrap") == 0) {
 			ut.kind = UT_SEQUENCE_WRAP;
 			ut.name = "sequence_wrap";
+		} else if (strcmp(name, "discovery") == 0) {
+			ut.kind = UT_DISCOVERY;
+			ut.name = "discovery";
 		} else {
 			ret = strcmp(name, "retry") == 0 ? -EINVAL : -ENOTSUP;
 		}

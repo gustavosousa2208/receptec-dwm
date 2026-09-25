@@ -369,7 +369,7 @@ static int cmd_uwb_test_run(const struct shell *shell, size_t argc, char **argv)
 	switch (ret) {
 	case 0:
 		shell_print(shell, "test %s armed on slot %u: warm-up, test, verify; "
-			    "the result is one UWB_TEST line", name, slot);
+			    "the result is printed as one result line", name, slot);
 		return 0;
 	case -EBUSY:
 		shell_error(shell, "a poll or a test is running: uwb test abort, or uwb poll stop");
@@ -408,8 +408,9 @@ static int cmd_uwb_test_list(const struct shell *shell, size_t argc, char **argv
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 	shell_print(shell, "implemented: data_payload, retry <1|2>, duplicate, sequence_wrap,");
-	shell_print(shell, "             wrong_source, bad_type, bad_reserved, bad_length, bad_dt");
-	shell_print(shell, "not implemented: rx_boundary, discovery");
+	shell_print(shell, "             wrong_source, bad_type, bad_reserved, bad_length, bad_dt,");
+	shell_print(shell, "             discovery");
+	shell_print(shell, "not implemented: rx_boundary (the contract does not define its PASS/FAIL)");
 	shell_print(shell, "usage: uwb test <name> <slot>   (needs a registered peer, no poll running)");
 	return 0;
 }
@@ -437,7 +438,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(bad_dt, NULL, "DT_sampling outside the slot, expect no response: <slot>",
 		      cmd_uwb_test_run, 2, 0),
 	SHELL_CMD_ARG(rx_boundary, NULL, "Not implemented yet: <slot>", cmd_uwb_test_run, 2, 0),
-	SHELL_CMD_ARG(discovery, NULL, "Not implemented yet: <slot>", cmd_uwb_test_run, 2, 0),
+	SHELL_CMD_ARG(discovery, NULL, "Silence until the COLETEC enters discovery, then reenter: <slot>",
+		      cmd_uwb_test_run, 2, 0),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(

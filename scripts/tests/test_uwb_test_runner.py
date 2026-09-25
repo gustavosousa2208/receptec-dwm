@@ -57,6 +57,18 @@ class ParseTest(unittest.TestCase):
             with self.assertRaises(runner.ParseError, msg=bad):
                 runner.parse_result_line(bad)
 
+    def test_shell_messages_that_mention_the_name_are_not_results(self):
+        armed = "test bad_dt armed on slot 0: warm-up, test, verify; the result is one UWB_TEST line\n"
+        self.assertEqual(runner.find_results(armed), [])
+        self.assertEqual(runner.judge(armed + PASS_LINE, "bad_dt", 0)[:2], ("PASS", "ok"))
+
+    def test_a_line_split_across_two_reads_is_one_result(self):
+        first, second = "UWB_TEST result=PASS test=bad_length slot=0 leng", "th=21 response=none"
+        self.assertEqual(runner.judge(first + second, "bad_length", 0)[:2], ("PASS", "ok"))
+
+    def test_two_results_without_a_newline_between_them_are_two(self):
+        self.assertEqual(len(runner.find_results(PASS_LINE + PASS_LINE)), 2)
+
     def test_ansi_and_prompt_noise_is_ignored(self):
         text = "\x1b[1;32mrtt:~$ \x1b[m" + PASS_LINE + "\r\n"
         self.assertEqual(len(runner.find_results(text)), 1)
@@ -81,6 +93,96 @@ class JudgeTest(unittest.TestCase):
 
     def test_malformed_result(self):
         self.assertEqual(runner.judge("UWB_TEST result=PASS test=bad_dt", "bad_dt", 0)[:2], ("FAIL", "malformed-result"))
+
+
+class SkipAndShellErrorTest(unittest.TestCase):
+    def test_not_implemented_is_a_skip_and_never_a_pass(self):
+        text = "test rx_boundary is not implemented (see docs/uwb-runtime-tests.md)"
+        self.assertEqual(runner.judge(text, "rx_boundary", 0)[:2], ("SKIP", "not-implemented"))
+        s = runner.run_suite(Fake({"uwb test rx_boundary 0": text}), 0, [("rx_boundary", [])])
+        self.assertFalse(s["ok"])
+        self.assertEqual((s["passed"], s["skipped"]), (0, 1))
+        self.assertIn("INCOMPLETE", runner.render(s))
+
+    def test_shell_refusals_are_named_failures(self):
+        self.assertEqual(runner.judge("slot 0 has no registered peer", "bad_dt", 0)[:2], ("FAIL", "no-peer"))
+        self.assertEqual(runner.judge("a poll or a test is running: uwb test abort", "bad_dt", 0)[:2],
+                         ("FAIL", "busy"))
+
+    def test_one_skip_among_passes_keeps_the_suite_incomplete(self):
+        replies = {"uwb test bad_dt 0": PASS_LINE, "uwb test discovery 0": "test discovery is not implemented"}
+        s = runner.run_suite(Fake(replies), 0, [("bad_dt", []), ("discovery", [])])
+        self.assertEqual((s["passed"], s["skipped"], s["ok"]), (1, 1, False))
+
+
+class EvidenceTest(unittest.TestCase):
+    STATUS = "I:   UWB: state=3 rx=%d err/to=0/133 tx=%d/0/0 late=0 irq=1/2us delay=0us phase=0/0/0/0us"
+
+    def test_parse_counters(self):
+        c = runner.parse_coletec_counters(self.STATUS % (100, 90))
+        self.assertEqual(c, {"rx": 100, "err": 0, "to": 133, "tx": 90})
+        self.assertIsNone(runner.parse_coletec_counters("nothing here"))
+
+    def test_delta(self):
+        d = runner.evidence_delta({"rx": 10, "err": 0, "to": 1, "tx": 10}, {"rx": 14, "err": 0, "to": 3, "tx": 13})
+        self.assertEqual((d["rx"], d["tx"], d["unanswered"], d["to"]), (4, 3, 1, 2))
+        self.assertIsNone(runner.evidence_delta(None, {"rx": 1, "err": 0, "to": 0, "tx": 1}))
+
+    def suite(self, name, snaps):
+        class T(Fake):
+            def fresh_snapshot(self, timeout=9.0):
+                return snaps.pop(0)
+        line = PASS_LINE.replace("bad_dt", name)
+        return runner.run_suite(T({f"uwb test {name} 0": line}), 0, [(name, [])])
+
+    def test_mutation_with_an_unanswered_frame_passes_and_records_it(self):
+        s = self.suite("bad_dt", [{"rx": 10, "err": 0, "to": 0, "tx": 10}, {"rx": 14, "err": 0, "to": 0, "tx": 13}])
+        self.assertTrue(s["ok"])
+        self.assertEqual(s["results"][0]["coletec"]["unanswered"], 1)
+
+    def test_mutation_silence_without_a_received_frame_is_a_failure(self):
+        s = self.suite("bad_dt", [{"rx": 10, "err": 0, "to": 0, "tx": 10}, {"rx": 13, "err": 0, "to": 0, "tx": 13}])
+        self.assertFalse(s["ok"])
+        self.assertEqual(s["results"][0]["reason"], "no-evidence-frame-received")
+
+    def test_non_mutation_tests_only_record_the_evidence(self):
+        s = self.suite("duplicate", [{"rx": 10, "err": 0, "to": 0, "tx": 10}, {"rx": 12, "err": 0, "to": 0, "tx": 12}])
+        self.assertTrue(s["ok"])
+        self.assertEqual(s["results"][0]["coletec"]["unanswered"], 0)
+
+    def test_missing_evidence_does_not_block_a_pass(self):
+        s = self.suite("bad_dt", [None, None])
+        self.assertTrue(s["ok"])
+        self.assertNotIn("coletec", s["results"][0])
+
+
+class DiscoveryEvidenceTest(unittest.TestCase):
+    LINE = "UWB_TEST result=PASS test=discovery slot=0 silence-cycles=6 probes=3 transition=inferred"
+
+    def suite(self, coletec_text):
+        class T(Fake):
+            def mark(self):
+                return 0
+
+            def text_since(self, mark):
+                return coletec_text
+        return runner.run_suite(T({"uwb test discovery 0": self.LINE}), 0, [("discovery", [])])
+
+    def test_count_events(self):
+        text = "UWB synchronization lost: entering discovery x\nUWB discovery OFF: cycle=1\nUWB discovery reentry: sequence=9\n"
+        self.assertEqual(runner.count_coletec_events(text),
+                         {"entering-discovery": 1, "discovery-off": 1, "reentry": 1})
+
+    def test_pass_needs_the_coletec_to_report_entry_and_reentry(self):
+        both = "UWB synchronization lost: entering discovery\nUWB discovery reentry: sequence=9\n"
+        self.assertTrue(self.suite(both)["ok"])
+
+    def test_silence_then_an_answer_without_coletec_lines_is_not_a_pass(self):
+        s = self.suite("")
+        self.assertFalse(s["ok"])
+        self.assertEqual(s["results"][0]["reason"], "no-evidence-discovery")
+        s = self.suite("UWB synchronization lost: entering discovery\n")
+        self.assertEqual(s["results"][0]["reason"], "no-evidence-discovery")
 
 
 class SuiteTest(unittest.TestCase):

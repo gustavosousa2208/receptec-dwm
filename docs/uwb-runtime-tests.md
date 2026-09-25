@@ -1,0 +1,132 @@
+# UWB runtime tests (RECEPTEC as initiator, COLETEC as responder)
+
+Runtime tests that the real RECEPTEC (`firmware/receptec`) runs against an unmodified
+production COLETEC, plus the host runner and the long-duration run. They replace the
+`uwb test` facility of the retired DWM-as-RECEPTEC bench; the plan they follow is that
+bench's ten-item test plan, re-targeted at this firmware.
+
+Nothing here changes the wire format, the PHY, the timing parameters or the COLETEC.
+
+## How a test runs
+
+The production COLETEC only listens in the rhythm the RECEPTEC sets, so a test cannot be
+fired at an arbitrary moment. `uwb test <name> <slot>` arms the test and starts a 1 s poll
+of that one peer; the test then replaces one transaction, in that peer's own slot:
+
+1. **Warm-up.** Two consecutive ordinary transactions must succeed (else `no-baseline`).
+2. **Test.** The test itself, one or more cycles.
+3. **Verify.** One ordinary transaction must succeed afterwards, proving the test did not
+   poison the peer (else `recovery-failed`).
+
+Exactly one terminal line is printed, then the poll stops. Everything runs on the poll
+thread under the radio mutex; the shell only arms the test and returns. A test has a finite
+deadline (40 cycles) and `uwb test abort` ends it at the next cycle boundary.
+
+```text
+UWB_TEST result=PASS test=<name> slot=<0-3> key=value ...
+UWB_TEST result=FAIL test=<name> slot=<0-3> reason=<token> key=value ...
+```
+
+A timeout is `FAIL reason=timeout` and an abort is `FAIL reason=aborted`. Names and keys are
+lowercase `[a-z0-9_-]`, values also allow `.`, reasons are hyphenated. The line is a
+compatibility surface for `scripts/uwb-test-runner.py`.
+
+Prerequisites: the peer registered (`uwb peer register 0 <EUI-64>`), no poll running
+(`uwb poll stop`), and one test at a time (a second `uwb test` answers busy).
+
+## The tests
+
+| Command | What it does | PASS needs | Failure reasons |
+|---|---|---|---|
+| `data_payload <slot>` | One transaction plus one repeated request; checks the payload v1 layout | 2 valid responses with the request's sequence, byte-identical payloads, layout valid | `wrong-length`, `wrong-version`, `reserved-flags`, `stale-without-summary`, `summary-not-zero`, `summary-header`, `padding-not-zero`, `duplicate-*-changed` |
+| `retry <1\|2> <slot>` | Ignores 1 or 2 valid responses as if lost, repeats on the ordinary backoff schedule | ignored+1 valid responses, same sequence, identical payloads, each attempt at its generated offset (60 us), none after the slot end | `missing-response`, `late-response`, `attempt-timing`, `bad-response`, `duplicate-*-changed` |
+| `duplicate <slot>` | Same as `retry 1` | idem | idem |
+| `sequence_wrap <slot>` | Three ordinary transactions with sequences 254, 255, 0, one per cycle; restores the peer's next sequence | three valid responses in that order | `missing-response`, `bad-response` (field `step`) |
+| `wrong_source` | Valid DATA_REQ with an unknown source EUI-64 | no response | `unexpected-response`, `rx-error` |
+| `bad_type` | Reserved packet type `0x06` | no response | idem |
+| `bad_reserved` | Reserved high-nibble bit set (`0x10`) | no response | idem |
+| `bad_length` | DT_sampling truncated to one byte (21 logical bytes) | no response | idem |
+| `bad_dt` | DT_sampling of 60 ms, outside any slot | no response | idem |
+| `discovery <slot>` | 6 silent cycles (the COLETEC leaves sync after 5 missed slots), then one probe per cycle until it answers again | a valid response within 24 probes, then the verify transaction | `no-reentry` |
+
+Each mutation is one fixed case built from a valid DATA_REQ (`uwb_test_frames.c`), sent with
+a hardware-generated valid FCS so the COLETEC hardware filter accepts it and the rejection
+has to come from its software checks. There is no free-form frame builder and no way to set a
+sequence number from the shell.
+
+`data_payload` validates **payload v1** (`contracts/protocol/uwb-receptec-coletec/payload-v1.md`,
+draft), not the diagnostic pattern the original plan names: the production COLETEC now sends
+the STM32 summary by default. It checks the layout the contract fixes, never sensor values, and
+it is an implementation check, not a stable application format.
+
+## What "no response" does and does not prove
+
+For the five mutations, silence from the COLETEC is the PASS, and silence alone cannot tell a
+rejection from a frame lost in the air. The COLETEC prints `UWB: state=.. rx=R err/to=.. tx=D/A/S`
+every 5 s, where `rx` counts frames with a valid FCS that passed its hardware filter and `tx`
+the responses it sent. The runner (`--coletec-rtt prod-coletec`) snapshots those counters
+around each test and requires `rx - tx >= 1` for a mutation, that is, at least one frame
+received and not answered. If it is 0, the runner turns the PASS into
+`FAIL no-evidence-frame-received`. The COLETEC does not print *why* it rejected (address, type,
+length), so the reason is inferred from which mutation was sent.
+
+`discovery` is a bounded orchestration, not a discovery algorithm: the RECEPTEC sees only
+silence and then an answer. The runner requires the COLETEC's own RTT lines
+(`UWB synchronization lost: entering discovery` and `UWB discovery reentry`) inside the test
+window, else `FAIL no-evidence-discovery`. The transition is reported as `transition=inferred`.
+
+## Not implemented: `rx_boundary`
+
+`uwb test rx_boundary` answers "not implemented" and the runner reports SKIP, never PASS.
+The item is blocked on a contract gap, recorded here as the plan requires:
+
+- The COLETEC's receive window is `[slot start - guard, slot start + T_SLOT + guard]`
+  (`coletec_uwb.c`, `next_slot_dx`), with `T_SLOT` 30 ms and a guard that starts at 500 us and
+  grows with every missed slot (`COLETEC_N_CNT_GUARD_MAX` 5).
+- A probe just before the closing edge would have to carry a `DT_sampling` larger than the slot,
+  which the COLETEC itself rejects (`bad_dt`), and a `DT_sampling` that disagrees with the
+  measured arrival time cannot be told apart from an out-of-window arrival.
+- The margin ("immediately before/after") has to be larger than the measured scheduling
+  uncertainty, and that uncertainty has not been measured.
+
+The contract does not say what a request at a window edge must do, so there is no PASS/FAIL to
+assert. It needs a decision on the `DT_sampling` semantics at the edges and a measured margin.
+
+## Running
+
+```sh
+# one test by hand (RTT shell; wait ~10 s between two bench console opens on the same probe)
+bench console receptec --send "uwb test data_payload 0" --until "UWB_TEST result" --timeout 45
+
+# the whole suite, with the COLETEC's counters and discovery lines as evidence
+scripts/uwb-test-runner.py --slot 0 --coletec-rtt prod-coletec
+scripts/uwb-test-runner.py --list
+scripts/uwb-test-runner.py --slot 0 --only duplicate,bad_dt
+```
+
+The runner stops the poll before each test and at the end, waits for exactly one matching result
+line, and writes `logs/uwb-tests-<UTC>/` (`raw.log`, `console.log*`, `summary.json`,
+`summary.md`). Exit code 0 only if every selected test passed; a test that cannot run is SKIP and a
+SKIP is never a pass; 2 if it could not start. It never runs STOP, never flashes, resets or
+power-cycles a board. `python3 -m unittest discover -s scripts/tests` runs its 37 unit tests
+(no hardware).
+
+Host tests of the firmware helpers: `cmake -S firmware/receptec/tests -B <dir> && cmake --build <dir> &&
+ctest --test-dir <dir>`.
+
+Long-duration runs (packet statistics, link, clock drift over hours) are a different tool:
+`scripts/uwb-long-test.py` (see the README).
+
+## Evidence
+
+2026-09-25, real RECEPTEC and the production COLETEC, slot 0, 1 s poll, link RSL about -78 dBm.
+Suite runs (`logs/uwb-tests-2026092*`): the first one failed every test with `duplicate-result`
+because the shell's own "armed" message mentioned the name UWB_TEST and the runner counted it
+(runner bug, fixed); the next two passed 10 of 10 implemented tests; one later run failed
+`bad_length` because a result line arrived split across two reads (runner bug, fixed); the last
+run before `discovery` passed 10 of 10 again. With the COLETEC counters attached, each mutation
+showed `unanswered=1` and every other test `unanswered=0` with `rx = tx`.
+
+One run showed the COLETEC leaving three received requests unanswered during `retry 1`
+(`rx+8 tx+5`) and answering the accepted response only on the third attempt; it passed on the
+other runs and the cause is not explained.

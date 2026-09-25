@@ -13,7 +13,8 @@ bad_length, bad_dt, duplicate, sequence_wrap, rx_boundary, discovery.
 It never runs STOP, never flashes, resets or power-cycles a board. Before each test
 it stops scheduled traffic (`uwb poll stop`) and leaves it stopped at the end; if
 that cannot be confirmed the summary says so. Exit code 0 only when every selected
-test passed; 1 otherwise; 2 when the runner itself could not start.
+test passed (a test that cannot run is SKIP, and a SKIP is never a pass); 1 otherwise; 2
+when the runner itself could not start.
 
   uwb-test-runner.py --slot 0                      all tests
   uwb-test-runner.py --slot 0 --only duplicate,bad_dt
@@ -28,6 +29,7 @@ import argparse
 import json
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,12 +53,27 @@ SUITE = [
     ("discovery", []),
 ]
 # Finite deadlines per test in seconds (generous; the firmware has its own).
-TIMEOUTS = {"rx_boundary": 30, "discovery": 240, "retry": 20, "data_payload": 20}
+TIMEOUTS = {"rx_boundary": 30, "discovery": 90, "retry": 20, "data_payload": 20}
 DEFAULT_TIMEOUT = 15
 
 LINE = re.compile(r"^UWB_TEST (.*)$")
+# The shell answers these instead of a result when a test cannot start; waiting the full
+# deadline for a UWB_TEST line that will never come would only slow the suite down.
+STOP_RE = r"UWB_TEST result=|not implemented|could not start|has no registered peer|is running|usage:"
 TOKEN = re.compile(r"^[a-z0-9_.-]+$")
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+# The production COLETEC prints this every ~5 s: rx = frames with a valid FCS that passed its
+# hardware filter, tx = DATA / ACK / STOP_ACK responses it sent.
+COLETEC_LINE = re.compile(r"UWB: state=(\d+) rx=(\d+) err/to=(\d+)/(\d+) tx=(\d+)/(\d+)/(\d+)")
+# Tests that send a malformed request and pass on "no response". "No response" alone cannot tell
+# a rejection from a lost frame, so these also need the COLETEC to have counted the frame.
+MUTATION_TESTS = {"wrong_source", "bad_type", "bad_reserved", "bad_length", "bad_dt"}
+# Lines the COLETEC Nordic prints on its own RTT when it changes discovery state.
+COLETEC_EVENTS = {
+    "entering-discovery": "UWB synchronization lost: entering discovery",
+    "discovery-off": "UWB discovery OFF",
+    "reentry": "UWB discovery reentry",
+}
 
 
 class ParseError(Exception):
@@ -94,15 +111,21 @@ def parse_result_line(line):
 
 
 def find_results(text):
-    """Every UWB_TEST line in the text, parsed, or the error for a malformed one."""
+    """Every result line in the text, parsed, or the error for a malformed one.
+
+    Split on the `UWB_TEST result=` marker, not on newlines: a line can arrive in two
+    reads, and two results can arrive without a newline between them once the shell strips
+    it. Each chunk runs up to the next newline. The shell's own messages may mention the
+    name UWB_TEST without being a result, and are ignored.
+    """
     found = []
-    for raw in text.replace("\r", "\n").split("\n"):
-        if "UWB_TEST" not in raw:
-            continue
+    clean = ANSI.sub("", text).replace("\r", "\n")
+    for chunk in re.split(r"(?=UWB_TEST result=)", clean)[1:]:
+        line = chunk.split("\n", 1)[0]
         try:
-            found.append(parse_result_line(raw[raw.index("UWB_TEST"):]))
+            found.append(parse_result_line(line))
         except ParseError as exc:
-            found.append({"malformed": str(exc), "line": raw.strip()[:160]})
+            found.append({"malformed": str(exc), "line": line.strip()[:160]})
     return found
 
 
@@ -113,6 +136,12 @@ def judge(text, test, slot):
     A test is PASS only for exactly one well-formed PASS line for this test and slot.
     """
     results = find_results(text)
+    if not results and "not implemented" in text:
+        return "SKIP", "not-implemented", {}
+    if not results and "has no registered peer" in text:
+        return "FAIL", "no-peer", {}
+    if not results and "is running" in text:
+        return "FAIL", "busy", {}
     if not results:
         return "FAIL", "no-result", {}
     if len(results) > 1:
@@ -127,6 +156,29 @@ def judge(text, test, slot):
     return "FAIL", r.get("reason", "unknown"), r
 
 
+def parse_coletec_counters(text):
+    """The last COLETEC status line in text as a dict, or None."""
+    found = None
+    for m in COLETEC_LINE.finditer(ANSI.sub("", text)):
+        found = {"rx": int(m[2]), "err": int(m[3]), "to": int(m[4]), "tx": int(m[5]) + int(m[6]) + int(m[7])}
+    return found
+
+
+def count_coletec_events(text):
+    """How many times each COLETEC discovery-state line appears in the text."""
+    clean = ANSI.sub("", text)
+    return {name: clean.count(marker) for name, marker in COLETEC_EVENTS.items()}
+
+
+def evidence_delta(before, after):
+    """What the COLETEC counted between two snapshots; unanswered = received but not answered."""
+    if not before or not after:
+        return None
+    d = {k: after[k] - before[k] for k in ("rx", "err", "to", "tx")}
+    d["unanswered"] = d["rx"] - d["tx"]
+    return d
+
+
 class BenchTransport:
     """The RECEPTEC shell through benchlib (RTT by lstty nickname, or a serial port)."""
 
@@ -135,7 +187,59 @@ class BenchTransport:
         from benchlib.console import ConsoleError, ShellRunner, open_console
         self.ConsoleError = ConsoleError
         self.shell = ShellRunner(open_console(target, log=log))
-        self.coletec = open_console(coletec, check=False, log=open(log.name + ".coletec", "a")) if coletec else None
+        self.coletec = open_console(coletec, check=False, log=open(log.name + ".gdb", "a")) if coletec else None
+        self.coletec_log = open(log.name + ".coletec", "a") if coletec else None
+        self.snap_lock, self.snap_seq, self.snap = threading.Lock(), 0, None
+        self.coletec_text = ""
+        self.stop_reader = False
+        self.reader = None
+        if self.coletec:
+            self.reader = threading.Thread(target=self._read_coletec, daemon=True)
+            self.reader.start()
+
+    def _read_coletec(self):
+        buf = ""
+        while not self.stop_reader:
+            try:
+                chunk = self.coletec.recv()
+            except Exception:  # noqa: BLE001 - the RTT link can drop; evidence just stops
+                return
+            if not chunk:
+                time.sleep(0.05)
+                continue
+            self.coletec_log.write(chunk)
+            self.coletec_log.flush()
+            with self.snap_lock:
+                self.coletec_text += chunk
+            buf += chunk
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                found = parse_coletec_counters(line)
+                if found:
+                    with self.snap_lock:
+                        self.snap, self.snap_seq = found, self.snap_seq + 1
+
+    def mark(self):
+        with self.snap_lock:
+            return len(self.coletec_text)
+
+    def text_since(self, mark):
+        with self.snap_lock:
+            return self.coletec_text[mark:]
+
+    def fresh_snapshot(self, timeout=9.0):
+        """Wait for a COLETEC status line newer than any seen so far and return its counters."""
+        if not self.coletec:
+            return None
+        with self.snap_lock:
+            seen = self.snap_seq
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            with self.snap_lock:
+                if self.snap_seq > seen:
+                    return dict(self.snap)
+            time.sleep(0.1)
+        return None
 
     def run(self, command, timeout, stop_re=None):
         try:
@@ -150,14 +254,15 @@ class BenchTransport:
         try:
             while time.monotonic() < end:
                 text += self.shell.recv()
-                if self.coletec:
-                    self.coletec.recv()
                 time.sleep(0.05)
         except self.ConsoleError as exc:
             raise Disconnected(str(exc)) from exc
         return text
 
     def close(self):
+        self.stop_reader = True
+        if self.reader:
+            self.reader.join(2)
         for c in (self.shell, self.coletec):
             try:
                 if c:
@@ -185,6 +290,15 @@ class FixtureTransport:
     def drain(self, seconds):
         return self.commands.get("__drain__", "")
 
+    def fresh_snapshot(self, timeout=9.0):
+        return None
+
+    def mark(self):
+        return 0
+
+    def text_since(self, mark):
+        return self.commands.get("__coletec__", "")
+
     def close(self):
         pass
 
@@ -203,21 +317,41 @@ def select(only):
 def run_suite(transport, slot, selection, out_dir=None, clock=time.monotonic):
     """Run the selection and return the summary dict. Never raises for a test failure."""
     summary = {"slot": slot, "results": [], "cleanup": "unconfirmed", "aborted": None}
+    snapshot = getattr(transport, "fresh_snapshot", lambda timeout=9.0: None)
+    mark = getattr(transport, "mark", lambda: 0)
+    text_since = getattr(transport, "text_since", lambda m: "")
     try:
+        previous = snapshot()
         for name, args in selection:
             label = name + (" " + " ".join(args) if args else "")
             timeout = TIMEOUTS.get(name, DEFAULT_TIMEOUT)
             entry = {"test": label, "verdict": "FAIL", "reason": "not-run"}
             summary["results"].append(entry)
             transport.run("uwb poll stop", 5)
+            window_start = mark()
             t0 = clock()
-            text = transport.run(f"uwb test {label} {slot}", timeout, stop_re=r"UWB_TEST result=")
-            text += "\n" + transport.drain(0.7)  # a second result line after the first is a defect
+            text = transport.run(f"uwb test {label} {slot}", timeout, stop_re=STOP_RE)
+            text += transport.drain(0.7)  # a second result line after the first is a defect
             verdict, reason, fields = judge(text, name, slot)
             if verdict == "FAIL" and reason == "no-result" and clock() - t0 >= timeout - 0.5:
                 reason = "runner-timeout"
             entry.update(verdict=verdict, reason=reason, seconds=round(clock() - t0, 1),
                          fields={k: v for k, v in fields.items() if k not in ("result", "test", "slot")})
+            current = snapshot() if verdict != "SKIP" else previous
+            delta = evidence_delta(previous, current)
+            previous = current or previous
+            if name == "discovery" and verdict != "SKIP":
+                events = count_coletec_events(text_since(window_start))
+                entry["coletec_events"] = events
+                if verdict == "PASS" and (events["entering-discovery"] < 1 or events["reentry"] < 1):
+                    # The RECEPTEC only saw silence and then an answer; without the COLETEC's own
+                    # lines the transition is a guess, so it is not a pass.
+                    entry.update(verdict="FAIL", reason="no-evidence-discovery")
+            if delta:
+                entry["coletec"] = delta
+                if name in MUTATION_TESTS and verdict == "PASS" and delta["unanswered"] < 1:
+                    # Nothing reached the COLETEC unanswered: the silence proves nothing.
+                    entry.update(verdict="FAIL", reason="no-evidence-frame-received")
             if out_dir:
                 (out_dir / "raw.log").open("a").write(f"=== {label} slot {slot}\n{text}\n")
     except Disconnected as exc:
@@ -229,21 +363,31 @@ def run_suite(transport, slot, selection, out_dir=None, clock=time.monotonic):
         except Exception:  # noqa: BLE001
             summary["cleanup"] = "unconfirmed"
     passed = sum(1 for r in summary["results"] if r["verdict"] == "PASS")
+    skipped = sum(1 for r in summary["results"] if r["verdict"] == "SKIP")
     ran = len(summary["results"])
     summary["passed"], summary["ran"], summary["selected"] = passed, ran, len(selection)
+    summary["skipped"] = skipped
     summary["ok"] = passed == len(selection) and ran == len(selection) and not summary["aborted"]
     return summary
 
 
 def render(summary):
+    failed = sum(1 for r in summary["results"] if r["verdict"] == "FAIL")
+    verdict = "PASS" if summary["ok"] else ("FAIL" if failed or summary["aborted"] else "INCOMPLETE")
     lines = [f"# UWB runtime tests, slot {summary['slot']}", "",
-             f"**{'PASS' if summary['ok'] else 'FAIL'}**: {summary['passed']}/{summary['selected']} passed "
-             f"({summary['ran']} run). Cleanup (`uwb poll stop`): {summary['cleanup']}."]
+             f"**{verdict}**: {summary['passed']}/{summary['selected']} passed, {summary.get('skipped', 0)} skipped "
+             f"(not implemented), {failed} failed. Cleanup (`uwb poll stop`): {summary['cleanup']}."]
     if summary["aborted"]:
         lines.append(f"Aborted: {summary['aborted']}")
     lines += ["", "| Test | Result | Reason | Detail |", "|---|---|---|---|"]
     for r in summary["results"]:
         detail = " ".join(f"{k}={v}" for k, v in r.get("fields", {}).items())
+        if r.get("coletec_events"):
+            e = r["coletec_events"]
+            detail += f" | coletec entered-discovery={e['entering-discovery']} reentry={e['reentry']} off-windows={e['discovery-off']}"
+        if r.get("coletec"):
+            c = r["coletec"]
+            detail += f" | coletec rx+{c['rx']} tx+{c['tx']} unanswered={c['unanswered']} err+{c['err']} to+{c['to']}"
         lines.append(f"| {r['test']} | {r['verdict']} | {r['reason']} | {detail} |")
     return "\n".join(lines) + "\n"
 
