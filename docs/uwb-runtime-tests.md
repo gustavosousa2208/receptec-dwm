@@ -78,19 +78,20 @@ window, else `FAIL no-evidence-discovery`. The transition is reported as `transi
 ## Not implemented: `rx_boundary`
 
 `uwb test rx_boundary` answers "not implemented" and the runner reports SKIP, never PASS.
-The item is blocked on a contract gap, recorded here as the plan requires:
+It is not blocked by the contract: the retired DWM bench ran the same test (P-05) with probes at
+-600, 0, 20500 and 20600 us against a window of `[-500, 20500)` us
+(`verification-evidence/2026-09-18/p05-window-boundaries-ota.txt` in the share). A probe at an
+offset does not need a `DT_sampling` larger than the slot. What is missing:
 
-- The COLETEC's receive window is `[slot start - guard, slot start + T_SLOT + guard]`
-  (`coletec_uwb.c`, `next_slot_dx`), with `T_SLOT` 30 ms and a guard that starts at 500 us and
-  grows with every missed slot (`COLETEC_N_CNT_GUARD_MAX` 5).
-- A probe just before the closing edge would have to carry a `DT_sampling` larger than the slot,
-  which the COLETEC itself rejects (`bad_dt`), and a `DT_sampling` that disagrees with the
-  measured arrival time cannot be told apart from an out-of-window arrival.
-- The margin ("immediately before/after") has to be larger than the measured scheduling
-  uncertainty, and that uncertainty has not been measured.
+- The production numbers. The COLETEC window is `[slot start - guard, slot start + T_SLOT + guard]`
+  (`coletec_uwb.c`, `listen_synchronized_slot`), `T_SLOT` 30 ms, guard 500 us at zero missed slots
+  and growing with every missed slot (`COLETEC_N_CNT_GUARD_MAX` 5), not the DWM's 20 ms.
+- Zero jitter. The poll jitter is 0.5 ms, larger than the 100 us margins of the old test, so the
+  probe has to run with the jitter off and with the offset as a test parameter.
+- A measured scheduling uncertainty, so the margin ("immediately before/after") is larger than it.
 
-The contract does not say what a request at a window edge must do, so there is no PASS/FAIL to
-assert. It needs a decision on the `DT_sampling` semantics at the edges and a measured margin.
+Implementation needs the bench, and the pass/fail rule is the old one: only probes inside the
+window are answered.
 
 ## Running
 
