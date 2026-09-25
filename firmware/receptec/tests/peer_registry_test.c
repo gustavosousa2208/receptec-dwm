@@ -127,6 +127,32 @@ static void test_history_capacity_is_explicit(void)
 	       -ENOSPC);
 }
 
+static void test_set_next_sequence_restores_the_counter(void)
+{
+	struct receptec_uwb_peer_registry registry;
+	uint8_t sequence;
+
+	assert(receptec_uwb_peer_registry_init(&registry, local_eui) == 0);
+	assert(receptec_uwb_peer_registry_set_next_sequence(&registry, 0U, 7U) == -ENOENT);
+	assert(receptec_uwb_peer_registry_register(&registry, 0U, peer0) == 0);
+	assert(receptec_uwb_peer_registry_next_sequence(&registry, 0U, &sequence) == 0);
+	assert(sequence == 1U);
+	/* the sequence_wrap test saves the next value, sends 254, 255 and 0, then restores it */
+	assert(receptec_uwb_peer_registry_set_next_sequence(&registry, 0U, 254U) == 0);
+	assert(receptec_uwb_peer_registry_next_sequence(&registry, 0U, &sequence) == 0);
+	assert(sequence == 254U);
+	assert(receptec_uwb_peer_registry_next_sequence(&registry, 0U, &sequence) == 0);
+	assert(sequence == 255U);
+	assert(receptec_uwb_peer_registry_next_sequence(&registry, 0U, &sequence) == 0);
+	assert(sequence == 0U);
+	assert(receptec_uwb_peer_registry_set_next_sequence(&registry, 0U, 2U) == 0);
+	assert(receptec_uwb_peer_registry_next_sequence(&registry, 0U, &sequence) == 0);
+	assert(sequence == 2U);
+	assert(receptec_uwb_peer_registry_set_next_sequence(NULL, 0U, 1U) == -EINVAL);
+	assert(receptec_uwb_peer_registry_set_next_sequence(&registry, RECEPTEC_UWB_MAX_PEERS, 1U) ==
+	       -EINVAL);
+}
+
 int main(void)
 {
 	struct receptec_uwb_peer_registry registry;
@@ -137,5 +163,6 @@ int main(void)
 	test_rejections_preserve_registry();
 	test_full_table();
 	test_history_capacity_is_explicit();
+	test_set_next_sequence_restores_the_counter();
 	return 0;
 }

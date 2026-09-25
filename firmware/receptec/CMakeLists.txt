@@ -14,6 +14,9 @@ target_sources(app PRIVATE
     src/uwb_protocol.c
     src/uwb_peer_registry.c
     src/dw3720_spi.c
+    src/uwb_test_result.c
+    src/uwb_test_frames.c
+    src/uwb_test_payload.c
     src/uwb_radio.c
     src/uwb_shell.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../../vendor/qorvo/deca_interface.c

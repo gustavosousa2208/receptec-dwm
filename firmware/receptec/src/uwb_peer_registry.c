@@ -129,3 +129,27 @@ int receptec_uwb_peer_registry_next_sequence(
 	}
 	return -EIO;
 }
+
+int receptec_uwb_peer_registry_set_next_sequence(
+	struct receptec_uwb_peer_registry *registry, size_t slot,
+	uint8_t sequence)
+{
+	size_t i;
+
+	if (registry == NULL || slot >= RECEPTEC_UWB_MAX_PEERS) {
+		return -EINVAL;
+	}
+	if (!registry->slots[slot].registered) {
+		return -ENOENT;
+	}
+	for (i = 0U; i < RECEPTEC_UWB_PEER_HISTORY_CAPACITY; ++i) {
+		if (registry->history[i].used &&
+		    memcmp(registry->history[i].eui64,
+			   registry->slots[slot].eui64,
+			   RECEPTEC_UWB_EUI64_SIZE) == 0) {
+			registry->history[i].next_sequence = sequence;
+			return 0;
+		}
+	}
+	return -EIO;
+}

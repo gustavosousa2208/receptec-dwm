@@ -55,4 +55,15 @@ void receptec_uwb_poll_stream(bool enable);
 int receptec_uwb_poll_last(uint8_t slot, uint8_t *payload, size_t capacity,
 			   size_t *length, uint32_t *count, uint32_t *age_ms);
 
+/*
+ * Runtime UWB test (see docs/uwb-runtime-tests.md): arm `name` on a registered peer's slot
+ * and start a 1 s poll that runs it between ordinary transactions. Returns at once; the
+ * outcome is one `UWB_TEST ...` line on the console. -EBUSY while a poll or a test runs,
+ * -ENOENT for an unregistered slot, -ENOTSUP for a name that is not implemented,
+ * -EINVAL for a bad argument (retry takes 1 or 2 ignored responses).
+ */
+int receptec_uwb_test_start(const char *name, uint8_t arg, uint8_t slot);
+/* Ask the running test to end at its next cycle boundary (result: FAIL reason=aborted). */
+int receptec_uwb_test_abort(void);
+
 #endif /* RECEPTEC_UWB_RADIO_H_ */
