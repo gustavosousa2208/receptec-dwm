@@ -1,10 +1,10 @@
-# Contract compliance — atletec-uwb-dwm-bench
+# Contract compliance — receptec
 
 Tracks the contract revision used by this bench firmware.
 
 ## Status
 
-`contracts/` pin: `8d8863a`
+`contracts/` pin: `ba39ee0`
 
 | Contract | Targeted version | Status | Notes |
 |----------|-----------------|--------|-------|
