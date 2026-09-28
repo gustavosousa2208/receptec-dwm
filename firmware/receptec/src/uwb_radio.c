@@ -15,6 +15,7 @@
 
 #include "dw3720_spi.h"
 #include "uwb_peer_registry.h"
+#include "uwb_peer_storage.h"
 #include <receptec/uwb_protocol.h>
 
 #include "deca_device_api.h"
@@ -31,11 +32,6 @@
 
 static const uint8_t receptec_eui[RECEPTEC_UWB_EUI64_SIZE] = {
 	0x41, 0x16, 0xA8, 0x06, 0x82, 0xF3, 0xC6, 0x3E,
-};
-
-static const uint8_t default_peer_euis[][RECEPTEC_UWB_EUI64_SIZE] = {
-	{ 0x31, 0x5D, 0x02, 0xD5, 0x15, 0x8C, 0xFA, 0x40 },
-	{ 0x31, 0x5D, 0x02, 0xD5, 0x15, 0x8C, 0xFA, 0x41 },
 };
 
 static const struct dwt_spi_s dw3720_spi_functions = {
@@ -184,57 +180,170 @@ static int initialize_qorvo_driver(void)
 
 int receptec_uwb_radio_init(void)
 {
-	size_t i;
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
 	int ret;
 
-	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
-	ret = receptec_uwb_peer_registry_init(&peer_registry, receptec_eui);
-	if (ret == 0) {
-		for (i = 0U; i < ARRAY_SIZE(default_peer_euis); ++i) {
-			ret = receptec_uwb_peer_registry_register(
-				&peer_registry, i, default_peer_euis[i]);
-			if (ret < 0) {
-				break;
-			}
-		}
-	}
-	peer_registry_ready = ret == 0;
-	k_mutex_unlock(&uwb_peer_mutex);
+	ret = receptec_uwb_peer_storage_init();
 	if (ret < 0) {
+		printk("Peer storage init failed: %d\n", ret);
 		return ret;
 	}
+
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+
+	ret = receptec_uwb_peer_registry_init(
+		&peer_registry,
+		receptec_eui);
+
+	if (ret < 0) {
+		k_mutex_unlock(&uwb_peer_mutex);
+		return ret;
+	}
+
+	for (uint8_t slot = 0U;
+	     slot < RECEPTEC_UWB_MAX_PEERS;
+	     ++slot) {
+
+		ret = receptec_uwb_peer_storage_load(
+			slot,
+			eui64);
+
+		if (ret == -ENOENT) {
+			continue;
+		}
+
+		if (ret < 0) {
+			printk("Peer storage: slot %u load failed: %d\n",
+			       slot, ret);
+			continue;
+		}
+
+		ret = receptec_uwb_peer_registry_register(
+			&peer_registry,
+			slot,
+			eui64);
+
+		if (ret < 0) {
+			printk("Peer storage: slot %u rejected: %d\n",
+			       slot, ret);
+			continue;
+		}
+
+		printk("Peer storage: restored slot %u\n", slot);
+	}
+
+	peer_registry_ready = true;
+
+	k_mutex_unlock(&uwb_peer_mutex);
 
 	ret = initialize_qorvo_driver();
 
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
-	radio_ready = ret == 0;
+	radio_ready = (ret == 0);
 	k_mutex_unlock(&uwb_peer_mutex);
+
 	return ret;
 }
 
 int receptec_uwb_peer_register(
-	uint8_t slot, const uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE])
+	uint8_t slot,
+	const uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE])
 {
 	int ret;
 
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+
 	if (!peer_registry_ready) {
 		ret = -EAGAIN;
-	} else {
-		ret = receptec_uwb_peer_registry_register(&peer_registry, slot,
-							  eui64);
+		goto out;
 	}
+
+	/*
+	 * Permite alteração em runtime, mas não no meio
+	 * de um ciclo de polling.
+	 */
+	if (poll_running) {
+		ret = -EBUSY;
+		goto out;
+	}
+
+	/*
+	 * Primeiro valida e adiciona à lista RAM.
+	 */
+	ret = receptec_uwb_peer_registry_register(
+		&peer_registry,
+		slot,
+		eui64);
+
+	if (ret < 0) {
+		goto out;
+	}
+
+	/*
+	 * Depois torna o cadastro persistente.
+	 */
+	ret = receptec_uwb_peer_storage_save(
+		slot,
+		eui64);
+
+	if (ret < 0) {
+		/*
+		 * Não deixa RAM e flash divergirem.
+		 */
+		(void)receptec_uwb_peer_registry_unregister(
+			&peer_registry,
+			slot);
+	}
+
+out:
 	k_mutex_unlock(&uwb_peer_mutex);
 	return ret;
 }
 
 int receptec_uwb_peer_unregister(uint8_t slot)
 {
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
 	int ret;
 
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
-	ret = peer_registry_ready ?
-		receptec_uwb_peer_registry_unregister(&peer_registry, slot) : -EAGAIN;
+
+	if (!peer_registry_ready) {
+		ret = -EAGAIN;
+		goto out;
+	}
+
+	if (poll_running) {
+		ret = -EBUSY;
+		goto out;
+	}
+
+	/*
+	 * Confirma que realmente existe peer nesse slot.
+	 */
+	ret = receptec_uwb_peer_registry_get(
+		&peer_registry,
+		slot,
+		eui64);
+
+	if (ret < 0) {
+		goto out;
+	}
+
+	/*
+	 * Primeiro remove a configuração persistente.
+	 * Se a flash falhar, RAM permanece intacta.
+	 */
+	ret = receptec_uwb_peer_storage_delete(slot);
+
+	if (ret < 0) {
+		goto out;
+	}
+
+	ret = receptec_uwb_peer_registry_unregister(
+		&peer_registry,
+		slot);
+
+out:
 	k_mutex_unlock(&uwb_peer_mutex);
 	return ret;
 }

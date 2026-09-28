@@ -77,7 +77,7 @@ BUILD_ASSERT(DT_NODE_HAS_COMPAT(DT_BUS(UWB_NODE), nordic_nrf_spim),
 	     "drives EasyDMA registers directly.");
 
 /* Common SPI operation flags */
-#define SPI_OP_FLAGS (SPI_OP_MODE_MASTER | SPI_WORD_SET(8) | SPI_TRANSFER_MSB)
+#define SPI_OP_FLAGS (SPI_OP_MODE_CONTROLLER | SPI_WORD_SET(8) | SPI_TRANSFER_MSB)
 
 /*
  * SPI DT spec — MUST be const (Zephyr device refs are compile-time constants).
@@ -85,8 +85,7 @@ BUILD_ASSERT(DT_NODE_HAS_COMPAT(DT_BUS(UWB_NODE), nordic_nrf_spim),
  */
 static const struct spi_dt_spec spi_dev = SPI_DT_SPEC_GET(
 	UWB_NODE,
-	SPI_OP_FLAGS,
-	0  /* delay (unused) */
+	SPI_OP_FLAGS
 );
 
 /*
