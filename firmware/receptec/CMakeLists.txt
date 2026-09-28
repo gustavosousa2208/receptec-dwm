@@ -13,6 +13,7 @@ target_sources(app PRIVATE
     src/main.c
     src/uwb_protocol.c
     src/uwb_peer_registry.c
+    src/uwb_peer_storage.c
     src/dw3720_spi.c
     src/uwb_test_result.c
     src/uwb_test_frames.c

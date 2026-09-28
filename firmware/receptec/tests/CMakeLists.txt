@@ -26,6 +26,21 @@ target_compile_options(receptec_uwb_peer_registry_tests PRIVATE
 add_test(NAME receptec_uwb_peer_registry_tests
     COMMAND receptec_uwb_peer_registry_tests)
 
+add_executable(receptec_uwb_peer_storage_tests
+    peer_storage_test.c
+    ../src/uwb_peer_storage.c
+)
+target_include_directories(receptec_uwb_peer_storage_tests PRIVATE
+    mocks
+    ../include
+    ../src
+)
+target_compile_features(receptec_uwb_peer_storage_tests PRIVATE c_std_11)
+target_compile_options(receptec_uwb_peer_storage_tests PRIVATE
+    -Wall -Wextra -Werror -Wpedantic)
+add_test(NAME receptec_uwb_peer_storage_tests
+    COMMAND receptec_uwb_peer_storage_tests)
+
 add_executable(receptec_uwb_test_helpers_tests
     uwb_test_helpers_test.c
     ../src/uwb_protocol.c

@@ -85,8 +85,7 @@ BUILD_ASSERT(DT_NODE_HAS_COMPAT(DT_BUS(UWB_NODE), nordic_nrf_spim),
  */
 static const struct spi_dt_spec spi_dev = SPI_DT_SPEC_GET(
 	UWB_NODE,
-	SPI_OP_FLAGS,
-	0  /* delay (unused) */
+	SPI_OP_FLAGS
 );
 
 /*
