@@ -10,13 +10,13 @@
 
 #include "uwb_radio.h"
 
-/*
- * Blue LED (D300): solid once the firmware has booted. Green LED (D301): toggles
- * from a timer, so it only blinks while the kernel is running; 1 Hz after the UWB
- * radio initialized (or was disabled), 5 Hz if its initialization failed.
- */
-static const struct gpio_dt_spec led_blue = GPIO_DT_SPEC_GET(DT_NODELABEL(receptec_led_blue), gpios);
-static const struct gpio_dt_spec led_green = GPIO_DT_SPEC_GET(DT_NODELABEL(receptec_led_green), gpios);
+/* Blue is common to both carriers; only the Type2AB carrier has a green LED. */
+static const struct gpio_dt_spec led_blue =
+	GPIO_DT_SPEC_GET(DT_ALIAS(led_blue), gpios);
+
+#if !defined(CONFIG_BOARD_RECEPTEC_QORVO)
+static const struct gpio_dt_spec led_green =
+	GPIO_DT_SPEC_GET(DT_ALIAS(led_green), gpios);
 
 static void heartbeat_expired(struct k_timer *timer)
 {
@@ -25,9 +25,18 @@ static void heartbeat_expired(struct k_timer *timer)
 }
 
 static K_TIMER_DEFINE(heartbeat_timer, heartbeat_expired, NULL);
+#endif
 
 static void indicators_start(k_timeout_t half_period)
 {
+#if defined(CONFIG_BOARD_RECEPTEC_QORVO)
+	ARG_UNUSED(half_period);
+	if (gpio_is_ready_dt(&led_blue)) {
+		(void)gpio_pin_configure_dt(&led_blue, GPIO_OUTPUT_ACTIVE);
+	} else {
+		printk("Blue status LED unavailable\n");
+	}
+#else
 	if (gpio_is_ready_dt(&led_blue) && gpio_is_ready_dt(&led_green) &&
 	    gpio_pin_configure_dt(&led_blue, GPIO_OUTPUT_ACTIVE) == 0 &&
 	    gpio_pin_configure_dt(&led_green, GPIO_OUTPUT_INACTIVE) == 0) {
@@ -35,6 +44,7 @@ static void indicators_start(k_timeout_t half_period)
 	} else {
 		printk("Status LEDs unavailable\n");
 	}
+#endif
 }
 
 int main(void)
@@ -43,8 +53,8 @@ int main(void)
 	k_timeout_t heartbeat = K_MSEC(500);
 	ssize_t length = hwinfo_get_device_id(id, sizeof(id));
 
-	printk("RECEPTEC Type2AB baseline\n");
-	printk("UARTE1: Pi GPIO14/15, 115200 8N1\n");
+	printk("Atletec RECEPTEC firmware\n");
+	printk("Board: %s\n", CONFIG_BOARD_TARGET);
 	if (length == (ssize_t)sizeof(id)) {
 		printk("nRF ID:");
 		for (size_t i = 0U; i < sizeof(id); ++i) {

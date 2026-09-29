@@ -1,6 +1,6 @@
 # UWB runtime tests (RECEPTEC as initiator, COLETEC as responder)
 
-Runtime tests that the real RECEPTEC (`firmware/receptec`) runs against an unmodified
+Runtime tests that the shared RECEPTEC application (`src/receptec/`) runs against an unmodified
 production COLETEC, plus the host runner and the long-duration run. They replace the
 `uwb test` facility of the retired DWM-as-RECEPTEC bench; the plan they follow is that
 bench's ten-item test plan, re-targeted at this firmware.
@@ -112,7 +112,7 @@ SKIP is never a pass; 2 if it could not start. It never runs STOP, never flashes
 power-cycles a board. `python3 -m unittest discover -s scripts/tests` runs its 38 unit tests
 (no hardware, 38 tests).
 
-Host tests of the firmware helpers: `cmake -S firmware/receptec/tests -B <dir> && cmake --build <dir> &&
+Host tests of the firmware helpers: `cmake -S tests -B <dir> && cmake --build <dir> &&
 ctest --test-dir <dir>`.
 
 Long-duration runs (packet statistics, link, clock drift over hours) are a different tool:

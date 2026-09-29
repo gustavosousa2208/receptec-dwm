@@ -1,4 +1,4 @@
-mainmenu "Atletec DWM3001C UWB bench firmware"
+mainmenu "Atletec RECEPTEC and UWB bench firmware"
 
 config DWM_COLETEC_INSTANCE
 	int
@@ -157,5 +157,12 @@ config RECEPTEC_TEST_POLL_PEER_MASK
 	  surrogate uses 1 so that the production COLETEC is not polled at a
 	  cadence it is not built for. Manual one-shot tests and the periodic
 	  SYNC ignore this mask.
+
+config RECEPTEC_UWB_RADIO
+	bool "Initialize the RECEPTEC UWB radio and enable its peer shell"
+	default n
+	help
+	  Initialize the target-specific Qorvo DW3xxx radio and enable the shared
+	  RECEPTEC peer registry, persistent storage, polling and SYNC shell.
 
 source "Kconfig.zephyr"

@@ -2,15 +2,17 @@
 
 Imported from `gusta-mac:/Users/gusta/zephyrproject/receptec` at commit
 `bebd60f0daba0ce552d72d1765fb41daea8f82b7`; the source worktree was left
-unchanged.
+unchanged. Its app sources now live in `src/receptec/`, shared with the
+RECEPTEC-Qorvo target.
 
-The RECEPTEC carrier uses Murata `LBUA5QJ2AB-828`: an nRF52840 and a Qorvo
-QM33120W. It is not a DWM3001C; the latter's nRF52833/DW3110 overlay and driver
-must not be flashed or reused as a board definition.
+The Type2AB carrier uses Murata `LBUA5QJ2AB-828`: an nRF52840 and a Qorvo
+QM33120W. It is not a DWM3001C; use the matching board overlay and DW3720 port.
+RECEPTEC-Qorvo uses the DWM3001C's nRF52833/DW3110 hardware port. Both targets
+build the same RECEPTEC application from the repository root.
 
 ## What is ready
 
-- `firmware/receptec` builds for the repo-owned `receptec/nrf52840` target and
+- The shared app builds for the repo-owned `receptec/nrf52840` target and
   assigns UARTE1 to the Pi UART at 115200 bit/s, 8N1. The current console and
   shell use SEGGER RTT; UART console is disabled in `prj.conf`.
 - The carrier report confirms `RX_NORDIC=P0.05` and `TX_NORDIC=P0.06`; those
@@ -53,23 +55,29 @@ must not be flashed or reused as a board definition.
   wrong addresses/type.
   Per-peer sequence history is retained independently of slot storage for up
   to 256 distinct EUIs per boot; replacing a slot cannot erase another peer's
-  counter. A 257th unique EUI returns `-ENOSPC`. Registry/history changes are
-  volatile, so reset re-seeds slots 0/1 and resets their sequences (reset/wrap
-  semantics remain the protocol's AI-01). Final J-Link reset restored default
-  slots 0/1 and empty slots 2/3. The software allow-list is authoritative; no
-  QM33120W hardware frame filter is configured.
+  counter. A 257th unique EUI returns `-ENOSPC`. These checks predate NVS
+  persistence, which was integrated later. Current startup loads all four
+  peer slots from Zephyr Settings/NVS; `uwb peer register` saves a slot and
+  `uwb peer unregister` deletes it. Empty slots remain empty; firmware does not
+  seed peers. On 2026-09-29, RECEPTEC-Qorvo restored a temporary slot-3 EUI
+  after reset, then removed it and returned to four empty slots. The Type2AB
+  hardware was not rechecked after source consolidation, although its build uses
+  the same registry and storage implementation.
+  The software allow-list is authoritative; the DW3720 hardware frame filter
+  is not configured.
 
 ## Current UWB bring-up scope
 
-COLETEC and RECEPTEC use the same Type 2AB module. The proven COLETEC module
+The Type2AB RECEPTEC and production COLETEC use the same module. Its proven
 mapping is SPIM3 P0.16 SCK / P0.17 MOSI / P0.23 MISO, CS P0.20, IRQ P0.25,
-reset P0.15, and wake P1.02. The DWM3001C overlay is still unrelated hardware:
-it targets an nRF52833 and DW3110.
+reset P0.15, and wake P1.02. RECEPTEC-Qorvo uses DWM3001C hardware and its own
+nRF52833/DW3110 pin mapping; only the application, shell, protocol and peer
+storage are shared.
 
 `CONFIG_RECEPTEC_UWB_RADIO` enables the radio and shell commands `uwb status`,
 `uwb sync <slot>`, `uwb peer list`, `uwb peer register <slot> <EUI-64>`, and
-`uwb peer unregister <slot>`. Slots 0/1 are seeded with the bench EUIs at each
-boot; slots 2/3 start empty. Changes are volatile. EUI input/output uses
+`uwb peer unregister <slot>`. All four slots load from NVS at boot; unset slots
+are empty. Registration and removal update NVS. EUI input/output uses
 colon-separated bytes in on-air order. Up to 256 unique peer EUIs per boot
 retain independent sequence counters even after unregister/re-slot; the next
 unique EUI after history capacity is exhausted is rejected with `-ENOSPC`.
@@ -78,15 +86,15 @@ allow-list; the QM33120W hardware frame filter is not configured. Peer changes
 are serialized with a full SYNC transaction by a mutex. A SYNC sends one v1.0 frame with zero-valued
 `DT_sampling`, then accepts only an ACK matching peer EUI, receiver EUI, type,
 and sequence within a fixed 100 ms timeout. Unrelated/malformed frames do not
-extend the timeout. There are no retries or periodic initiator scheduling yet;
-the timeout is a bench default, not a finalized contract parameter.
+extend the timeout. Periodic DATA_REQ polling and retries are implemented;
+timing and full contract qualification remain open.
 
-Host checks are in `firmware/receptec/tests`; run them with:
+Host checks for the bench and RECEPTEC helpers are under `tests/`; run them with:
 
 ```sh
-cmake -S firmware/receptec/tests -B firmware/receptec/tests/build
-cmake --build firmware/receptec/tests/build
-ctest --test-dir firmware/receptec/tests/build --output-on-failure
+cmake -S tests -B build-tests
+cmake --build build-tests
+ctest --test-dir build-tests --output-on-failure
 ```
 
 ## Build and host test
@@ -94,11 +102,10 @@ ctest --test-dir firmware/receptec/tests/build --output-on-failure
 From this repository root, with the Zephyr workspace environment active:
 
 ```sh
-cmake -S firmware/receptec/tests -B build-receptec-tests
-cmake --build build-receptec-tests
-ctest --test-dir build-receptec-tests --output-on-failure
 west build -p always -b receptec/nrf52840 \
-  -d build-receptec firmware/receptec
+  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec/receptec-type2ab" .
+west build -p always -b receptec_qorvo/nrf52833 \
+  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec/receptec-qorvo" .
 ```
 
 The RECEPTEC image was flashed to probe `802008564` for the bench test. Keep

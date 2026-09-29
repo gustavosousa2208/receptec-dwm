@@ -1,0 +1,11 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/dts-v1/;
+#include <nordic/nrf52833_qdaa.dtsi>
+#include "../common/dwm3001cdk-pinctrl.dtsi"
+#include "../common/dwm3001cdk.dtsi"
+
+/ {
+	model = "Atletec RECEPTEC-Qorvo DWM3001C receiver";
+	compatible = "atletec,receptec-qorvo-nrf52833";
+};

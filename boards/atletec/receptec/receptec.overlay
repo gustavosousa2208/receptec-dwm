@@ -24,6 +24,11 @@
 };
 
 / {
+	aliases {
+		led-blue = &receptec_led_blue;
+		led-green = &receptec_led_green;
+	};
+
 	chosen {
 		zephyr,console = &uart1;
 		zephyr,shell-uart = &uart1;

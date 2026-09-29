@@ -1,0 +1,6 @@
+boards:
+  - name: receptec_qorvo
+    full_name: RECEPTEC-Qorvo UWB receiver
+    vendor: atletec
+    socs:
+      - name: nrf52833

@@ -3,18 +3,17 @@
 Part of the **Atletec EPTS** workspace — read the workspace `../AGENTS.md` and the
 `contracts/` submodule first.
 
-This repo is the **RECEPTEC** repository: the firmware of the real receiver, an
-engineering-sample board (Murata Type 2AB, nRF52840 + QM33120W) headed for
-production, under `firmware/receptec/`. It also owns the two DWM3001C
-fake-COLETEC surrogate tags (nRF52833 + DW3110) used to test it, built as
-explicit **fake-COLETEC-0** and **fake-COLETEC-1** images. The RECEPTEC has its
-own `receptec/nrf52840` board target, a QM33120W/DW3720 driver, a peer
-registry, a manual SYNC initiator and periodic DATA_REQ polling with retries
-(`uwb poll start|stop|stats|stream|last`); Pi data export is not implemented.
-Never build or flash a DWM as RECEPTEC. The production COLETEC endpoint remains
-separate in `nrf52-bringup-fw`. The canonical remote is Bitbucket
-(`receptec.git`). The repository was called `coletec-dwm`, then `atletec-uwb-dwm-bench`
-and `receptec-dwm`; the GitHub remote still carries the name `receptec-dwm`.
+This repo is the **RECEPTEC** repository: one RECEPTEC application under
+`src/receptec/` for the real Type2AB receiver (nRF52840 + QM33120W) and the
+RECEPTEC-Qorvo target (DWM3001C, nRF52833 + DW3110). The targets share their
+shell, peer registry/storage, frame codec and polling behavior; board selection
+chooses the DW3720 or DW3110 SPI port. The two DWM3001C fake-COLETEC surrogate
+images remain bench firmware under `src/`. Raspberry Pi SPI pins are described
+in the RECEPTEC-Qorvo overlay, but the Pi data protocol is not implemented.
+The production COLETEC endpoint remains separate in `nrf52-bringup-fw`. The
+canonical remote is Bitbucket (`receptec.git`). The repository was called
+`coletec-dwm`, then `atletec-uwb-dwm-bench` and `receptec-dwm`; the GitHub
+remote still carries the name `receptec-dwm`.
 
 ## Contract this repo implements
 

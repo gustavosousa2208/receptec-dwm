@@ -18,3 +18,5 @@ target_compile_options(dwm_uwb_protocol_tests PRIVATE
 
 enable_testing()
 add_test(NAME dwm_uwb_protocol_tests COMMAND dwm_uwb_protocol_tests)
+
+add_subdirectory(receptec)

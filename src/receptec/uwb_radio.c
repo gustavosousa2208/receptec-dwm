@@ -13,7 +13,22 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/util.h>
 
+#if defined(CONFIG_BOARD_RECEPTEC_QORVO)
+#include <receptec/dw3110_port.h>
+#define RECEPTEC_RADIO_NAME "DW3110"
+#define RECEPTEC_RADIO_DEVICE_ID 0xDECA0302U
+#define receptec_radio_irq_clear dw3110_port_irq_clear
+#define receptec_radio_irq_enable dw3110_port_irq_enable
+#define receptec_radio_wait_event dw3110_port_wait_irq
+#else
 #include "dw3720_spi.h"
+#include "dw3720/dw3720_deca_regs.h"
+#define RECEPTEC_RADIO_NAME "QM33120W"
+#define RECEPTEC_RADIO_DEVICE_ID DW3720_DEV_ID_QM33120W
+#define receptec_radio_irq_clear dw3720_irq_clear
+#define receptec_radio_irq_enable dw3720_irq_enable
+#define receptec_radio_wait_event dw3720_wait_event
+#endif
 #include "uwb_peer_registry.h"
 #include "uwb_peer_storage.h"
 #include <receptec/uwb_protocol.h>
@@ -24,7 +39,6 @@
 #include "deca_device_api.h"
 #include "deca_interface.h"
 #include "deca_private.h"
-#include "dw3720/dw3720_deca_regs.h"
 
 #define UWB_TX_ANTENNA_DELAY 16385U
 #define UWB_RX_ANTENNA_DELAY 16385U
@@ -37,6 +51,7 @@ static const uint8_t receptec_eui[RECEPTEC_UWB_EUI64_SIZE] = {
 	0x41, 0x16, 0xA8, 0x06, 0x82, 0xF3, 0xC6, 0x3E,
 };
 
+#if !defined(CONFIG_BOARD_RECEPTEC_QORVO)
 static const struct dwt_spi_s dw3720_spi_functions = {
 	.readfromspi = dw3720_readfromspi,
 	.writetospi = dw3720_writetospi,
@@ -44,19 +59,26 @@ static const struct dwt_spi_s dw3720_spi_functions = {
 	.setslowrate = dw3720_setslowrate,
 	.setfastrate = dw3720_setfastrate,
 };
+#endif
 
 extern const struct dwt_driver_s dw3000_driver;
 extern const struct dwt_driver_s dw3720_driver;
 
 static const struct dwt_driver_s *const driver_list[] = {
 	&dw3000_driver,
+#if !defined(CONFIG_BOARD_RECEPTEC_QORVO)
 	&dw3720_driver,
+#endif
 };
 
 static struct dwt_probe_s probe_interface = {
 	.dw = NULL,
-	.spi = (void *)&dw3720_spi_functions,
+	.spi = NULL,
+#if defined(CONFIG_BOARD_RECEPTEC_QORVO)
+	.wakeup_device_with_io = dw3110_port_wakeup,
+#else
 	.wakeup_device_with_io = wakeup_device_with_io,
+#endif
 	.driver_list = (struct dwt_driver_s **)driver_list,
 	.dw_driver_num = ARRAY_SIZE(driver_list),
 };
@@ -100,7 +122,34 @@ static uint32_t us_to_rx_timeout(uint32_t us)
 static void clear_radio_events(uint32_t events)
 {
 	dwt_writesysstatuslo(events);
-	dw3720_irq_clear();
+	receptec_radio_irq_clear();
+}
+
+static int receptec_radio_port_init(void)
+{
+#if defined(CONFIG_BOARD_RECEPTEC_QORVO)
+	return dw3110_port_init();
+#else
+	return dw3720_spi_init();
+#endif
+}
+
+static int receptec_radio_port_reset(void)
+{
+#if defined(CONFIG_BOARD_RECEPTEC_QORVO)
+	return dw3110_port_reset();
+#else
+	return dw3720_hw_reset();
+#endif
+}
+
+static void receptec_radio_set_slow_rate(void)
+{
+#if defined(CONFIG_BOARD_RECEPTEC_QORVO)
+	dw3110_port_spi()->setslowrate();
+#else
+	dw3720_setslowrate();
+#endif
 }
 
 static int initialize_qorvo_driver(void)
@@ -109,19 +158,25 @@ static int initialize_qorvo_driver(void)
 	uint32_t device_id;
 	int ret;
 
-	ret = dw3720_spi_init();
+	ret = receptec_radio_port_init();
 	if (ret < 0) {
 		return ret;
 	}
-	dw3720_setslowrate();
-	ret = dw3720_hw_reset();
+	receptec_radio_set_slow_rate();
+	ret = receptec_radio_port_reset();
 	if (ret < 0) {
 		return ret;
 	}
 	k_msleep(2);
+	probe_interface.spi = (void *)
+#if defined(CONFIG_BOARD_RECEPTEC_QORVO)
+		dw3110_port_spi();
+#else
+		&dw3720_spi_functions;
+#endif
 
 	if (dwt_probe(&probe_interface) != DWT_SUCCESS) {
-		printk("QM33120W: Qorvo driver probe failed\n");
+		printk("%s: Qorvo driver probe failed\n", RECEPTEC_RADIO_NAME);
 		return -ENODEV;
 	}
 	for (poll = 0U; poll < 1000U; ++poll) {
@@ -131,25 +186,27 @@ static int initialize_qorvo_driver(void)
 		k_busy_wait(10U);
 	}
 	if (poll == 1000U) {
-		printk("QM33120W: IDLE_RC timeout\n");
+		printk("%s: IDLE_RC timeout\n", RECEPTEC_RADIO_NAME);
 		return -ETIMEDOUT;
 	}
 	if (dwt_initialise(DWT_READ_OTP_ALL) != DWT_SUCCESS) {
-		printk("QM33120W: OTP/calibration initialization failed\n");
+		printk("%s: OTP/calibration initialization failed\n", RECEPTEC_RADIO_NAME);
 		return -EIO;
 	}
 
 	device_id = dwt_readdevid();
-	printk("QM33120W: driver=%s device-id=0x%08X part-id=0x%08X\n",
+	printk("%s: driver=%s device-id=0x%08X part-id=0x%08X\n",
+	       RECEPTEC_RADIO_NAME,
 	       dwt_version_string(), device_id, dwt_getpartid());
-	if (device_id != DW3720_DEV_ID_QM33120W ||
+	if (device_id != RECEPTEC_RADIO_DEVICE_ID ||
 	    dwt_check_dev_id() != DWT_SUCCESS) {
 		return -ENODEV;
 	}
 	if (dwt_configure(&radio_config) != DWT_SUCCESS) {
-		printk("QM33120W: PHY configuration failed\n");
+		printk("%s: PHY configuration failed\n", RECEPTEC_RADIO_NAME);
 		return -EIO;
 	}
+#if !defined(CONFIG_BOARD_RECEPTEC_QORVO)
 	/*
 	 * Hand QM33120W GPIO5 to the receive front-end. It powers up as a plain
 	 * high-impedance GPIO; on this carrier GPIO5 feeds the QM14068 VCTRL
@@ -166,18 +223,20 @@ static int initialize_qorvo_driver(void)
 			       "enabled, GPIO5=PDoA_SW1" : "NOT enabled",
 		       gpio_mode);
 	}
+#endif
 	dwt_configuretxrf(&tx_config);
 	dwt_settxantennadelay(UWB_TX_ANTENNA_DELAY);
 	dwt_setrxantennadelay(UWB_RX_ANTENNA_DELAY);
 	dwt_setinterrupt(UWB_RADIO_EVENT_MASK, 0U, DWT_ENABLE_INT_ONLY);
-	ret = dw3720_irq_enable(false);
+	ret = receptec_radio_irq_enable(false);
 	if (ret < 0) {
 		return ret;
 	}
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 
-	printk("QM33120W PHY ready: Ch9 6.8M PRF64 preamble=128 code=9 STS=off\n");
+	printk("%s PHY ready: Ch9 6.8M PRF64 preamble=128 code=9 STS=off\n",
+	       RECEPTEC_RADIO_NAME);
 	return 0;
 }
 
@@ -434,7 +493,7 @@ static int await_matching_ack(
 		if (remaining_ms <= 0) {
 			return -ETIMEDOUT;
 		}
-		ret = dw3720_wait_event(K_MSEC(remaining_ms));
+		ret = receptec_radio_wait_event(K_MSEC(remaining_ms));
 		status = dwt_readsysstatuslo();
 		if ((status & DWT_INT_RXFCG_BIT_MASK) != 0U) {
 			clear_radio_events(DWT_INT_RXFCG_BIT_MASK);
@@ -500,20 +559,20 @@ int receptec_uwb_radio_send_sync(uint8_t peer_slot)
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 	dwt_setrxaftertxdelay(0U);
 	dwt_setrxtimeout(us_to_rx_timeout(UWB_RESPONSE_TIMEOUT_US));
-	ret = dw3720_irq_enable(true);
+	ret = receptec_radio_irq_enable(true);
 	if (ret < 0) {
 		goto unlock;
 	}
 	if (dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED) !=
 	    DWT_SUCCESS) {
-		(void)dw3720_irq_enable(false);
+		(void)receptec_radio_irq_enable(false);
 		ret = -EIO;
 		goto unlock;
 	}
 	status = await_matching_ack(peer_eui64, sequence);
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
-	(void)dw3720_irq_enable(false);
+	(void)receptec_radio_irq_enable(false);
 	if (status == 0) {
 		printk("SYNC/ACK OK: seq=%u peer=%u FCS=valid address=valid\n",
 		       sequence, peer_slot);
@@ -691,7 +750,7 @@ static int poll_attempt(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 			status = -ETIMEDOUT;
 			break;
 		}
-		(void)dw3720_wait_event(K_MSEC(remaining_ms));
+		(void)receptec_radio_wait_event(K_MSEC(remaining_ms));
 		radio_status = dwt_readsysstatuslo();
 		if ((radio_status & DWT_INT_RXFCG_BIT_MASK) != 0U) {
 			status = poll_check_data(peer_eui64, slot, sequence, stats);
@@ -886,7 +945,7 @@ static void ut_attempt(uint32_t target_dx, uint32_t epoch_dx, struct ut_rx *rx)
 			rx->status = -ETIMEDOUT;
 			break;
 		}
-		(void)dw3720_wait_event(K_MSEC(remaining_ms));
+		(void)receptec_radio_wait_event(K_MSEC(remaining_ms));
 		radio_status = dwt_readsysstatuslo();
 		if ((radio_status & DWT_INT_RXFCG_BIT_MASK) != 0U) {
 			uint8_t ranging;
@@ -1313,7 +1372,7 @@ static void run_poll(uint32_t period_us)
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
-	(void)dw3720_irq_enable(true);
+	(void)receptec_radio_irq_enable(true);
 	epoch_dx = dwt_readsystimestamphi32() + us_to_dx_time(UWB_POLL_SETUP_US);
 	poll_status.started_ms = k_uptime_get();
 	k_mutex_unlock(&uwb_peer_mutex);
@@ -1380,7 +1439,7 @@ static void run_poll(uint32_t period_us)
 	}
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
-	(void)dw3720_irq_enable(false);
+	(void)receptec_radio_irq_enable(false);
 	poll_status.stopped_ms = k_uptime_get();
 	poll_running = false;
 	k_mutex_unlock(&uwb_peer_mutex);
@@ -1508,6 +1567,8 @@ int receptec_uwb_radio_set_lna(bool enable)
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 	if (!radio_ready) {
 		ret = -EAGAIN;
+	} else if (IS_ENABLED(CONFIG_BOARD_RECEPTEC_QORVO)) {
+		ret = -ENOTSUP;
 	} else {
 		dwt_setlnapamode(enable ? DWT_LNA_ENABLE : 0);
 	}

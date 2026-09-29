@@ -124,7 +124,7 @@ if [ "$build_receptec" = true ]; then
 	receptec_log="$receptec_build/build.log"
 	echo "Building the real RECEPTEC image (receptec/nrf52840) -> $receptec_build"
 	west build -p auto -b receptec/nrf52840 -d "$receptec_build" \
-		"$app_dir/firmware/receptec" >"$receptec_log" 2>&1 &
+		"$app_dir" >"$receptec_log" 2>&1 &
 	receptec_pid=$!
 fi
 

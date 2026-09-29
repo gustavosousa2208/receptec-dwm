@@ -1,28 +1,33 @@
 # receptec — RECEPTEC firmware and COLETEC test bench
 
-This repository holds the firmware of the RECEPTEC (a real engineering-sample
-board, Murata Type 2AB, nRF52840 + QM33120W, in `firmware/receptec`) and the
-DWM3001C fake-COLETEC responder images used to test it on the Atletec EPTS UWB
-bench. Production COLETEC firmware remains separate in `nrf52-bringup-fw`.
+This repository holds one RECEPTEC application for two boards: the real
+engineering-sample Murata Type2AB (nRF52840 + QM33120W) and the DWM3001C-based
+RECEPTEC-Qorvo (nRF52833 + DW3110). Both builds share the source under
+`src/receptec/`, shell and persistent peer registry; board configuration selects
+the radio transport. The repository also contains DWM3001C fake-COLETEC
+responder images for the Atletec EPTS UWB bench. Production COLETEC firmware
+remains separate in
+`nrf52-bringup-fw`.
 
 ## Bench topology
 
 | Bench name | Hardware | Protocol role | Firmware source |
 |---|---|---|---|
-| RECEPTEC | Production receiver, nRF52840 + QM33120W | Manual SYNC initiator (bring-up stage) | `firmware/receptec` |
+| RECEPTEC | Production receiver, nRF52840 + QM33120W | Shared RECEPTEC application | This repository, target `receptec/nrf52840` |
+| RECEPTEC-Qorvo | DWM3001C, nRF52833 + DW3110 | Same RECEPTEC application | This repository, target `receptec_qorvo/nrf52833` |
 | Fake COLETEC-0 | DWM3001C, nRF52833 + DW3110 | Surrogate responder (on-air identity COLETEC-0) | This repository, target `fake_coletec_0/nrf52833` |
 | Fake COLETEC-1 | DWM3001C, nRF52833 + DW3110 | Surrogate responder (on-air identity COLETEC-1) | This repository, target `fake_coletec_1/nrf52833` |
 | COLETEC | Production tag, nRF52840 + QM33120W | Production responder | `nrf52-bringup-fw` |
 
-The RECEPTEC application has its own `receptec/nrf52840` board target, board
-configuration, and `receptec.overlay` for the Type2AB carrier. It assigns the
-UARTE1 Pi UART pins and builds the UWB frame codec and Qorvo DW3720 radio driver
-for its QM33120W.
-A manual `uwb sync 0|1` command sends one SYNC and waits for a matching ACK;
+Both receiver targets build the shared application from the repository root.
+The Type2AB overlay assigns its Pi UART pins and the DW3720 SPI/reset/IRQ/wake
+signals. The Qorvo overlay selects the DW3110 SPI/reset/IRQ port. A manual
+`uwb sync 0|1` command sends one SYNC and waits for a matching ACK;
 both fake COLETEC identities have passed on the bench. Periodic DATA_REQ polling
 (`uwb poll`, see "Operate the bench") is implemented. Pi UART export and full
 contract qualification remain future work.
-Neither DWM board may be flashed as RECEPTEC.
+Use only `receptec_qorvo/nrf52833` for the RECEPTEC-Qorvo hardware; the two
+`fake_coletec_*` targets remain COLETEC responders.
 
 The two surrogate images have distinct compiled identities:
 
@@ -32,8 +37,8 @@ The two surrogate images have distinct compiled identities:
 | `fake_coletec_1/nrf52833` (fake-COLETEC-1) | `31:5D:02:D5:15:8C:FA:41` | `fake-coletec-1` | `760216737` |
 | `receptec/nrf52840` (real RECEPTEC, Murata Type 2AB) | n/a | `receptec` | `802008564` |
 
-Every DWM3001C on the bench is a **fake COLETEC**; the real RECEPTEC is the Type 2AB.
-The nicknames come from `lstty` (see the workspace instructions). The serial
+The fake images have distinct compiled identities. The nicknames come from
+`lstty` (see the workspace instructions). The serial
 numbers above are a record of this bench, not defaults: the flash script takes
 them from `lstty`, an environment variable or an option.
 
@@ -43,6 +48,23 @@ The RECEPTEC board target uses the nRF52840 SoC with its own board files; the
 application overlay assigns UART P0.05/P0.06 and QM33120W SPIM3/CS/reset/IRQ/wake
 pins. See [`docs/receptec-bringup.md`](docs/receptec-bringup.md) for hardware
 scope and porting status.
+
+The RECEPTEC-Qorvo target reuses the DWM3001C/DW3110 radio pin mapping from the
+fake boards. Its overlay assigns the Raspberry Pi UART on P0.15/P0.19 and the
+Pi SPI master interface to SPIS0 (MISO P0.09, MOSI P0.28, SCK P0.31, CS P0.30).
+Carrier-only LEDs, button and accelerometer nodes are disabled; the board's
+external blue LED on P1.08 is the role indicator. The Zephyr SPIS peripheral is
+described, but the Raspberry Pi application protocol is not implemented. Its
+peer registry, NVS storage and operator shell are shared with Type2AB.
+Build with:
+
+```sh
+west build -b receptec_qorvo/nrf52833 \
+  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec/receptec-qorvo" .
+```
+
+The shared Zephyr workspace keeps separate build outputs per target while both
+RECEPTEC targets use this repository root as their Zephyr application source.
 
 ## Branch model
 
@@ -114,15 +136,14 @@ cmake --build build-tests
 ctest --test-dir build-tests --output-on-failure
 ```
 
-Run RECEPTEC codec tests and build its provisional baseline separately:
+Build either receiver target from the repository root; each gets its own
+build directory but both compile the same RECEPTEC application:
 
 ```sh
-cmake -S firmware/receptec/tests -B build-receptec-tests
-cmake --build build-receptec-tests
-ctest --test-dir build-receptec-tests --output-on-failure
-west build -p always -b receptec/nrf52840 \
-  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec/receptec-board" \
-  firmware/receptec
+west build -b receptec/nrf52840 \
+  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec/receptec-type2ab" .
+west build -b receptec_qorvo/nrf52833 \
+  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec/receptec-qorvo" .
 ```
 
 Generated build directories copied from Dell contain the former absolute
@@ -241,10 +262,12 @@ ID and UWB frame-filter address.
 | `src/coletec_sync.c` | COLETEC synchronization, guards, and discovery |
 | `src/dw3110_port.c` | SPI, GPIO, interrupt, and timing bridge |
 | `src/uwb_shell.c` | Operator shell |
+| `src/receptec/` | Shared RECEPTEC application and board-specific radio adapters |
+| `src/qorvo/` | Compiled Qorvo DW3XXX driver sources, pinned by vendor checksums |
 | `tests/` | Host tests and bounded hardware fault configurations |
 | `scripts/` | Dual build, flash, RTT, and analysis tooling |
 | `vendor/qorvo/` | Pinned Qorvo DW3XXX driver and provenance |
-| `firmware/receptec/` | RECEPTEC Type2AB baseline, UWB codec, QM33120W driver, and manual SYNC initiator |
+| `vendor/qorvo/` | Qorvo headers, license and provenance for `src/qorvo/` |
 
 Qualification evidence and unfinished test results remain outside repository
 tracking until the validation campaign is complete.

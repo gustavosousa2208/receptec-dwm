@@ -1,0 +1,15 @@
+identifier: receptec_qorvo/nrf52833
+name: RECEPTEC-Qorvo UWB receiver
+type: mcu
+arch: arm
+ram: 128
+flash: 512
+toolchain:
+  - zephyr
+  - gnuarmemb
+supported:
+  - adc
+  - gpio
+  - ble
+  - watchdog
+vendor: atletec
