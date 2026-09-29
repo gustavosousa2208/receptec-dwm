@@ -40,6 +40,7 @@ if(RECEPTEC_APP)
     target_compile_definitions(app PRIVATE USE_DRV_DW3000)
     target_sources(app PRIVATE
         src/receptec/main.c
+        src/receptec/led_shell.c
         src/receptec/uwb_protocol.c
         src/receptec/uwb_peer_registry.c
         src/receptec/uwb_peer_storage.c

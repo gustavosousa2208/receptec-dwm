@@ -92,6 +92,11 @@ and sequence within a fixed 100 ms timeout. Unrelated/malformed frames do not
 extend the timeout. Periodic DATA_REQ polling and retries are implemented;
 timing and full contract qualification remain open.
 
+The shell also provides `led list`, `led set <on|off> <blue|green|all> [...]`,
+`led auto`, and `led selftest`. The self-test runs for three seconds and uses
+the blue/green indicators present on each receiver carrier. The schematics and
+current overlays do not define a red LED channel.
+
 Host checks for the bench and RECEPTEC helpers are under `tests/`; run them with:
 
 ```sh

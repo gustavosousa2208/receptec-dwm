@@ -4,13 +4,15 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/kernel.h>
+#include <zephyr/shell/shell.h>
 #include <zephyr/sys/printk.h>
 
 #include <stdint.h>
 
 #include "uwb_radio.h"
+#include "led_shell.h"
 
-/* Blue is common to both carriers; only the Type2AB carrier has a green LED. */
+/* Blue is the role indicator on both carriers; green is available to the shell. */
 static const struct gpio_dt_spec led_blue =
 	GPIO_DT_SPEC_GET(DT_ALIAS(led_blue), gpios);
 
@@ -21,7 +23,9 @@ static const struct gpio_dt_spec led_green =
 static void heartbeat_expired(struct k_timer *timer)
 {
 	ARG_UNUSED(timer);
-	(void)gpio_pin_toggle_dt(&led_green);
+	if (!receptec_led_shell_green_overridden()) {
+		(void)gpio_pin_toggle_dt(&led_green);
+	}
 }
 
 static K_TIMER_DEFINE(heartbeat_timer, heartbeat_expired, NULL);
@@ -75,6 +79,10 @@ int main(void)
 #else
 	printk("UWB radio: disabled by configuration\n");
 #endif
+	int led_ret = receptec_led_shell_init();
+	if (led_ret < 0) {
+		printk("LED shell initialization failed: %d\n", led_ret);
+	}
 	indicators_start(heartbeat);
 	return 0;
 }

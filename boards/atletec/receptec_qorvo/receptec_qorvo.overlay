@@ -6,6 +6,7 @@
 	aliases {
 		role-led = &external_blue_led;
 		led-blue = &external_blue_led;
+		led-green = &external_green_led;
 	};
 };
 

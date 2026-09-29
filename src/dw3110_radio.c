@@ -419,7 +419,7 @@ static int preload_coletec_data(void)
 		.payload_length = sizeof(payload),
 	};
 
-	initialize_diagnostic_payload(payload, 1U);
+	initialize_diagnostic_payload(payload, 1U); // inicia 1 aqui e permanece pra sempre
 	memcpy(data.destination, receptec_eui, sizeof(receptec_eui));
 	memcpy(data.source, coletec_eui, sizeof(coletec_eui));
 	return load_protocol_frame(&data);
@@ -1946,7 +1946,7 @@ static int read_coletec_request(uint32_t radio_status,
 	return 0;
 }
 
-static void handle_coletec_request(
+static void handle_coletec_request( // aqui que poderia possivelmente incrementar o contador, mas não tem nada nesse sentido presente
 	struct coletec_radio_runtime *runtime,
 	const struct receptec_frame *request, uint64_t request_rx_timestamp,
 	uint16_t dt_sampling_us)
