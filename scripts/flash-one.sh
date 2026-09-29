@@ -19,12 +19,15 @@ if [ -n "$build_root" ]; then
 	coletec_0_build="$build_root/fake-coletec-0"
 	coletec_1_build="$build_root/fake-coletec-1"
 	default_receptec_build="$build_root/receptec-board"
+	default_receptec_qorvo_build="$build_root/receptec-qorvo"
 else
 	coletec_0_build="$app_dir/build-fake-coletec-0"
 	coletec_1_build="$app_dir/build-fake-coletec-1"
 	default_receptec_build="$app_dir/build-receptec"
+	default_receptec_qorvo_build="$app_dir/build-receptec-qorvo"
 fi
 receptec_build=${RECEPTEC_BUILD_DIR:-$default_receptec_build}
+receptec_qorvo_build=${RECEPTEC_QORVO_BUILD_DIR:-$default_receptec_qorvo_build}
 
 probe_opt=
 assume_yes=false
@@ -38,12 +41,12 @@ usage()
 	cat <<'EOF'
 Usage: scripts/flash-one.sh ROLE [options]
 
-ROLE: fake-coletec-0 | fake-coletec-1 | receptec
+ROLE: fake-coletec-0 | fake-coletec-1 | receptec | receptec-qorvo
 
 Flash one board. Probe serial comes from --probe, then JLINK_SN_FAKE_COLETEC_0 /
 JLINK_SN_FAKE_COLETEC_1 / JLINK_SN_RECEPTEC, then the lstty nickname matching
 the role. The probe's registered target device must match the role (nRF52833
-for the fakes, nRF52840 for RECEPTEC) when lstty knows it.
+for the fakes and RECEPTEC-Qorvo, nRF52840 for Type2AB RECEPTEC) when lstty knows it.
 
 Options:
   --probe SERIAL   J-Link serial for this board
@@ -59,9 +62,9 @@ EOF
 
 [ "$#" -ge 1 ] || { usage >&2; exit 2; }
 case "$1" in
-fake-coletec-0|fake-coletec-1|receptec) role=$1; shift ;;
+fake-coletec-0|fake-coletec-1|receptec|receptec-qorvo) role=$1; shift ;;
 -h|--help) usage; exit 0 ;;
-*) echo "Unknown role: $1 (want fake-coletec-0, fake-coletec-1 or receptec)" >&2; exit 2 ;;
+*) echo "Unknown role: $1 (want fake-coletec-0, fake-coletec-1, receptec or receptec-qorvo)" >&2; exit 2 ;;
 esac
 
 while [ "$#" -gt 0 ]; do
@@ -88,6 +91,8 @@ fake-coletec-1) build_dir=$coletec_1_build; nick=fake-coletec-1;
 	env_sn=${JLINK_SN_FAKE_COLETEC_1:-}; want=nRF52833_xxAA ;;
 receptec) build_dir=$receptec_build; nick=receptec;
 	env_sn=${JLINK_SN_RECEPTEC:-}; want=nRF52840_xxAA ;;
+receptec-qorvo) build_dir=$receptec_qorvo_build; nick=receptec;
+	env_sn=${JLINK_SN_RECEPTEC:-}; want=nRF52833_xxAA ;;
 esac
 
 have_lstty=false
@@ -139,6 +144,15 @@ if [ "$role" = receptec ]; then
 	grep -qx "source_commit=$source_commit" "$metadata" &&
 	grep -qx "contracts_commit=$contracts_commit" "$metadata" &&
 	grep -qx 'CONFIG_SOC_NRF52840=y' "$config" || {
+		echo "$role image metadata or configuration is stale." >&2
+		exit 1
+	}
+elif [ "$role" = receptec-qorvo ]; then
+	grep -qx "role=RECEPTEC-QORVO" "$metadata" &&
+	grep -qx "source_commit=$source_commit" "$metadata" &&
+	grep -qx "contracts_commit=$contracts_commit" "$metadata" &&
+	grep -qx 'CONFIG_BOARD_RECEPTEC_QORVO=y' "$config" &&
+	grep -qx 'CONFIG_SOC_NRF52833=y' "$config" || {
 		echo "$role image metadata or configuration is stale." >&2
 		exit 1
 	}

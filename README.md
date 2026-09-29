@@ -124,6 +124,19 @@ build-fake-coletec-0/zephyr/zephyr.hex
 build-fake-coletec-1/zephyr/zephyr.hex
 ```
 
+Build just one target with `scripts/build-one.sh`:
+
+```sh
+./scripts/build-one.sh receptec-qorvo
+./scripts/build-one.sh receptec
+./scripts/build-one.sh fake-coletec-0
+```
+
+The supported targets are `fake-coletec-0`, `fake-coletec-1`, `receptec`
+(Type2AB, nRF52840), and `receptec-qorvo` (nRF52833). For example, the
+Qorvo image is written to `build/atletec/receptec/receptec-qorvo` in the
+shared Zephyr workspace.
+
 The build script verifies the compiled identity of each image and records the
 source commit, contracts pin, and optional test configuration in each build
 directory.
@@ -202,8 +215,9 @@ found by `lstty` nickname (`fake-coletec-0`, `fake-coletec-1`, `receptec`).
 
 | Script | Use |
 |---|---|
-| `scripts/build-both.sh [--test-conf tests/throughput-<P>ms.conf] [--no-receptec]` | Build both fake COLETECs and the real RECEPTEC into the west workspace |
-| `scripts/flash-one.sh <fake-coletec-0\|fake-coletec-1\|receptec>` | Flash one board; no prompt when stdin is not a tty |
+| `scripts/build-one.sh <target> [--test-conf tests/SCENARIO.conf]` | Build one fake COLETEC, Type2AB RECEPTEC, or RECEPTEC-Qorvo |
+| `scripts/build-both.sh [--test-conf tests/throughput-<P>ms.conf] [--no-receptec]` | Build both fake COLETECs and the Type2AB RECEPTEC into the west workspace |
+| `scripts/flash-one.sh <fake-coletec-0\|fake-coletec-1\|receptec\|receptec-qorvo>` | Flash one board; no prompt when stdin is not a tty |
 | `scripts/flash-both.sh` | Flash the two fakes and the RECEPTEC; `--dry-run` runs every check only |
 | `scripts/sweep.sh [--poll-ms 200,100,50] [--duration S]` | Per period: build the fakes with the matching `.conf`, flash, run the poll and print the counters |
 | `scripts/sync-sweep.py [--poll-ms P --duration S]` | Reset the boards, start the fakes, then run manual SYNCs or the poll |
