@@ -10,6 +10,8 @@
 
 #include "uwb_radio.h"
 
+#define UWB_DEFAULT_T_SAMPLING_MS 1000U
+
 static int parse_slot(const struct shell *shell, const char *text,
 		      uint8_t *slot)
 {
@@ -98,7 +100,7 @@ static int cmd_uwb_status(const struct shell *shell, size_t argc, char **argv)
 	return 0;
 }
 
-static int cmd_uwb_sync(const struct shell *shell, size_t argc, char **argv)
+static int cmd_uwb_sync_once(const struct shell *shell, size_t argc, char **argv)
 {
 	uint8_t slot;
 	int ret;
@@ -106,7 +108,7 @@ static int cmd_uwb_sync(const struct shell *shell, size_t argc, char **argv)
 	ARG_UNUSED(argc);
 	ret = parse_slot(shell, argv[1], &slot);
 	if (ret < 0) {
-		shell_error(shell, "usage: uwb sync <slot>");
+		shell_error(shell, "usage: uwb sync once <slot>");
 		return ret;
 	}
 
@@ -117,6 +119,78 @@ static int cmd_uwb_sync(const struct shell *shell, size_t argc, char **argv)
 		return ret;
 	}
 	shell_print(shell, "SYNC/ACK passed with slot %u", slot);
+	return 0;
+}
+
+static int cmd_uwb_sync_start(const struct shell *shell, size_t argc, char **argv)
+{
+	uint8_t slot;
+	unsigned long period_ms = UWB_DEFAULT_T_SAMPLING_MS;
+	char *end;
+	int ret;
+
+	if (argc < 2U || argc > 3U || parse_slot(shell, argv[1], &slot) < 0) {
+		shell_error(shell, "usage: uwb sync start <slot> [period_ms 1..60000]");
+		return -EINVAL;
+	}
+	if (argc == 3U) {
+		errno = 0;
+		period_ms = strtoul(argv[2], &end, 10);
+		if (errno != 0 || end == argv[2] || *end != '\0' ||
+		    period_ms == 0UL || period_ms > 60000UL) {
+			shell_error(shell, "period must be 1..60000 ms");
+			return -EINVAL;
+		}
+	}
+	ret = receptec_uwb_sync_start(slot, (uint32_t)period_ms);
+	if (ret == -EALREADY) {
+		shell_print(shell, "periodic SYNC already active for slot %u", slot);
+		return 0;
+	}
+	if (ret < 0) {
+		shell_error(shell, "periodic SYNC start failed: %d", ret);
+		return ret;
+	}
+	shell_print(shell, "periodic SYNC started for slot %u every %lu ms; use `uwb sync stop`",
+		    slot, period_ms);
+	return 0;
+}
+
+static int cmd_uwb_sync(const struct shell *shell, size_t argc, char **argv)
+{
+	uint8_t slot;
+	int ret;
+
+	if (argc != 2U || parse_slot(shell, argv[1], &slot) < 0) {
+		shell_error(shell, "usage: uwb sync <slot> (or sync start|stop|once)");
+		return -EINVAL;
+	}
+	ret = receptec_uwb_sync_start(slot, UWB_DEFAULT_T_SAMPLING_MS);
+	if (ret == -EALREADY) {
+		shell_print(shell, "periodic SYNC already active for slot %u", slot);
+		return 0;
+	}
+	if (ret < 0) {
+		shell_error(shell, "periodic SYNC start failed: %d", ret);
+		return ret;
+	}
+	shell_print(shell, "periodic SYNC started for slot %u every %u ms; use `uwb sync stop`",
+		    slot, UWB_DEFAULT_T_SAMPLING_MS);
+	return 0;
+}
+
+static int cmd_uwb_sync_stop(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	ret = receptec_uwb_sync_stop();
+	if (ret < 0) {
+		shell_error(shell, "periodic SYNC stop failed: %d", ret);
+		return ret;
+	}
+	shell_print(shell, "periodic SYNC stopped");
 	return 0;
 }
 
@@ -241,9 +315,16 @@ static int cmd_uwb_poll_stats(const struct shell *shell, size_t argc, char **arg
 	ARG_UNUSED(argv);
 	receptec_uwb_poll_get(&status);
 	elapsed_ms = status.started_ms == 0 ? 0 : status.stopped_ms - status.started_ms;
-	shell_print(shell, "poll running=%u period=%u ms elapsed=%u ms cycles=%u overruns=%u",
-		    status.running, status.period_us / 1000U, (uint32_t)elapsed_ms,
-		    status.cycles, status.overruns);
+	if (status.sync_mode) {
+		shell_print(shell, "poll running=%u mode=SYNC slot=%u period=%u ms elapsed=%u ms "
+			    "cycles=%u overruns=%u", status.running, status.peer_slot,
+			    status.period_us / 1000U, (uint32_t)elapsed_ms,
+			    status.cycles, status.overruns);
+	} else {
+		shell_print(shell, "poll running=%u mode=DATA_REQ period=%u ms elapsed=%u ms "
+			    "cycles=%u overruns=%u", status.running, status.period_us / 1000U,
+			    (uint32_t)elapsed_ms, status.cycles, status.overruns);
+	}
 	for (slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
 		const struct receptec_uwb_poll_peer_stats *p = &status.peer[slot];
 		uint32_t permille = p->transactions == 0U ? 0U :
@@ -324,6 +405,15 @@ static int cmd_uwb_lna(const struct shell *shell, size_t argc, char **argv)
 	shell_print(shell, "external LNA %s", argv[1]);
 	return 0;
 }
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+	sub_sync,
+	SHELL_CMD_ARG(start, NULL, "Start periodic SYNC: start <slot> [period_ms]",
+		      cmd_uwb_sync_start, 2, 1),
+	SHELL_CMD(stop, NULL, "Stop periodic SYNC", cmd_uwb_sync_stop),
+	SHELL_CMD_ARG(once, NULL, "Send one SYNC and validate ACK: once <slot>",
+		      cmd_uwb_sync_once, 2, 0),
+	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_poll,
@@ -445,8 +535,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_uwb,
 	SHELL_CMD(status, NULL, "Show RECEPTEC radio state", cmd_uwb_status),
-	SHELL_CMD_ARG(sync, NULL, "Send one SYNC and validate ACK: sync <slot>",
-		     cmd_uwb_sync, 2, 0),
+	SHELL_CMD_ARG(sync, &sub_sync, "Periodic SYNC; `sync <slot>` uses 1000 ms",
+		     cmd_uwb_sync, 2, 1),
 	SHELL_CMD(peer, &sub_peer, "Manage registered COLETEC peers", NULL),
 	SHELL_CMD(poll, &sub_poll, "Periodic DATA_REQ polling", NULL),
 	SHELL_CMD(test, &sub_test, "Runtime UWB tests against the COLETEC", NULL),

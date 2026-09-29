@@ -185,11 +185,16 @@ static int cmd_data_req(const struct shell *shell, size_t argc, char **argv)
 
 static int cmd_coletec_start(const struct shell *shell, size_t argc, char **argv)
 {
+	int ret;
+
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
-
-	return report_submission(shell, dw3110_radio_enable_coletec(),
-				 "COLETEC SYNC receiver start");
+	ret = dw3110_radio_enable_coletec();
+	if (ret == -EALREADY) {
+		shell_print(shell, "COLETEC SYNC receiver already started; listening continues");
+		return 0;
+	}
+	return report_submission(shell, ret, "COLETEC SYNC receiver start");
 }
 
 static int run_peer_test(const struct shell *shell, const char *slot_text,

@@ -75,7 +75,10 @@ nRF52833/DW3110 pin mapping; only the application, shell, protocol and peer
 storage are shared.
 
 `CONFIG_RECEPTEC_UWB_RADIO` enables the radio and shell commands `uwb status`,
-`uwb sync <slot>`, `uwb peer list`, `uwb peer register <slot> <EUI-64>`, and
+`uwb sync <slot>` (periodic SYNC, default 1000 ms),
+`uwb sync start <slot> [period_ms]`, `uwb sync stop`,
+`uwb sync once <slot>` (one-shot diagnostic),
+`uwb peer list`, `uwb peer register <slot> <EUI-64>`, and
 `uwb peer unregister <slot>`. All four slots load from NVS at boot; unset slots
 are empty. Registration and removal update NVS. EUI input/output uses
 colon-separated bytes in on-air order. Up to 256 unique peer EUIs per boot

@@ -226,18 +226,23 @@ Start both surrogate responders first, then traffic on the real RECEPTEC:
 
 ```text
 fake-COLETEC-0 / -1 shell:   uwb coletec start
-RECEPTEC shell:              uwb poll start [period_ms]   (default 1000)
+RECEPTEC shell:              uwb sync <slot>              (periodic, default 1000 ms)
+                             uwb sync start <slot> [period_ms]
+                             uwb sync stop
+                             uwb sync once <slot>          (single diagnostic)
                              uwb poll stats
-                             uwb poll stop
+                             uwb poll start|stop           (continuous DATA_REQ)
 ```
 
 A responder listens continuously for 10 s after reset or `start`, so start polling
 within that window. `uwb poll` sends DATA_REQ to every registered peer once per
 period (slot N at N x 20 ms, up to 3 attempts with backoff, DT_sampling per
-attempt). **The period must equal the fakes' `T_sampling`**, which is a build
+attempt). `uwb sync` sends one SYNC each period to keep a peer synchronized; if
+all three attempts fail, the next period still runs. **The period must equal the fakes' `T_sampling`**, which is a build
 setting: build them with the matching `tests/throughput-<P>ms.conf` (a mismatch
-gave 20% success at 200 ms against 1000 ms fakes). Manual `uwb sync <slot>` is
-refused while polling. Below 100 ms only two slots fit in a period.
+gave 20% success at 200 ms against 1000 ms fakes). Periodic SYNC and DATA_REQ
+polling share one radio worker, so only one can run at a time. Below 100 ms only
+two peer slots fit in a period.
 
 Reference bench result, 2026-09-24, RECEPTEC and two fake COLETECs, 105-byte DATA,
 30 to 60 s per period: 200 ms, 100 ms and 50 ms all completed every transaction on

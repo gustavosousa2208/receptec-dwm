@@ -37,6 +37,8 @@ struct receptec_uwb_poll_peer_stats {
 
 struct receptec_uwb_poll_status {
 	bool running;
+	bool sync_mode;
+	uint8_t peer_slot;
 	uint32_t period_us;
 	uint32_t cycles;
 	uint32_t overruns;
@@ -47,6 +49,9 @@ struct receptec_uwb_poll_status {
 
 /* Poll every registered peer with DATA_REQ once per period_ms. */
 int receptec_uwb_poll_start(uint32_t period_ms);
+/* Send one SYNC per period to a single registered peer; retry in later epochs. */
+int receptec_uwb_sync_start(uint8_t peer_slot, uint32_t period_ms);
+int receptec_uwb_sync_stop(void);
 int receptec_uwb_poll_stop(void);
 void receptec_uwb_poll_get(struct receptec_uwb_poll_status *out);
 /* Print every received DATA payload as one `DATA slot=..` line. */
