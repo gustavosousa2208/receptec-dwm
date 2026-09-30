@@ -18,9 +18,9 @@ if [ -z "$build_root" ] && [ -n "${ATLETEC_ZEPHYR_WORKSPACE:-}" ]; then
 	build_root="$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec"
 fi
 if [ -n "$build_root" ]; then
-	coletec_0_build="$build_root/fake-coletec-0"
-	coletec_1_build="$build_root/fake-coletec-1"
-	default_receptec_build="$build_root/receptec-board"
+	coletec_0_build="$build_root/build-fake-coletec-0"
+	coletec_1_build="$build_root/build-fake-coletec-1"
+	default_receptec_build="$build_root/build-receptec"
 else
 	coletec_0_build="$app_dir/build-fake-coletec-0"
 	coletec_1_build="$app_dir/build-fake-coletec-1"
@@ -41,9 +41,9 @@ the same bounded repository-owned fault scenario to both fake COLETECs; the
 RECEPTEC image never takes a test configuration. --no-receptec skips it.
 
 Output goes to $ATLETEC_BUILD_ROOT, else
-$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec (fake-coletec-0, fake-coletec-1,
-receptec-board), else build-*/ in this repository. $RECEPTEC_BUILD_DIR overrides
-only the RECEPTEC directory.
+$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec
+(build-fake-coletec-0, build-fake-coletec-1, build-receptec), else build-*/ in
+this repository. $RECEPTEC_BUILD_DIR overrides only the RECEPTEC directory.
 EOF
 }
 
@@ -98,10 +98,10 @@ build_role()
 	log_file=$4
 
 	if [ -n "$config_file" ]; then
-		west build -p auto -b "$board" -d "$build_dir" "$app_dir" -- \
+		west build -p always -b "$board" -d "$build_dir" "$app_dir" -- \
 			-DEXTRA_CONF_FILE="$config_file" >"$log_file" 2>&1
 	else
-		west build -p auto -b "$board" -d "$build_dir" "$app_dir" \
+		west build -p always -b "$board" -d "$build_dir" "$app_dir" \
 			>"$log_file" 2>&1
 	fi
 }
@@ -123,7 +123,7 @@ if [ "$build_receptec" = true ]; then
 	mkdir -p "$receptec_build"
 	receptec_log="$receptec_build/build.log"
 	echo "Building the real RECEPTEC image (receptec/nrf52840) -> $receptec_build"
-	west build -p auto -b receptec/nrf52840 -d "$receptec_build" \
+	west build -p always -b receptec/nrf52840 -d "$receptec_build" \
 		"$app_dir" >"$receptec_log" 2>&1 &
 	receptec_pid=$!
 fi

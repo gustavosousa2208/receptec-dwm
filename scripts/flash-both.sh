@@ -17,9 +17,9 @@ if [ -z "$build_root" ] && [ -n "${ATLETEC_ZEPHYR_WORKSPACE:-}" ]; then
 	build_root="$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec"
 fi
 if [ -n "$build_root" ]; then
-	coletec_0_build="$build_root/fake-coletec-0"
-	coletec_1_build="$build_root/fake-coletec-1"
-	default_receptec_build="$build_root/receptec-board"
+	coletec_0_build="$build_root/build-fake-coletec-0"
+	coletec_1_build="$build_root/build-fake-coletec-1"
+	default_receptec_build="$build_root/build-receptec"
 else
 	coletec_0_build="$app_dir/build-fake-coletec-0"
 	coletec_1_build="$app_dir/build-fake-coletec-1"

@@ -67,9 +67,14 @@ Before creating or applying a patch, inspect `git -C "$ZEPHYR_BASE" status
 --short`. If the target files already contain unrelated changes, stop and work
 around them or request direction rather than merging them into the patch.
 
-Use fresh build directories under the existing west workspace's
-`build/atletec/receptec/`. Older in-repo build directories retain paths
-from before the Dell move and need reconfiguration before reuse.
+Use one stable build directory per physical board under the existing west
+workspace's `build/atletec/receptec/`: `build-fake-coletec-0`,
+`build-fake-coletec-1`, `build-receptec`, and `build-receptec-qorvo`. The fake
+COLETEC-0 responder and fixed-anchor images share `build-fake-coletec-0`; build
+them sequentially, and let the recorded metadata determine which role is ready
+to flash. Never create task-, branch-, role-, or configuration-specific build
+directories. Older caches need reconfiguration before reuse. Build and flash
+scripts must resolve each physical board to these same paths.
 
 ## Conventions
 

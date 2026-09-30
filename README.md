@@ -60,11 +60,12 @@ Build with:
 
 ```sh
 west build -b receptec_qorvo/nrf52833 \
-  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec/receptec-qorvo" .
+  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec/build-receptec-qorvo" .
 ```
 
-The shared Zephyr workspace keeps separate build outputs per target while both
-RECEPTEC targets use this repository root as their Zephyr application source.
+The shared Zephyr workspace keeps one canonical build directory per physical
+board while both RECEPTEC targets use this repository root as their Zephyr
+application source.
 
 ## Branch model
 
@@ -132,10 +133,11 @@ Build just one target with `scripts/build-one.sh`:
 ./scripts/build-one.sh fake-coletec-0
 ```
 
-The supported targets are `fake-coletec-0`, `fake-coletec-1`, `receptec`
+The supported targets are `fake-coletec-0`, `fake-coletec-1`, `fake-coletec-0-anchor`, `receptec`
 (Type2AB, nRF52840), and `receptec-qorvo` (nRF52833). For example, the
-Qorvo image is written to `build/atletec/receptec/receptec-qorvo` in the
-shared Zephyr workspace.
+Qorvo image is written to `build/atletec/receptec/build-receptec-qorvo` in the
+shared Zephyr workspace. The fake-coletec-0 responder and fixed-anchor images
+share `build-fake-coletec-0` and must be built sequentially.
 
 The build script verifies the compiled identity of each image and records the
 source commit, contracts pin, and optional test configuration in each build
@@ -154,9 +156,9 @@ build directory but both compile the same RECEPTEC application:
 
 ```sh
 west build -b receptec/nrf52840 \
-  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec/receptec-type2ab" .
+  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec/build-receptec" .
 west build -b receptec_qorvo/nrf52833 \
-  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec/receptec-qorvo" .
+  -d "$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec/build-receptec-qorvo" .
 ```
 
 Generated build directories copied from Dell contain the former absolute

@@ -1,5 +1,7 @@
 #!/bin/sh
 # Flash ONE board: a fake COLETEC, fixed fake-board anchor or real RECEPTEC.
+# Each physical board has one canonical build directory; the anchor role shares
+# build-fake-coletec-0 with the fake-coletec-0 responder role.
 # Same safeties as scripts/flash-both.sh (distinct probe, target-device check,
 # image staleness check, dirty-tree refusal); keep the two in sync.
 set -u
@@ -16,14 +18,14 @@ if [ -z "$build_root" ] && [ -n "${ATLETEC_ZEPHYR_WORKSPACE:-}" ]; then
 	build_root="$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec"
 fi
 if [ -n "$build_root" ]; then
-	coletec_0_build="$build_root/fake-coletec-0"
-	coletec_0_anchor_build="$build_root/fake-coletec-0-anchor"
-	coletec_1_build="$build_root/fake-coletec-1"
-	default_receptec_build="$build_root/receptec-board"
-	default_receptec_qorvo_build="$build_root/receptec-qorvo"
+	coletec_0_build="$build_root/build-fake-coletec-0"
+	coletec_0_anchor_build="$build_root/build-fake-coletec-0"
+	coletec_1_build="$build_root/build-fake-coletec-1"
+	default_receptec_build="$build_root/build-receptec"
+	default_receptec_qorvo_build="$build_root/build-receptec-qorvo"
 else
 	coletec_0_build="$app_dir/build-fake-coletec-0"
-	coletec_0_anchor_build="$app_dir/build-fake-coletec-0-anchor"
+	coletec_0_anchor_build="$app_dir/build-fake-coletec-0"
 	coletec_1_build="$app_dir/build-fake-coletec-1"
 	default_receptec_build="$app_dir/build-receptec"
 	default_receptec_qorvo_build="$app_dir/build-receptec-qorvo"
@@ -140,7 +142,7 @@ metadata="$build_dir/atletec-dwm-build.txt"
 config="$build_dir/zephyr/.config"
 
 if [ ! -f "$build_dir/zephyr/zephyr.hex" ] || [ ! -f "$metadata" ] || [ ! -f "$config" ]; then
-	echo "Missing $role build in $build_dir; run scripts/build-both.sh." >&2
+	echo "Missing $role build in $build_dir; run scripts/build-one.sh $role." >&2
 	exit 1
 fi
 if [ "$role" = receptec ]; then

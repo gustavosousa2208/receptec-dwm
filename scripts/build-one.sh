@@ -27,12 +27,13 @@ Usage: scripts/build-one.sh TARGET [--test-conf tests/SCENARIO.conf]
 
 TARGET: fake-coletec-0 | fake-coletec-1 | fake-coletec-0-anchor | receptec | receptec-qorvo
 
-Builds one image. Output goes to $ATLETEC_BUILD_ROOT, else
+Builds one image. Each physical board has one canonical output directory. Output goes to $ATLETEC_BUILD_ROOT, else
 $ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec, else build/ in this
 repository. $RECEPTEC_BUILD_DIR and $RECEPTEC_QORVO_BUILD_DIR override the
 corresponding RECEPTEC output directories. --test-conf applies only to fake
-COLETEC images. fake-coletec-0-anchor builds the RECEPTEC application on the
-fake-coletec-0 board as fixed UWB anchor 1.
+COLETEC images. fake-coletec-0-anchor reconfigures the same
+build-fake-coletec-0 directory used by fake-coletec-0, building the RECEPTEC
+application on that board as fixed UWB anchor 1.
 EOF
 }
 
@@ -78,31 +79,31 @@ fi
 case "$role" in
 	fake-coletec-0)
 		board=fake_coletec_0/nrf52833
-		build_dir="$build_root/fake-coletec-0"
+		build_dir="$build_root/build-fake-coletec-0"
 		identity=0
 		metadata_role=fake-COLETEC
 		;;
 	fake-coletec-0-anchor)
 		board=fake_coletec_0/nrf52833
-		build_dir="$build_root/fake-coletec-0-anchor"
+		build_dir="$build_root/build-fake-coletec-0"
 		identity=1
 		metadata_role=RECEPTEC-Qorvo-anchor-1
 		;;
 	fake-coletec-1)
 		board=fake_coletec_1/nrf52833
-		build_dir="$build_root/fake-coletec-1"
+		build_dir="$build_root/build-fake-coletec-1"
 		identity=1
 		metadata_role=fake-COLETEC
 		;;
 	receptec)
 		board=receptec/nrf52840
-		build_dir=${RECEPTEC_BUILD_DIR:-$build_root/receptec-board}
+		build_dir=${RECEPTEC_BUILD_DIR:-$build_root/build-receptec}
 		identity=
 		metadata_role=RECEPTEC
 		;;
 	receptec-qorvo)
 		board=receptec_qorvo/nrf52833
-		build_dir=${RECEPTEC_QORVO_BUILD_DIR:-$build_root/receptec-qorvo}
+		build_dir=${RECEPTEC_QORVO_BUILD_DIR:-$build_root/build-receptec-qorvo}
 		identity=
 		metadata_role=RECEPTEC-QORVO
 		;;
@@ -113,17 +114,17 @@ log_file="$build_dir/build.log"
 echo "Building $role ($board) -> $build_dir"
 if [ "$test_config" = none ]; then
 	if [ "$role" = fake-coletec-0-anchor ]; then
-		if ! west build -p auto -b "$board" -d "$build_dir" "$app_dir" -- \
+		if ! west build -p always -b "$board" -d "$build_dir" "$app_dir" -- \
 			-DATLETEC_FIXED_ANCHOR=ON >"$log_file" 2>&1; then
 			echo "$role build failed; log: $log_file" >&2
 			exit 1
 		fi
-	elif ! west build -p auto -b "$board" -d "$build_dir" "$app_dir" >"$log_file" 2>&1; then
+	elif ! west build -p always -b "$board" -d "$build_dir" "$app_dir" >"$log_file" 2>&1; then
 		echo "$role build failed; log: $log_file" >&2
 		exit 1
 	fi
 else
-	if ! west build -p auto -b "$board" -d "$build_dir" "$app_dir" -- \
+	if ! west build -p always -b "$board" -d "$build_dir" "$app_dir" -- \
 		-DEXTRA_CONF_FILE="$app_dir/$test_config" >"$log_file" 2>&1; then
 		echo "$role build failed; log: $log_file" >&2
 		exit 1
