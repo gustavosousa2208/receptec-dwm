@@ -53,7 +53,8 @@ the role. The probe's registered target device must match the role (nRF52833
 for the fakes and RECEPTEC-Qorvo, nRF52840 for Type2AB RECEPTEC) when lstty knows it.
 
 Options:
-  --probe SERIAL   J-Link serial for this board
+  --probe SERIAL|NICKNAME
+                   J-Link serial or lstty nickname for this board
   --yes            skip the interactive confirmation (also automatic when
                    stdin is not a tty, e.g. under an agent, or when
                    ATLETEC_NONINTERACTIVE is set)
@@ -115,6 +116,20 @@ if [ -z "$probe" ]; then
 	echo "No probe for $role: pass --probe or nickname it with lstty." >&2
 	exit 2
 fi
+case "$probe" in
+*[!0-9]*)
+	if [ "$have_lstty" = false ]; then
+		echo "Probe '$probe' is a nickname, but lstty is not available." >&2
+		exit 2
+	fi
+	probe_nickname_input=$probe
+	probe=$(lstty jlink get "$probe_nickname_input" --field serial 2>/dev/null || true)
+	if [ -z "$probe" ]; then
+		echo "lstty has no J-Link probe named '$probe_nickname_input'." >&2
+		exit 2
+	fi
+;;
+esac
 case "$probe" in
 *[!0-9]*) echo "Probe serial must contain decimal digits only." >&2; exit 2 ;;
 esac
@@ -200,14 +215,20 @@ if [ "$have_lstty" = true ]; then
 		exit 1
 	fi
 	[ -n "$device" ] || echo "warning: lstty has no device recorded for $probe; cannot check it is $want." >&2
+	probe_nickname=$(printf '%s\n' "$info" | sed -n 's/.*"name": "\([^"]*\)".*/\1/p')
 else
 	echo "warning: lstty not found; cannot check that $probe is a $want." >&2
+	probe_nickname=
 fi
 
 test_config=$(sed -n 's/^test_config=//p' "$metadata")
 
 echo "Flash mapping:"
-echo "  $role image -> J-Link $probe"
+if [ -n "$probe_nickname" ]; then
+	echo "  $role image -> J-Link $probe (lstty nickname: $probe_nickname)"
+else
+	echo "  $role image -> J-Link $probe"
+fi
 echo "  build       -> $build_dir"
 echo "  test config -> $test_config"
 if [ "$dry_run" = true ]; then

@@ -53,9 +53,9 @@ fake-coletec-0, fake-coletec-1 and receptec. Each probe's target device must
 match its role (nRF52833 for the fakes, nRF52840 for RECEPTEC) when lstty knows it.
 
 Options:
-  --fake-coletec-0-probe SERIAL  fake-COLETEC-0 J-Link serial
-  --fake-coletec-1-probe SERIAL  fake-COLETEC-1 J-Link serial
-  --receptec-probe SERIAL        real RECEPTEC J-Link serial
+  --fake-coletec-0-probe SERIAL|NICKNAME  fake-COLETEC-0 probe
+  --fake-coletec-1-probe SERIAL|NICKNAME  fake-COLETEC-1 probe
+  --receptec-probe SERIAL|NICKNAME        real RECEPTEC probe
   --no-receptec                  flash only the two fake COLETECs
   --dry-run                      run every check, print the plan, flash nothing
   --backup                       read the RECEPTEC flash and UICR back to backups/ first (lstty jlink dump)
@@ -90,16 +90,34 @@ resolve_probe()
 	current=$1
 	nick=$2
 	if [ -n "$current" ]; then
-		echo "$current"
+		case "$current" in
+		*[!0-9]*)
+			if [ "$have_lstty" = false ]; then
+				echo "Probe '$current' is a nickname, but lstty is not available." >&2
+				return 1
+			fi
+			resolved=$(lstty jlink get "$current" --field serial 2>/dev/null || true)
+			if [ -z "$resolved" ]; then
+				echo "lstty has no J-Link probe named '$current'." >&2
+				return 1
+			fi
+			echo "$resolved"
+		;;
+		*) echo "$current" ;;
+		esac
 	elif [ "$have_lstty" = true ]; then
 		lstty jlink get "$nick" 2>/dev/null
 	fi
 }
 
-coletec_0_probe=$(resolve_probe "$coletec_0_probe" fake-coletec-0)
-coletec_1_probe=$(resolve_probe "$coletec_1_probe" fake-coletec-1)
+if ! coletec_0_probe=$(resolve_probe "$coletec_0_probe" fake-coletec-0) ||
+	! coletec_1_probe=$(resolve_probe "$coletec_1_probe" fake-coletec-1); then
+	exit 2
+fi
 if [ "$flash_receptec" = true ]; then
-	receptec_probe=$(resolve_probe "$receptec_probe" receptec)
+	if ! receptec_probe=$(resolve_probe "$receptec_probe" receptec); then
+		exit 2
+	fi
 fi
 
 if [ -z "$coletec_0_probe" ] || [ -z "$coletec_1_probe" ]; then
@@ -141,6 +159,13 @@ check_probe()
 	else
 		echo "warning: lstty not found; cannot check that $serial is a $want." >&2
 	fi
+}
+
+probe_nickname()
+{
+	serial=$1
+	info=$(lstty jlink get --serial "$serial" --json 2>/dev/null || true)
+	printf '%s\n' "$info" | sed -n 's/.*"name": "\([^"]*\)".*/\1/p'
 }
 
 command -v west >/dev/null 2>&1 || {
@@ -220,6 +245,15 @@ check_probe "$coletec_0_probe" fake-COLETEC-0 nRF52833_xxAA || exit 1
 check_probe "$coletec_1_probe" fake-COLETEC-1 nRF52833_xxAA || exit 1
 [ "$flash_receptec" = false ] || check_probe "$receptec_probe" RECEPTEC nRF52840_xxAA || exit 1
 
+coletec_0_nickname=
+coletec_1_nickname=
+receptec_nickname=
+if [ "$have_lstty" = true ]; then
+	coletec_0_nickname=$(probe_nickname "$coletec_0_probe")
+	coletec_1_nickname=$(probe_nickname "$coletec_1_probe")
+	[ "$flash_receptec" = false ] || receptec_nickname=$(probe_nickname "$receptec_probe")
+fi
+
 coletec_0_test_config=$(sed -n 's/^test_config=//p' "$coletec_0_build/atletec-dwm-build.txt")
 coletec_1_test_config=$(sed -n 's/^test_config=//p' "$coletec_1_build/atletec-dwm-build.txt")
 if [ -z "$coletec_0_test_config" ] ||
@@ -229,10 +263,22 @@ if [ -z "$coletec_0_test_config" ] ||
 fi
 
 echo "Flash mapping:"
-echo "  fake-COLETEC-0 image -> J-Link $coletec_0_probe"
-echo "  fake-COLETEC-1 image -> J-Link $coletec_1_probe"
+if [ -n "$coletec_0_nickname" ]; then
+	echo "  fake-COLETEC-0 image -> J-Link $coletec_0_probe (lstty nickname: $coletec_0_nickname)"
+else
+	echo "  fake-COLETEC-0 image -> J-Link $coletec_0_probe"
+fi
+if [ -n "$coletec_1_nickname" ]; then
+	echo "  fake-COLETEC-1 image -> J-Link $coletec_1_probe (lstty nickname: $coletec_1_nickname)"
+else
+	echo "  fake-COLETEC-1 image -> J-Link $coletec_1_probe"
+fi
 if [ "$flash_receptec" = true ]; then
-	echo "  RECEPTEC image       -> J-Link $receptec_probe (real Type 2AB)"
+	if [ -n "$receptec_nickname" ]; then
+		echo "  RECEPTEC image       -> J-Link $receptec_probe (lstty nickname: $receptec_nickname; real Type 2AB)"
+	else
+		echo "  RECEPTEC image       -> J-Link $receptec_probe (real Type 2AB)"
+	fi
 else
 	echo "  RECEPTEC             -> not flashed (--no-receptec)"
 fi

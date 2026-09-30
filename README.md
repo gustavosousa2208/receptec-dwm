@@ -189,9 +189,9 @@ fakes. Override the mapping when necessary:
 
 ```sh
 ./scripts/flash-both.sh \
-  --fake-coletec-0-probe <serial> \
-  --fake-coletec-1-probe <serial> \
-  --receptec-probe <serial>
+  --fake-coletec-0-probe <serial-or-lstty-name> \
+  --fake-coletec-1-probe <serial-or-lstty-name> \
+  --receptec-probe <serial-or-lstty-name>
 ```
 
 The script rejects duplicate probe serials, probes whose registered target
@@ -199,6 +199,9 @@ device does not match the role (a DWM can never receive the RECEPTEC image),
 stale images, mismatched compiled identities, and fake-COLETEC builds made from
 different test configurations. It never uses
 USB enumeration order to decide which image belongs to a board.
+The probe options accept either a J-Link serial or an `lstty` nickname. The
+flash plan prints the resolved serial and the nickname when `lstty` provides
+one.
 
 For a repository-owned fault scenario, apply the same fragment to both
 surrogates:
@@ -219,7 +222,7 @@ found by `lstty` nickname (`fake-coletec-0`, `fake-coletec-1`, `receptec`).
 |---|---|
 | `scripts/build-one.sh <target> [--test-conf tests/SCENARIO.conf]` | Build one fake COLETEC, Type2AB RECEPTEC, or RECEPTEC-Qorvo |
 | `scripts/build-both.sh [--test-conf tests/throughput-<P>ms.conf] [--no-receptec]` | Build both fake COLETECs and the Type2AB RECEPTEC into the west workspace |
-| `scripts/flash-one.sh <fake-coletec-0\|fake-coletec-1\|receptec\|receptec-qorvo>` | Flash one board; no prompt when stdin is not a tty |
+| `scripts/flash-one.sh <fake-coletec-0\|fake-coletec-0-anchor\|fake-coletec-1\|receptec\|receptec-qorvo>` | Flash one board; `--probe` accepts a serial or lstty nickname |
 | `scripts/flash-both.sh` | Flash the two fakes and the RECEPTEC; `--dry-run` runs every check only |
 | `scripts/sweep.sh [--poll-ms 200,100,50] [--duration S]` | Per period: build the fakes with the matching `.conf`, flash, run the poll and print the counters |
 | `scripts/sync-sweep.py [--poll-ms P --duration S]` | Reset the boards, start the fakes, then run manual SYNCs or the poll |
