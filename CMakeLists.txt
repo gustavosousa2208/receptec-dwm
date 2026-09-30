@@ -5,15 +5,21 @@ cmake_minimum_required(VERSION 3.20.0)
 list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 set(RECEPTEC_APP FALSE)
+set(ATLETEC_FW_TYPE "ATLETEC UWB firmware")
+set(ATLETEC_FW_VARIANT "${BOARD}")
 if(BOARD STREQUAL "fake_coletec_0/nrf52833" AND ATLETEC_FIXED_ANCHOR)
     set(RECEPTEC_APP TRUE)
     set(RECEPTEC_QORVO TRUE)
     set(RECEPTEC_FIXED_ANCHOR TRUE)
+    set(ATLETEC_FW_TYPE "RECEPTEC fixed UWB anchor")
+    set(ATLETEC_FW_VARIANT "Anchor 1 on fake-COLETEC-0 / DWM3001C / nRF52833")
     set(CONF_FILE
         ${CMAKE_CURRENT_SOURCE_DIR}/prj.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec_qorvo/receptec_qorvo.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/coletec/fake_coletec_0_anchor.conf)
 elseif(BOARD STREQUAL "receptec/nrf52840")
     set(RECEPTEC_APP TRUE)
     set(RECEPTEC_QORVO FALSE)
+    set(ATLETEC_FW_TYPE "RECEPTEC receiver")
+    set(ATLETEC_FW_VARIANT "RECEPTEC Type2AB / nRF52840 / DW3720")
     set(DTC_OVERLAY_FILE
         ${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec/receptec.overlay)
     set(CONF_FILE
@@ -21,14 +27,40 @@ elseif(BOARD STREQUAL "receptec/nrf52840")
 elseif(BOARD STREQUAL "receptec_qorvo/nrf52833")
     set(RECEPTEC_APP TRUE)
     set(RECEPTEC_QORVO TRUE)
+    set(ATLETEC_FW_TYPE "RECEPTEC receiver")
+    set(ATLETEC_FW_VARIANT "RECEPTEC-Qorvo / DWM3001C / nRF52833 / DW3110")
     set(DTC_OVERLAY_FILE
         ${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec_qorvo/receptec_qorvo.overlay)
     set(CONF_FILE
         ${CMAKE_CURRENT_SOURCE_DIR}/prj.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec_qorvo/receptec_qorvo.conf)
+elseif(BOARD STREQUAL "fake_coletec_0/nrf52833")
+    set(ATLETEC_FW_TYPE "fake-COLETEC responder")
+    set(ATLETEC_FW_VARIANT "fake-COLETEC-0 / DWM3001C / nRF52833 / DW3110")
+elseif(BOARD STREQUAL "fake_coletec_1/nrf52833")
+    set(ATLETEC_FW_TYPE "fake-COLETEC responder")
+    set(ATLETEC_FW_VARIANT "fake-COLETEC-1 / DWM3001C / nRF52833 / DW3110")
+elseif(BOARD STREQUAL "coletec/nrf52833")
+    set(ATLETEC_FW_TYPE "COLETEC-Qorvo UWB responder")
+    set(ATLETEC_FW_VARIANT "COLETEC-Qorvo / DWM3001C / nRF52833 / DW3110")
 endif()
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(atletec_firmware)
+
+set(ATLETEC_FW_INFO_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/fw_info_build.h)
+add_custom_target(atletec_fw_info_metadata
+    COMMAND ${CMAKE_COMMAND}
+        "-DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DOUTPUT=${ATLETEC_FW_INFO_HEADER}"
+        "-DFW_TYPE=${ATLETEC_FW_TYPE}"
+        "-DFW_VARIANT=${ATLETEC_FW_VARIANT}"
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/gen_fw_info.cmake
+    BYPRODUCTS ${ATLETEC_FW_INFO_HEADER}
+    COMMENT "Generating firmware identity"
+    VERBATIM
+)
+add_dependencies(app atletec_fw_info_metadata)
+target_include_directories(app PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 set(QORVO_DRIVER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/qorvo)
 set(QORVO_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/qorvo)
@@ -53,6 +85,7 @@ if(RECEPTEC_APP)
     endif()
     target_sources(app PRIVATE
         src/receptec/main.c
+        src/fw_info_shell.c
         src/led_shell.c
         src/receptec/uwb_protocol.c
         src/receptec/uwb_peer_registry.c
@@ -107,6 +140,7 @@ else()
     )
     target_sources(app PRIVATE
         src/main.c
+        src/fw_info_shell.c
         src/protocol.c
         src/coletec_sync.c
         src/dw3110_port.c
