@@ -594,9 +594,9 @@ static int matching_control_response_received(
 
 static int await_matching_control_response(
 	const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE], uint8_t sequence,
-	enum receptec_uwb_packet_type expected_type)
+	enum receptec_uwb_packet_type expected_type, uint32_t timeout_us)
 {
-	int64_t deadline = k_uptime_get() + (UWB_RESPONSE_TIMEOUT_US / 1000U);
+	int64_t deadline = k_uptime_get() + (timeout_us + 999U) / 1000U;
 
 	while (true) {
 		int64_t remaining_ms = deadline - k_uptime_get();
@@ -644,13 +644,17 @@ static int await_matching_control_response(
 
 static int send_control_once(uint8_t peer_slot,
 			     enum receptec_uwb_packet_type request_type,
-			     enum receptec_uwb_packet_type response_type)
+			     enum receptec_uwb_packet_type response_type,
+			     uint32_t timeout_us)
 {
 	uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE];
 	uint8_t sequence;
 	int status;
 	int ret;
 
+	if (timeout_us == 0U) {
+		return -ENOTSUP;
+	}
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 	if (!radio_ready) {
 		ret = -EAGAIN;
@@ -678,7 +682,7 @@ static int send_control_once(uint8_t peer_slot,
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 	dwt_setrxaftertxdelay(0U);
-	dwt_setrxtimeout(us_to_rx_timeout(UWB_RESPONSE_TIMEOUT_US));
+	dwt_setrxtimeout(us_to_rx_timeout(timeout_us));
 	ret = receptec_radio_irq_enable(true);
 	if (ret < 0) {
 		goto unlock;
@@ -690,7 +694,7 @@ static int send_control_once(uint8_t peer_slot,
 		goto unlock;
 	}
 	status = await_matching_control_response(peer_eui64, sequence,
-						 response_type);
+						 response_type, timeout_us);
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 	(void)receptec_radio_irq_enable(false);
@@ -720,13 +724,15 @@ unlock:
 
 int receptec_uwb_radio_send_sync(uint8_t peer_slot)
 {
-	return send_control_once(peer_slot, RECEPTEC_UWB_SYNC, RECEPTEC_UWB_ACK);
+	return send_control_once(peer_slot, RECEPTEC_UWB_SYNC, RECEPTEC_UWB_ACK,
+				 UWB_RESPONSE_TIMEOUT_US);
 }
 
 int receptec_uwb_radio_send_stop(uint8_t peer_slot)
 {
 	return send_control_once(peer_slot, RECEPTEC_UWB_STOP,
-				 RECEPTEC_UWB_STOP_ACK);
+				 RECEPTEC_UWB_STOP_ACK,
+				 CONFIG_RECEPTEC_STOP_TIMEOUT_US);
 }
 
 /*

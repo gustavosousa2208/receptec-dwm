@@ -181,6 +181,10 @@ static int cmd_uwb_stop(const struct shell *shell, size_t argc, char **argv)
 		return ret;
 	}
 	ret = receptec_uwb_radio_send_stop(slot);
+	if (ret == -ENOTSUP) {
+		shell_error(shell, "STOP is disabled: configure RECEPTEC_STOP_TIMEOUT_US");
+		return ret;
+	}
 	if (ret < 0) {
 		shell_error(shell, "STOP/STOP_ACK failed for slot %u: %d", slot, ret);
 		return ret;
@@ -761,7 +765,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		     cmd_uwb_sync, 2, 1),
 	SHELL_CMD(peer, &sub_peer, "Manage registered COLETEC peers", NULL),
 	SHELL_CMD(schedule, &sub_schedule, "Configure per-peer UWB schedule", NULL),
-	SHELL_CMD_ARG(stop, NULL, "Send STOP and validate STOP_ACK: stop <slot>",
+	SHELL_CMD_ARG(stop, NULL, "Send STOP (requires timeout config): stop <slot>",
 		      cmd_uwb_stop, 2, 0),
 	SHELL_CMD(poll, &sub_poll, "Periodic DATA_REQ polling", NULL),
 	SHELL_CMD(test, &sub_test, "Runtime UWB tests against the COLETEC", NULL),

@@ -174,4 +174,13 @@ config RECEPTEC_UWB_RADIO
 	  Initialize the target-specific Qorvo DW3xxx radio and enable the shared
 	  RECEPTEC peer registry, persistent storage, polling and SYNC shell.
 
+config RECEPTEC_STOP_TIMEOUT_US
+	int "STOP_ACK response timeout in microseconds (0 disables STOP)"
+	range 0 1000000
+	default 0
+	help
+	  The protocol revision 1.1 leaves Ttimeout unspecified. STOP remains
+	  disabled until a measured or approved value is supplied explicitly.
+	  The upper bound keeps the converted Qorvo RX timeout within its register.
+
 source "Kconfig.zephyr"
