@@ -138,7 +138,10 @@ if [ ! -f "$build_dir/zephyr/zephyr.hex" ] || [ ! -f "$config" ]; then
 fi
 case "$role" in
 	fake-coletec-0|fake-coletec-1)
-		if ! grep -qx "CONFIG_DWM_COLETEC_INSTANCE=$identity" "$config"; then
+		if ! grep -qx "CONFIG_DWM_COLETEC_INSTANCE=$identity" "$config" ||
+		   ! grep -qx 'CONFIG_SHELL_BACKEND_SERIAL=y' "$config" ||
+		   ! grep -qx 'CONFIG_UART_CONSOLE=y' "$config" ||
+		   grep -qx 'CONFIG_SHELL_BACKEND_RTT=y' "$config"; then
 			echo "$build_dir does not select COLETEC-$identity (see $log_file)" >&2
 			exit 1
 		fi

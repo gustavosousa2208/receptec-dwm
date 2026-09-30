@@ -165,6 +165,12 @@ verify_identity()
 		echo "$build_dir does not select COLETEC-$expected" >&2
 		return 1
 	fi
+	if ! grep -qx 'CONFIG_SHELL_BACKEND_SERIAL=y' "$config" ||
+	   ! grep -qx 'CONFIG_UART_CONSOLE=y' "$config" ||
+	   grep -qx 'CONFIG_SHELL_BACKEND_RTT=y' "$config"; then
+		echo "$build_dir does not provide the UART-only fake COLETEC shell" >&2
+		return 1
+	fi
 }
 
 verify_identity "$coletec_0_build" 0

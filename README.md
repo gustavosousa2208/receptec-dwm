@@ -232,7 +232,7 @@ The flash scripts refuse a dirty tree, a stale image, and a probe whose target
 device does not match the role. `--allow-dirty` accepts changes that do not touch
 image sources (docs, scripts). A DWM can never receive the RECEPTEC image.
 
-Shells: the fake COLETECs have a UART shell on their J-Link serial port
+Shells: the fake COLETECs have their only shell transport on the J-Link VCP UART
 (`~/.serial/fake-coletec-N`, prompt `uart:~$`). The RECEPTEC has no serial port on
 the bench yet, so its shell is on SEGGER RTT (`./scripts/rtt-shell.sh receptec`,
 prompt `rtt:~$`). The RTT input buffer is about 16 bytes: paste long commands in

@@ -36,9 +36,13 @@ elseif(BOARD STREQUAL "receptec_qorvo/nrf52833")
 elseif(BOARD STREQUAL "fake_coletec_0/nrf52833")
     set(ATLETEC_FW_TYPE "fake-COLETEC responder")
     set(ATLETEC_FW_VARIANT "fake-COLETEC-0 / DWM3001C / nRF52833 / DW3110")
+    set(CONF_FILE
+        ${CMAKE_CURRENT_SOURCE_DIR}/prj.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/coletec/fake_coletec_uart.conf)
 elseif(BOARD STREQUAL "fake_coletec_1/nrf52833")
     set(ATLETEC_FW_TYPE "fake-COLETEC responder")
     set(ATLETEC_FW_VARIANT "fake-COLETEC-1 / DWM3001C / nRF52833 / DW3110")
+    set(CONF_FILE
+        ${CMAKE_CURRENT_SOURCE_DIR}/prj.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/coletec/fake_coletec_uart.conf)
 elseif(BOARD STREQUAL "coletec/nrf52833")
     set(ATLETEC_FW_TYPE "COLETEC-Qorvo UWB responder")
     set(ATLETEC_FW_VARIANT "COLETEC-Qorvo / DWM3001C / nRF52833 / DW3110")

@@ -78,8 +78,8 @@ scripts must resolve each physical board to these same paths.
 
 ### Shell transport
 
-The fake COLETEC responder images have a shell on the J-Link VCP UART and also
-compile an RTT backend; use the UART for routine interaction. The RECEPTEC and
+The fake COLETEC responder images have a shell only on the J-Link VCP UART. The
+RECEPTEC and
 RECEPTEC-Qorvo images may use RTT for management. Their Raspberry Pi UART is a
 future data interface, not a currently defined shell path.
 

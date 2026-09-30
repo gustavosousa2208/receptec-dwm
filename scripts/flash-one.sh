@@ -179,7 +179,10 @@ else
 	grep -qx "identity=COLETEC-$instance" "$metadata" &&
 	grep -qx "source_commit=$source_commit" "$metadata" &&
 	grep -qx "contracts_commit=$contracts_commit" "$metadata" &&
-	grep -qx "CONFIG_DWM_COLETEC_INSTANCE=$instance" "$config" || {
+	grep -qx "CONFIG_DWM_COLETEC_INSTANCE=$instance" "$config" &&
+	grep -qx 'CONFIG_SHELL_BACKEND_SERIAL=y' "$config" &&
+	grep -qx 'CONFIG_UART_CONSOLE=y' "$config" &&
+	! grep -qx 'CONFIG_SHELL_BACKEND_RTT=y' "$config" || {
 		echo "$role image metadata or configuration is stale." >&2
 		exit 1
 	}
