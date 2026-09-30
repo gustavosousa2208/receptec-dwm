@@ -14,7 +14,7 @@ if(BOARD STREQUAL "fake_coletec_0/nrf52833" AND ATLETEC_FIXED_ANCHOR)
     set(ATLETEC_FW_TYPE "RECEPTEC fixed UWB anchor")
     set(ATLETEC_FW_VARIANT "Anchor 1 on fake-COLETEC-0 / DWM3001C / nRF52833")
     set(CONF_FILE
-        ${CMAKE_CURRENT_SOURCE_DIR}/prj.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec_qorvo/receptec_qorvo.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/coletec/fake_coletec_0_anchor.conf)
+        ${CMAKE_CURRENT_SOURCE_DIR}/prj.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec_qorvo/receptec_qorvo.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/coletec/fake_coletec_0_anchor.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/coletec/fake_coletec_uart.conf)
 elseif(BOARD STREQUAL "receptec/nrf52840")
     set(RECEPTEC_APP TRUE)
     set(RECEPTEC_QORVO FALSE)

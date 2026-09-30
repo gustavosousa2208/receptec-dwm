@@ -78,10 +78,12 @@ scripts must resolve each physical board to these same paths.
 
 ### Shell transport
 
-The fake COLETEC responder images have a shell only on the J-Link VCP UART. The
-RECEPTEC and
-RECEPTEC-Qorvo images may use RTT for management. Their Raspberry Pi UART is a
-future data interface, not a currently defined shell path.
+Any image running on the fake COLETEC hardware, including alternate roles such
+as the fixed-anchor image, has its only shell on the J-Link VCP UART. The
+firmware role does not change this physical-board transport rule. The physical
+RECEPTEC and RECEPTEC-Qorvo boards may use RTT for management because their
+Raspberry Pi UART is a future data interface, not a currently defined shell
+path.
 
 ## Conventions
 
