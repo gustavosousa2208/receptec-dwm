@@ -76,6 +76,13 @@ to flash. Never create task-, branch-, role-, or configuration-specific build
 directories. Older caches need reconfiguration before reuse. Build and flash
 scripts must resolve each physical board to these same paths.
 
+### Shell transport
+
+The fake COLETEC responder images have a shell on the J-Link VCP UART and also
+compile an RTT backend; use the UART for routine interaction. The RECEPTEC and
+RECEPTEC-Qorvo images may use RTT for management. Their Raspberry Pi UART is a
+future data interface, not a currently defined shell path.
+
 ## Conventions
 
 Strategic docs — requirements, roadmap, traceability matrices, meeting notes,
