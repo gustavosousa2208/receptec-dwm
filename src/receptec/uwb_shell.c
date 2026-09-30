@@ -91,6 +91,54 @@ static void print_peer_slots(const struct shell *shell)
 	}
 }
 
+static int cmd_uwb_identity_show(const struct shell *shell, size_t argc,
+				char **argv)
+{
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	char text[24];
+	int ret;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	ret = receptec_uwb_local_eui_get(eui64);
+	if (ret < 0) {
+		shell_error(shell, "local identity unavailable: %d", ret);
+		return ret;
+	}
+	format_eui64(eui64, text);
+	shell_print(shell, "active local UWB EUI: %s", text);
+	return 0;
+}
+
+static int cmd_uwb_identity_set(const struct shell *shell, size_t argc,
+				char **argv)
+{
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	char text[24];
+	int ret;
+
+	ARG_UNUSED(argc);
+	if (parse_eui64(argv[1], eui64) < 0) {
+		shell_error(shell, "EUI-64 must be 8 colon-separated hex bytes");
+		return -EINVAL;
+	}
+	ret = receptec_uwb_local_eui_set(eui64);
+	if (ret < 0) {
+		shell_error(shell, "identity save failed: %d", ret);
+		return ret;
+	}
+	format_eui64(eui64, text);
+	shell_print(shell, "saved local UWB EUI %s; reset the board to apply", text);
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+	sub_identity,
+	SHELL_CMD(show, NULL, "Show active local UWB EUI", cmd_uwb_identity_show),
+	SHELL_CMD_ARG(set, NULL, "Persist local EUI: set <EUI-64>",
+		     cmd_uwb_identity_set, 2, 0),
+	SHELL_SUBCMD_SET_END);
+
 static int cmd_uwb_status(const struct shell *shell, size_t argc, char **argv)
 {
 	ARG_UNUSED(argc);
@@ -258,7 +306,12 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(register, NULL,
 		     "Register peer: register <slot> <EUI-64 in on-air byte order>",
 		     cmd_uwb_peer_register, 3, 0),
+	SHELL_CMD_ARG(set, NULL,
+		     "Persist peer: set <slot> <EUI-64 in on-air byte order>",
+		     cmd_uwb_peer_register, 3, 0),
 	SHELL_CMD_ARG(unregister, NULL, "Unregister peer: unregister <slot>",
+		     cmd_uwb_peer_unregister, 2, 0),
+	SHELL_CMD_ARG(clear, NULL, "Remove peer: clear <slot>",
 		     cmd_uwb_peer_unregister, 2, 0),
 	SHELL_SUBCMD_SET_END);
 
@@ -535,6 +588,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_uwb,
 	SHELL_CMD(status, NULL, "Show RECEPTEC radio state", cmd_uwb_status),
+	SHELL_CMD(identity, &sub_identity, "Show or configure local UWB identity", NULL),
 	SHELL_CMD_ARG(sync, &sub_sync, "Periodic SYNC; `sync <slot>` uses 1000 ms",
 		     cmd_uwb_sync, 2, 1),
 	SHELL_CMD(peer, &sub_peer, "Manage registered COLETEC peers", NULL),

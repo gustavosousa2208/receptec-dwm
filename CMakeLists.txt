@@ -5,7 +5,13 @@ cmake_minimum_required(VERSION 3.20.0)
 list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 set(RECEPTEC_APP FALSE)
-if(BOARD STREQUAL "receptec/nrf52840")
+if(BOARD STREQUAL "fake_coletec_0/nrf52833" AND ATLETEC_FIXED_ANCHOR)
+    set(RECEPTEC_APP TRUE)
+    set(RECEPTEC_QORVO TRUE)
+    set(RECEPTEC_FIXED_ANCHOR TRUE)
+    set(CONF_FILE
+        ${CMAKE_CURRENT_SOURCE_DIR}/prj.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec_qorvo/receptec_qorvo.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/coletec/fake_coletec_0_anchor.conf)
+elseif(BOARD STREQUAL "receptec/nrf52840")
     set(RECEPTEC_APP TRUE)
     set(RECEPTEC_QORVO FALSE)
     set(DTC_OVERLAY_FILE
@@ -29,6 +35,7 @@ set(QORVO_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src/qorvo)
 
 target_include_directories(app PRIVATE
     include
+    src
     src/receptec
     ${QORVO_DRIVER_DIR}
     ${QORVO_DRIVER_DIR}/dw3000
@@ -38,9 +45,15 @@ target_include_directories(app PRIVATE
 
 if(RECEPTEC_APP)
     target_compile_definitions(app PRIVATE USE_DRV_DW3000)
+    if(RECEPTEC_QORVO)
+        target_compile_definitions(app PRIVATE RECEPTEC_DW3110_RADIO)
+    endif()
+    if(RECEPTEC_FIXED_ANCHOR)
+        target_compile_definitions(app PRIVATE RECEPTEC_FIXED_ANCHOR)
+    endif()
     target_sources(app PRIVATE
         src/receptec/main.c
-        src/receptec/led_shell.c
+        src/led_shell.c
         src/receptec/uwb_protocol.c
         src/receptec/uwb_peer_registry.c
         src/receptec/uwb_peer_storage.c

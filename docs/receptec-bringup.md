@@ -92,10 +92,13 @@ and sequence within a fixed 100 ms timeout. Unrelated/malformed frames do not
 extend the timeout. Periodic DATA_REQ polling and retries are implemented;
 timing and full contract qualification remain open.
 
-The shell also provides `led list`, `led set <on|off> <blue|green|all> [...]`,
-`led auto`, and `led selftest`. The self-test runs for three seconds and uses
-the blue/green indicators present on each receiver carrier. The schematics and
-current overlays do not define a red LED channel.
+The shell also provides `led list`, `led set <on|off|toggle> <target> [...]`,
+`led control <target> <operation>`, `led auto`, and `led selftest`. The same
+three-second self-test is available in the fake-COLETEC and both RECEPTEC
+images. It enumerates only enabled children of the board's `gpio-leds`
+DeviceTree node, tests each LED and then all-on/all-off, and restores the
+previous states. J200's external RGB indicators are connected to the Raspberry
+Pi domain, not the nRF firmware.
 
 Host checks for the bench and RECEPTEC helpers are under `tests/`; run them with:
 

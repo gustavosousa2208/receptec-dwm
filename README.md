@@ -244,17 +244,19 @@ RECEPTEC shell:              uwb sync <slot>              (periodic, default 100
                              uwb sync start <slot> [period_ms]
                              uwb sync stop
                              uwb sync once <slot>          (single diagnostic)
-                             led list|set|auto|selftest    (carrier indicators)
+                             led list|set|control|auto|selftest (active board LEDs)
                              uwb poll stats
                              uwb poll start|stop           (continuous DATA_REQ)
 ```
 
-`led set on blue green` and `led set off blue` hold the selected indicators in
-the requested state; `led auto` restores the normal indicator behavior. The
-three-second `led selftest` cycles the available blue/green indicators, their
-combined cyan state, and all-on/all-off. The hardware schematics identify blue
-and green LEDs on the receiver carriers; no red channel is wired in the current
-overlays.
+`led list` reports the active LEDs for the image. `led set <on|off|toggle>
+<target> [...]` and `led control <target> <operation>` accept an index, an
+overlay LED name, `blue`, `green`, or `all`. `led auto` resumes the board's
+default indicators. The three-second `led selftest` cycles each active LED,
+then all-on and all-off, and restores the previous states. Its inventory comes
+from enabled children of that board's `gpio-leds` DeviceTree node, so disabled
+module LEDs are not touched on RECEPTEC-Qorvo. J200's RGB indicators belong to
+the Raspberry Pi domain and are not driven by the nRF shell.
 
 A responder listens continuously for 10 s after reset or `start`, so start polling
 within that window. `uwb poll` sends DATA_REQ to every registered peer once per

@@ -19,4 +19,9 @@ int receptec_uwb_peer_storage_save(
 
 int receptec_uwb_peer_storage_delete(uint8_t slot);
 
+int receptec_uwb_identity_storage_load(
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
+int receptec_uwb_identity_storage_save(
+	const uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
+
 #endif

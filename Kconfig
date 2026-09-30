@@ -11,6 +11,15 @@ config DWM_COLETEC_INSTANCE
 	  and 1 respectively.
 	  These targets are responders and must never be used as RECEPTEC.
 
+config RECEPTEC_FIXED_ANCHOR_ID
+	int "Fixed anchor identity"
+	range 0 1
+	default 0
+	help
+	  Selects the on-air identity of a fixed RECEPTEC application. Anchor 0
+	  uses the established RECEPTEC EUI; anchor 1 uses a separate EUI for the
+	  fake-coletec-0 carrier when built in fixed-anchor mode.
+
 config RECEPTEC_SLOTTED_AUTOSTART
 	bool "Start the RECEPTEC slotted schedule at boot"
 	default n

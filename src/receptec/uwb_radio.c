@@ -8,12 +8,13 @@
 #include <string.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/drivers/hwinfo.h>
 #include <zephyr/random/random.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/util.h>
 
-#if defined(CONFIG_BOARD_RECEPTEC_QORVO)
+#if defined(RECEPTEC_DW3110_RADIO)
 #include <receptec/dw3110_port.h>
 #define RECEPTEC_RADIO_NAME "DW3110"
 #define RECEPTEC_RADIO_DEVICE_ID 0xDECA0302U
@@ -47,11 +48,9 @@
 	(DWT_INT_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_ERR | SYS_STATUS_ALL_RX_TO)
 #define UWB_RX_REARM_ERROR_MASK (SYS_STATUS_ALL_RX_ERR & ~SYS_STATUS_ALL_RX_TO)
 
-static const uint8_t receptec_eui[RECEPTEC_UWB_EUI64_SIZE] = {
-	0x41, 0x16, 0xA8, 0x06, 0x82, 0xF3, 0xC6, 0x3E,
-};
+static uint8_t receptec_eui[RECEPTEC_UWB_EUI64_SIZE];
 
-#if !defined(CONFIG_BOARD_RECEPTEC_QORVO)
+#if !defined(RECEPTEC_DW3110_RADIO)
 static const struct dwt_spi_s dw3720_spi_functions = {
 	.readfromspi = dw3720_readfromspi,
 	.writetospi = dw3720_writetospi,
@@ -66,7 +65,7 @@ extern const struct dwt_driver_s dw3720_driver;
 
 static const struct dwt_driver_s *const driver_list[] = {
 	&dw3000_driver,
-#if !defined(CONFIG_BOARD_RECEPTEC_QORVO)
+#if !defined(RECEPTEC_DW3110_RADIO)
 	&dw3720_driver,
 #endif
 };
@@ -74,7 +73,7 @@ static const struct dwt_driver_s *const driver_list[] = {
 static struct dwt_probe_s probe_interface = {
 	.dw = NULL,
 	.spi = NULL,
-#if defined(CONFIG_BOARD_RECEPTEC_QORVO)
+#if defined(RECEPTEC_DW3110_RADIO)
 	.wakeup_device_with_io = dw3110_port_wakeup,
 #else
 	.wakeup_device_with_io = wakeup_device_with_io,
@@ -127,7 +126,7 @@ static void clear_radio_events(uint32_t events)
 
 static int receptec_radio_port_init(void)
 {
-#if defined(CONFIG_BOARD_RECEPTEC_QORVO)
+#if defined(RECEPTEC_DW3110_RADIO)
 	return dw3110_port_init();
 #else
 	return dw3720_spi_init();
@@ -136,7 +135,7 @@ static int receptec_radio_port_init(void)
 
 static int receptec_radio_port_reset(void)
 {
-#if defined(CONFIG_BOARD_RECEPTEC_QORVO)
+#if defined(RECEPTEC_DW3110_RADIO)
 	return dw3110_port_reset();
 #else
 	return dw3720_hw_reset();
@@ -145,7 +144,7 @@ static int receptec_radio_port_reset(void)
 
 static void receptec_radio_set_slow_rate(void)
 {
-#if defined(CONFIG_BOARD_RECEPTEC_QORVO)
+#if defined(RECEPTEC_DW3110_RADIO)
 	dw3110_port_spi()->setslowrate();
 #else
 	dw3720_setslowrate();
@@ -169,7 +168,7 @@ static int initialize_qorvo_driver(void)
 	}
 	k_msleep(2);
 	probe_interface.spi = (void *)
-#if defined(CONFIG_BOARD_RECEPTEC_QORVO)
+#if defined(RECEPTEC_DW3110_RADIO)
 		dw3110_port_spi();
 #else
 		&dw3720_spi_functions;
@@ -206,7 +205,7 @@ static int initialize_qorvo_driver(void)
 		printk("%s: PHY configuration failed\n", RECEPTEC_RADIO_NAME);
 		return -EIO;
 	}
-#if !defined(CONFIG_BOARD_RECEPTEC_QORVO)
+#if !defined(RECEPTEC_DW3110_RADIO)
 	/*
 	 * Hand QM33120W GPIO5 to the receive front-end. It powers up as a plain
 	 * high-impedance GPIO; on this carrier GPIO5 feeds the QM14068 VCTRL
@@ -243,11 +242,25 @@ static int initialize_qorvo_driver(void)
 int receptec_uwb_radio_init(void)
 {
 	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	ssize_t hwinfo_len;
 	int ret;
 
 	ret = receptec_uwb_peer_storage_init();
 	if (ret < 0) {
 		printk("Peer storage init failed: %d\n", ret);
+		return ret;
+	}
+	ret = receptec_uwb_identity_storage_load(receptec_eui);
+	if (ret == -ENOENT) {
+		hwinfo_len = hwinfo_get_device_id(receptec_eui,
+						  sizeof(receptec_eui));
+		if (hwinfo_len != sizeof(receptec_eui)) {
+			printk("Cannot derive local UWB identity from hardware ID (%d)\n",
+			       (int)hwinfo_len);
+			return hwinfo_len < 0 ? (int)hwinfo_len : -EIO;
+		}
+	} else if (ret < 0) {
+		printk("Local UWB identity load failed: %d\n", ret);
 		return ret;
 	}
 
@@ -261,6 +274,9 @@ int receptec_uwb_radio_init(void)
 		k_mutex_unlock(&uwb_peer_mutex);
 		return ret;
 	}
+	printk("UWB local EUI: %02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X\n",
+	       receptec_eui[0], receptec_eui[1], receptec_eui[2], receptec_eui[3],
+	       receptec_eui[4], receptec_eui[5], receptec_eui[6], receptec_eui[7]);
 
 	for (uint8_t slot = 0U;
 	     slot < RECEPTEC_UWB_MAX_PEERS;
@@ -305,6 +321,41 @@ int receptec_uwb_radio_init(void)
 	k_mutex_unlock(&uwb_peer_mutex);
 
 	return ret;
+}
+
+int receptec_uwb_local_eui_get(uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE])
+{
+	if (eui64 == NULL) {
+		return -EINVAL;
+	}
+	memcpy(eui64, receptec_eui, sizeof(receptec_eui));
+	return 0;
+}
+
+int receptec_uwb_local_eui_set(
+	const uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE])
+{
+	bool all_zero = true;
+	bool all_ff = true;
+	uint8_t peer_eui[RECEPTEC_UWB_EUI64_SIZE];
+
+	if (eui64 == NULL) {
+		return -EINVAL;
+	}
+	for (size_t i = 0U; i < RECEPTEC_UWB_EUI64_SIZE; ++i) {
+		all_zero = all_zero && eui64[i] == 0U;
+		all_ff = all_ff && eui64[i] == 0xFFU;
+	}
+	if (all_zero || all_ff) {
+		return -EINVAL;
+	}
+	for (uint8_t slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
+		if (receptec_uwb_peer_get(slot, peer_eui) == 0 &&
+		    memcmp(peer_eui, eui64, sizeof(peer_eui)) == 0) {
+			return -EEXIST;
+		}
+	}
+	return receptec_uwb_identity_storage_save(eui64);
 }
 
 int receptec_uwb_peer_register(
@@ -1768,10 +1819,12 @@ int receptec_uwb_radio_set_lna(bool enable)
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 	if (!radio_ready) {
 		ret = -EAGAIN;
-	} else if (IS_ENABLED(CONFIG_BOARD_RECEPTEC_QORVO)) {
-		ret = -ENOTSUP;
 	} else {
+#if defined(RECEPTEC_DW3110_RADIO)
+		ret = -ENOTSUP;
+#else
 		dwt_setlnapamode(enable ? DWT_LNA_ENABLE : 0);
+#endif
 	}
 	k_mutex_unlock(&uwb_peer_mutex);
 	return ret;

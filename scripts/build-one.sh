@@ -25,19 +25,20 @@ usage()
 	cat <<'EOF'
 Usage: scripts/build-one.sh TARGET [--test-conf tests/SCENARIO.conf]
 
-TARGET: fake-coletec-0 | fake-coletec-1 | receptec | receptec-qorvo
+TARGET: fake-coletec-0 | fake-coletec-1 | fake-coletec-0-anchor | receptec | receptec-qorvo
 
 Builds one image. Output goes to $ATLETEC_BUILD_ROOT, else
 $ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec, else build/ in this
 repository. $RECEPTEC_BUILD_DIR and $RECEPTEC_QORVO_BUILD_DIR override the
 corresponding RECEPTEC output directories. --test-conf applies only to fake
-COLETEC images.
+COLETEC images. fake-coletec-0-anchor builds the RECEPTEC application on the
+fake-coletec-0 board as fixed UWB anchor 1.
 EOF
 }
 
 [ "$#" -ge 1 ] || { usage >&2; exit 2; }
 case "$1" in
-	fake-coletec-0|fake-coletec-1|receptec|receptec-qorvo) role=$1; shift ;;
+	fake-coletec-0|fake-coletec-1|fake-coletec-0-anchor|receptec|receptec-qorvo) role=$1; shift ;;
 	-h|--help) usage; exit 0 ;;
 	*) echo "Unknown target: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -81,6 +82,12 @@ case "$role" in
 		identity=0
 		metadata_role=fake-COLETEC
 		;;
+	fake-coletec-0-anchor)
+		board=fake_coletec_0/nrf52833
+		build_dir="$build_root/fake-coletec-0-anchor"
+		identity=1
+		metadata_role=RECEPTEC-Qorvo-anchor-1
+		;;
 	fake-coletec-1)
 		board=fake_coletec_1/nrf52833
 		build_dir="$build_root/fake-coletec-1"
@@ -105,7 +112,13 @@ mkdir -p "$build_dir"
 log_file="$build_dir/build.log"
 echo "Building $role ($board) -> $build_dir"
 if [ "$test_config" = none ]; then
-	if ! west build -p auto -b "$board" -d "$build_dir" "$app_dir" >"$log_file" 2>&1; then
+	if [ "$role" = fake-coletec-0-anchor ]; then
+		if ! west build -p auto -b "$board" -d "$build_dir" "$app_dir" -- \
+			-DATLETEC_FIXED_ANCHOR=ON >"$log_file" 2>&1; then
+			echo "$role build failed; log: $log_file" >&2
+			exit 1
+		fi
+	elif ! west build -p auto -b "$board" -d "$build_dir" "$app_dir" >"$log_file" 2>&1; then
 		echo "$role build failed; log: $log_file" >&2
 		exit 1
 	fi
@@ -129,6 +142,14 @@ case "$role" in
 			exit 1
 		fi
 		;;
+	fake-coletec-0-anchor)
+		grep -qx 'CONFIG_RECEPTEC_UWB_RADIO=y' "$config" &&
+		grep -qx 'CONFIG_RECEPTEC_FIXED_ANCHOR_ID=1' "$config" &&
+		grep -qx 'CONFIG_SOC_NRF52833=y' "$config" || {
+			echo "$build_dir is not a fixed anchor 1 build (see $log_file)" >&2
+			exit 1
+		}
+		;;
 	receptec)
 		grep -qx 'CONFIG_SOC_NRF52840=y' "$config" || {
 			echo "$build_dir is not a nRF52840 RECEPTEC build (see $log_file)" >&2
@@ -148,7 +169,14 @@ source_commit=$(git -C "$app_dir" rev-parse HEAD)
 contracts_commit=$(git -C "$app_dir/contracts" rev-parse HEAD)
 {
 	echo "role=$metadata_role"
-	if [ -n "$identity" ]; then echo "identity=COLETEC-$identity"; fi
+	case "$role" in
+		fake-coletec-0|fake-coletec-1)
+			echo "identity=COLETEC-$identity"
+			;;
+		fake-coletec-0-anchor)
+			echo "anchor_id=1"
+			;;
+	esac
 	echo "source_commit=$source_commit"
 	echo "contracts_commit=$contracts_commit"
 	echo "test_config=$test_config"

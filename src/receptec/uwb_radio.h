@@ -10,6 +10,10 @@
 #include "uwb_peer_registry.h"
 
 int receptec_uwb_radio_init(void);
+int receptec_uwb_local_eui_get(
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
+int receptec_uwb_local_eui_set(
+	const uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
 int receptec_uwb_peer_register(uint8_t slot,
 			       const uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
 int receptec_uwb_peer_unregister(uint8_t slot);

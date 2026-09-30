@@ -25,6 +25,7 @@
 
 / {
 	aliases {
+		role-led = &receptec_led_blue;
 		led-blue = &receptec_led_blue;
 		led-green = &receptec_led_green;
 	};
@@ -43,10 +44,12 @@
 
 		receptec_led_blue: led_blue {
 			gpios = <&gpio1 8 GPIO_ACTIVE_HIGH>;
+			label = "RECEPTEC blue status LED";
 		};
 
 		receptec_led_green: led_green {
 			gpios = <&gpio1 9 GPIO_ACTIVE_HIGH>;
+			label = "RECEPTEC green status LED";
 		};
 	};
 };

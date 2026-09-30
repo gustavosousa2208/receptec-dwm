@@ -23,7 +23,7 @@ static const struct gpio_dt_spec led_green =
 static void heartbeat_expired(struct k_timer *timer)
 {
 	ARG_UNUSED(timer);
-	if (!receptec_led_shell_green_overridden()) {
+	if (!led_shell_is_overridden(&led_green)) {
 		(void)gpio_pin_toggle_dt(&led_green);
 	}
 }
@@ -59,6 +59,11 @@ int main(void)
 
 	printk("Atletec RECEPTEC firmware\n");
 	printk("Board: %s\n", CONFIG_BOARD_TARGET);
+#if defined(RECEPTEC_FIXED_ANCHOR)
+	printk("Role: fixed UWB anchor %d\n", CONFIG_RECEPTEC_FIXED_ANCHOR_ID);
+#else
+	printk("Role: RECEPTEC\n");
+#endif
 	if (length == (ssize_t)sizeof(id)) {
 		printk("nRF ID:");
 		for (size_t i = 0U; i < sizeof(id); ++i) {
@@ -79,10 +84,6 @@ int main(void)
 #else
 	printk("UWB radio: disabled by configuration\n");
 #endif
-	int led_ret = receptec_led_shell_init();
-	if (led_ret < 0) {
-		printk("LED shell initialization failed: %d\n", led_ret);
-	}
 	indicators_start(heartbeat);
 	return 0;
 }
