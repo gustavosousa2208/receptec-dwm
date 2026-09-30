@@ -110,8 +110,22 @@ bool receptec_uwb_ack_matches(
 	const uint8_t local_eui64[RECEPTEC_UWB_EUI64_SIZE],
 	uint8_t expected_sequence)
 {
+	return receptec_uwb_control_response_matches(frame, RECEPTEC_UWB_ACK,
+						peer_eui64, local_eui64,
+						expected_sequence);
+}
+
+bool receptec_uwb_control_response_matches(
+	const struct receptec_uwb_frame *frame,
+	enum receptec_uwb_packet_type expected_type,
+	const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
+	const uint8_t local_eui64[RECEPTEC_UWB_EUI64_SIZE],
+	uint8_t expected_sequence)
+{
 	return frame != NULL && peer_eui64 != NULL && local_eui64 != NULL &&
-	       frame->type == RECEPTEC_UWB_ACK &&
+	       (expected_type == RECEPTEC_UWB_ACK ||
+		expected_type == RECEPTEC_UWB_STOP_ACK) &&
+	       frame->type == expected_type &&
 	       frame->payload_length == 0U &&
 	       frame->sequence == expected_sequence &&
 	       memcmp(frame->source, peer_eui64, RECEPTEC_UWB_EUI64_SIZE) == 0 &&

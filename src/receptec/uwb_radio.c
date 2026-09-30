@@ -546,8 +546,9 @@ static int load_request_frame(enum receptec_uwb_packet_type type,
 	struct receptec_uwb_frame frame = {
 		.sequence = sequence,
 		.type = type,
-		.payload = dt_sampling,
-		.payload_length = sizeof(dt_sampling),
+		.payload = type == RECEPTEC_UWB_STOP ? NULL : dt_sampling,
+		.payload_length = type == RECEPTEC_UWB_STOP ? 0U :
+				  sizeof(dt_sampling),
 	};
 	size_t logical_length;
 	uint16_t radio_length;
@@ -567,14 +568,9 @@ static int load_request_frame(enum receptec_uwb_packet_type type,
 	return 0;
 }
 
-static int load_sync_frame(const uint8_t destination[RECEPTEC_UWB_EUI64_SIZE],
-			   uint8_t sequence)
-{
-	return load_request_frame(RECEPTEC_UWB_SYNC, destination, sequence, 0U);
-}
-
-static int matching_ack_received(
-	const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE], uint8_t sequence)
+static int matching_control_response_received(
+	const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE], uint8_t sequence,
+	enum receptec_uwb_packet_type expected_type)
 {
 	uint16_t radio_length;
 	uint8_t ranging;
@@ -589,15 +585,16 @@ static int matching_ack_received(
 	ret = receptec_uwb_decode(rx_bytes,
 				  radio_length - RECEPTEC_UWB_FCS_SIZE, &frame);
 	if (ret != RECEPTEC_UWB_OK ||
-	    !receptec_uwb_ack_matches(&frame, peer_eui64, receptec_eui,
-				      sequence)) {
+	    !receptec_uwb_control_response_matches(
+		    &frame, expected_type, peer_eui64, receptec_eui, sequence)) {
 		return -EBADMSG;
 	}
 	return 0;
 }
 
-static int await_matching_ack(
-	const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE], uint8_t sequence)
+static int await_matching_control_response(
+	const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE], uint8_t sequence,
+	enum receptec_uwb_packet_type expected_type)
 {
 	int64_t deadline = k_uptime_get() + (UWB_RESPONSE_TIMEOUT_US / 1000U);
 
@@ -611,19 +608,24 @@ static int await_matching_ack(
 		}
 		ret = receptec_radio_wait_event(K_MSEC(remaining_ms));
 		status = dwt_readsysstatuslo();
+		if (k_uptime_get() >= deadline) {
+			return -ETIMEDOUT;
+		}
 		if ((status & DWT_INT_RXFCG_BIT_MASK) != 0U) {
 			clear_radio_events(DWT_INT_RXFCG_BIT_MASK);
-			ret = matching_ack_received(peer_eui64, sequence);
+			ret = matching_control_response_received(peer_eui64, sequence,
+							 expected_type);
 			if (ret == 0) {
 				return 0;
 			}
 			/* OI-07: an unrelated or malformed frame never extends timeout. */
-			printk("SYNC response ignored: status=%d radio=0x%08X\n",
-			       ret, status);
+			printk("UWB control response ignored: type=%u status=%d radio=0x%08X\n",
+			       expected_type, ret, status);
 		} else if ((status & SYS_STATUS_ALL_RX_TO) != 0U) {
 			return -ETIMEDOUT;
 		} else if ((status & UWB_RX_REARM_ERROR_MASK) != 0U) {
-			printk("SYNC receive error: radio=0x%08X; continuing\n", status);
+			printk("UWB control receive error: radio=0x%08X; continuing\n",
+			       status);
 			clear_radio_events(status & UWB_RX_REARM_ERROR_MASK);
 		} else if (ret < 0) {
 			return -ETIMEDOUT;
@@ -640,7 +642,9 @@ static int await_matching_ack(
 	}
 }
 
-int receptec_uwb_radio_send_sync(uint8_t peer_slot)
+static int send_control_once(uint8_t peer_slot,
+			     enum receptec_uwb_packet_type request_type,
+			     enum receptec_uwb_packet_type response_type)
 {
 	uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE];
 	uint8_t sequence;
@@ -667,7 +671,7 @@ int receptec_uwb_radio_send_sync(uint8_t peer_slot)
 	if (ret < 0) {
 		goto unlock;
 	}
-	ret = load_sync_frame(peer_eui64, sequence);
+	ret = load_request_frame(request_type, peer_eui64, sequence, 0U);
 	if (ret < 0) {
 		goto unlock;
 	}
@@ -685,22 +689,44 @@ int receptec_uwb_radio_send_sync(uint8_t peer_slot)
 		ret = -EIO;
 		goto unlock;
 	}
-	status = await_matching_ack(peer_eui64, sequence);
+	status = await_matching_control_response(peer_eui64, sequence,
+						 response_type);
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 	(void)receptec_radio_irq_enable(false);
 	if (status == 0) {
-		printk("SYNC/ACK OK: seq=%u peer=%u FCS=valid address=valid\n",
-		       sequence, peer_slot);
+		if (request_type == RECEPTEC_UWB_STOP) {
+			printk("STOP/STOP_ACK OK: seq=%u peer=%u FCS=valid address=valid\n",
+			       sequence, peer_slot);
+		} else {
+			printk("SYNC/ACK OK: seq=%u peer=%u FCS=valid address=valid\n",
+			       sequence, peer_slot);
+		}
 	} else {
-		printk("SYNC/ACK failed: seq=%u peer=%u status=%d\n",
-		       sequence, peer_slot, status);
+		if (request_type == RECEPTEC_UWB_STOP) {
+			printk("STOP/STOP_ACK failed: seq=%u peer=%u status=%d\n",
+			       sequence, peer_slot, status);
+		} else {
+			printk("SYNC/ACK failed: seq=%u peer=%u status=%d\n",
+			       sequence, peer_slot, status);
+		}
 	}
 	ret = status;
 
 unlock:
 	k_mutex_unlock(&uwb_peer_mutex);
 	return ret;
+}
+
+int receptec_uwb_radio_send_sync(uint8_t peer_slot)
+{
+	return send_control_once(peer_slot, RECEPTEC_UWB_SYNC, RECEPTEC_UWB_ACK);
+}
+
+int receptec_uwb_radio_send_stop(uint8_t peer_slot)
+{
+	return send_control_once(peer_slot, RECEPTEC_UWB_STOP,
+				 RECEPTEC_UWB_STOP_ACK);
 }
 
 /*
@@ -974,7 +1000,8 @@ static int sync_attempt(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 		(void)receptec_radio_wait_event(K_MSEC(remaining_ms));
 		radio_status = dwt_readsysstatuslo();
 		if ((radio_status & DWT_INT_RXFCG_BIT_MASK) != 0U) {
-			status = matching_ack_received(peer_eui64, sequence);
+			status = matching_control_response_received(
+				peer_eui64, sequence, RECEPTEC_UWB_ACK);
 			if (status < 0) {
 				stats->bad_frames++;
 			}

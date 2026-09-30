@@ -26,6 +26,9 @@ enum receptec_uwb_packet_type {
 	RECEPTEC_UWB_ACK = 0x3,
 	RECEPTEC_UWB_STOP = 0x4,
 	RECEPTEC_UWB_STOP_ACK = 0x5,
+	/* Reserved until the RANGE_PLAN/RANGE_RESULT payloads are specified. */
+	RECEPTEC_UWB_RANGE_PLAN = 0x6,
+	RECEPTEC_UWB_RANGE_RESULT = 0x7,
 };
 
 enum receptec_uwb_status {
@@ -54,6 +57,12 @@ int receptec_uwb_decode(const uint8_t *input, size_t input_length,
 			 struct receptec_uwb_frame *frame);
 bool receptec_uwb_ack_matches(
 	const struct receptec_uwb_frame *frame,
+	const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
+	const uint8_t local_eui64[RECEPTEC_UWB_EUI64_SIZE],
+	uint8_t expected_sequence);
+bool receptec_uwb_control_response_matches(
+	const struct receptec_uwb_frame *frame,
+	enum receptec_uwb_packet_type expected_type,
 	const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 	const uint8_t local_eui64[RECEPTEC_UWB_EUI64_SIZE],
 	uint8_t expected_sequence);

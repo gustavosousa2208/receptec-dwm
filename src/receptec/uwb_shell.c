@@ -170,6 +170,25 @@ static int cmd_uwb_sync_once(const struct shell *shell, size_t argc, char **argv
 	return 0;
 }
 
+static int cmd_uwb_stop(const struct shell *shell, size_t argc, char **argv)
+{
+	uint8_t slot;
+	int ret;
+
+	ARG_UNUSED(argc);
+	ret = parse_slot(shell, argv[1], &slot);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = receptec_uwb_radio_send_stop(slot);
+	if (ret < 0) {
+		shell_error(shell, "STOP/STOP_ACK failed for slot %u: %d", slot, ret);
+		return ret;
+	}
+	shell_print(shell, "STOP/STOP_ACK passed with slot %u", slot);
+	return 0;
+}
+
 static int cmd_uwb_sync_start(const struct shell *shell, size_t argc, char **argv)
 {
 	uint8_t slot;
@@ -742,6 +761,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		     cmd_uwb_sync, 2, 1),
 	SHELL_CMD(peer, &sub_peer, "Manage registered COLETEC peers", NULL),
 	SHELL_CMD(schedule, &sub_schedule, "Configure per-peer UWB schedule", NULL),
+	SHELL_CMD_ARG(stop, NULL, "Send STOP and validate STOP_ACK: stop <slot>",
+		      cmd_uwb_stop, 2, 0),
 	SHELL_CMD(poll, &sub_poll, "Periodic DATA_REQ polling", NULL),
 	SHELL_CMD(test, &sub_test, "Runtime UWB tests against the COLETEC", NULL),
 	SHELL_CMD_ARG(lna, NULL, "External receive LNA (bench A/B): lna on|off",
