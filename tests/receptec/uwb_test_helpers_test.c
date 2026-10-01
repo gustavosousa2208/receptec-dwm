@@ -154,7 +154,7 @@ static void test_mutation_bad_type(void)
 						f, sizeof(f), &n) == 0);
 	assert(n == 22U);
 	expect_valid_header(f, local, 9U);
-	assert(f[19] == 0x06U && (f[19] & 0xF0U) == 0U);
+	assert(f[19] == RECEPTEC_UWB_TEST_RESERVED_TYPE && (f[19] & 0xF0U) == 0U);
 	assert(receptec_uwb_decode(f, n, &decoded) == RECEPTEC_UWB_ERR_TYPE);
 }
 
