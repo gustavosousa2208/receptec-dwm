@@ -237,10 +237,14 @@ image sources (docs, scripts). A DWM can never receive the RECEPTEC image.
 
 Shells: any image running on the fake COLETEC hardware, including the fixed-anchor
 role, has its only shell transport on the J-Link VCP UART
-(`~/.serial/fake-coletec-N`, prompt `uart:~$`). The physical RECEPTEC has no
+(`~/.serial/fake-coletec-N`). Prompts identify the image: `rtt-fake-coletec-0:~$`,
+`rtt-fake-coletec-0-anchor:~$`, or `rtt-fake-coletec-1:~$`; the `rtt-` prefix
+is the requested shell identity and does not change the fake boards' UART
+transport. The physical RECEPTEC has no
 serial port on the bench yet, so its shell is on SEGGER RTT
-(`./scripts/rtt-shell.sh receptec`, prompt `rtt:~$`). The firmware role does not
-change the fake-board transport. The RTT input buffer is about 16 bytes: paste
+(`./scripts/rtt-shell.sh receptec`, prompt `rtt-receptec:~$`). RECEPTEC-Qorvo
+uses `rtt-receptec-qorvo:~$`. The firmware role does not change the fake-board
+transport. The RTT input buffer is about 16 bytes: paste
 long commands in pieces (`sync-sweep.py` does).
 
 Start both surrogate responders first, then traffic on the real RECEPTEC:
@@ -282,10 +286,13 @@ the first attempt. The retry path has not been exercised.
 The RECEPTEC board LEDs: blue (D300, P1.08) solid once booted; green (D301, P1.09)
 blinks at 1 Hz while the kernel runs, 5 Hz if the UWB radio failed to initialize.
 
-Open an individual fake shell over RTT with
-`./scripts/rtt-shell.sh <lstty nickname or J-Link serial>`. The startup log prints
-the fake's role and on-air identity, source and contracts revisions, Nordic device
-ID and UWB frame-filter address.
+Open an individual fake shell over its J-Link VCP UART with
+`bench console fake-coletec-0 --interactive` (or `fake-coletec-1`); the fixed
+anchor uses the same physical nickname, and its prompt identifies the role. For
+the production COLETEC Nordic RTT shell, use
+`./scripts/rtt-shell.sh prod-coletec`. The startup log prints the role and on-air
+identity, source and contracts revisions, Nordic device ID and UWB frame-filter
+address.
 
 ## Code map
 

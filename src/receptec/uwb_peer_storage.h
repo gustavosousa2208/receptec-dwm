@@ -19,6 +19,12 @@ int receptec_uwb_peer_storage_save(
 
 int receptec_uwb_peer_storage_delete(uint8_t slot);
 
+int receptec_uwb_schedule_action_load(uint8_t slot, uint8_t *action);
+int receptec_uwb_schedule_action_save(uint8_t slot, uint8_t action);
+int receptec_uwb_schedule_action_delete(uint8_t slot);
+int receptec_uwb_schedule_period_load(uint32_t *period_ms);
+int receptec_uwb_schedule_period_save(uint32_t period_ms);
+
 int receptec_uwb_identity_storage_load(
 	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
 int receptec_uwb_identity_storage_save(

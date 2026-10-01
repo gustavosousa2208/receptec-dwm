@@ -23,6 +23,11 @@ int receptec_uwb_radio_send_sync(uint8_t peer_slot);
 /* Bench A/B: switch the external receive LNA (GPIO5) on or off. */
 int receptec_uwb_radio_set_lna(bool enable);
 
+enum receptec_uwb_peer_action {
+	RECEPTEC_UWB_PEER_ACTION_SYNC = 0,
+	RECEPTEC_UWB_PEER_ACTION_DATA_REQ,
+};
+
 struct receptec_uwb_poll_peer_stats {
 	uint32_t transactions;
 	uint32_t completed;
@@ -42,10 +47,12 @@ struct receptec_uwb_poll_peer_stats {
 struct receptec_uwb_poll_status {
 	bool running;
 	bool sync_mode;
+	bool schedule_mode;
 	uint8_t peer_slot;
 	uint32_t period_us;
 	uint32_t cycles;
 	uint32_t overruns;
+	enum receptec_uwb_peer_action action[RECEPTEC_UWB_MAX_PEERS];
 	int64_t started_ms;
 	int64_t stopped_ms;
 	struct receptec_uwb_poll_peer_stats peer[RECEPTEC_UWB_MAX_PEERS];
@@ -55,6 +62,15 @@ struct receptec_uwb_poll_status {
 int receptec_uwb_poll_start(uint32_t period_ms);
 /* Send one SYNC per period to a single registered peer; retry in later epochs. */
 int receptec_uwb_sync_start(uint8_t peer_slot, uint32_t period_ms);
+/* Configure a volatile per-peer action; unconfigured slots default to SYNC. */
+int receptec_uwb_schedule_set(uint8_t peer_slot,
+			      enum receptec_uwb_peer_action action);
+int receptec_uwb_schedule_get(uint8_t peer_slot,
+			      enum receptec_uwb_peer_action *action);
+int receptec_uwb_schedule_period_set(uint32_t period_ms);
+int receptec_uwb_schedule_period_get(uint32_t *period_ms);
+/* Run each registered peer's configured action at the persisted period. */
+int receptec_uwb_schedule_start(void);
 int receptec_uwb_sync_stop(void);
 int receptec_uwb_poll_stop(void);
 void receptec_uwb_poll_get(struct receptec_uwb_poll_status *out);

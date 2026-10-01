@@ -6,9 +6,10 @@
 #include <stddef.h>
 
 #include <zephyr/settings/settings.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/printk.h>
 
-#define PEER_KEY_MAX_LEN 20U
+#define PEER_KEY_MAX_LEN 32U
 
 static int make_peer_key(uint8_t slot, char key[PEER_KEY_MAX_LEN])
 {
@@ -26,6 +27,17 @@ static int make_peer_key(uint8_t slot, char key[PEER_KEY_MAX_LEN])
 	}
 
 	return 0;
+}
+
+static int make_action_key(uint8_t slot, char key[PEER_KEY_MAX_LEN])
+{
+	int len;
+
+	if (slot >= RECEPTEC_UWB_MAX_PEERS) {
+		return -EINVAL;
+	}
+	len = snprintk(key, PEER_KEY_MAX_LEN, "uwb/action/%u", slot);
+	return len > 0 && len < (int)PEER_KEY_MAX_LEN ? 0 : -ENOSPC;
 }
 
 int receptec_uwb_peer_storage_init(void)
@@ -117,6 +129,91 @@ int receptec_uwb_peer_storage_delete(uint8_t slot)
 	}
 
 	return settings_delete(key);
+}
+
+int receptec_uwb_schedule_action_load(uint8_t slot, uint8_t *action)
+{
+	char key[PEER_KEY_MAX_LEN];
+	ssize_t len;
+	int ret;
+
+	if (action == NULL) {
+		return -EINVAL;
+	}
+	ret = make_action_key(slot, key);
+	if (ret < 0) {
+		return ret;
+	}
+	len = settings_get_val_len(key);
+	if (len < 0) {
+		return (int)len;
+	}
+	if (len == 0) {
+		return -ENOENT;
+	}
+	if (len != sizeof(*action)) {
+		return -EINVAL;
+	}
+	len = settings_load_one(key, action, sizeof(*action));
+	return len == sizeof(*action) ? 0 : (len < 0 ? (int)len : -EIO);
+}
+
+int receptec_uwb_schedule_action_save(uint8_t slot, uint8_t action)
+{
+	char key[PEER_KEY_MAX_LEN];
+	int ret = make_action_key(slot, key);
+
+	if (ret < 0) {
+		return ret;
+	}
+	return settings_save_one(key, &action, sizeof(action));
+}
+
+int receptec_uwb_schedule_action_delete(uint8_t slot)
+{
+	char key[PEER_KEY_MAX_LEN];
+	int ret = make_action_key(slot, key);
+
+	if (ret < 0) {
+		return ret;
+	}
+	return settings_delete(key);
+}
+
+int receptec_uwb_schedule_period_load(uint32_t *period_ms)
+{
+	uint8_t encoded[sizeof(uint32_t)];
+	ssize_t len;
+
+	if (period_ms == NULL) {
+		return -EINVAL;
+	}
+	len = settings_get_val_len("uwb/schedule_period_ms");
+	if (len < 0) {
+		return (int)len;
+	}
+	if (len == 0) {
+		return -ENOENT;
+	}
+	if (len != sizeof(encoded)) {
+		return -EINVAL;
+	}
+	len = settings_load_one("uwb/schedule_period_ms", encoded,
+				sizeof(encoded));
+	if (len != sizeof(encoded)) {
+		return len < 0 ? (int)len : -EIO;
+	}
+	*period_ms = sys_get_le32(encoded);
+	return 0;
+}
+
+int receptec_uwb_schedule_period_save(uint32_t period_ms)
+{
+	uint8_t encoded[sizeof(uint32_t)];
+
+	sys_put_le32(period_ms, encoded);
+	return settings_save_one("uwb/schedule_period_ms", encoded,
+				 sizeof(encoded));
 }
 
 int receptec_uwb_identity_storage_load(

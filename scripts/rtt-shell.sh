@@ -8,9 +8,21 @@ gdb_server=${JLINK_GDB_SERVER:-JLinkGDBServerCLExe}
 rtt_client=${JLINK_RTT_CLIENT:-JLinkRTTClient}
 
 if [ -z "$probe" ]; then
-	echo "Usage: scripts/rtt-shell.sh <J-Link serial | lstty nickname>" >&2
-	echo "Nicknames: fake-coletec-0, fake-coletec-1, receptec (see: lstty)." >&2
+	echo "Usage: scripts/rtt-shell.sh <debug-probe serial | lstty nickname>" >&2
+	echo "Nicknames: fake-coletec-0, fake-coletec-1, receptec, prod-coletec (see: lstty)." >&2
 	exit 2
+fi
+
+# The production Nordic is currently connected through an MCU-Link CMSIS-DAP
+# probe. RTT itself is probe-independent, but the SEGGER clients below are not;
+# use the CMSIS-DAP backend when that probe is connected.
+if command -v lstty >/dev/null 2>&1 && case "$probe" in *[!0-9]*) true ;; *) false ;; esac; then
+	mculink_info=$(lstty mculink get "$probe" --json 2>/dev/null || true)
+	case "$mculink_info" in
+	*'"connected": true'*)
+		exec bench console "$probe" --mculink --transport mculink-rtt --interactive
+		;;
+	esac
 fi
 
 # A nickname resolves through lstty, which also knows the target device.

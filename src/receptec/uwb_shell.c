@@ -271,7 +271,13 @@ static int cmd_uwb_peer_register(const struct shell *shell, size_t argc,
 	}
 	ret = receptec_uwb_peer_register(slot, eui64);
 	if (ret < 0) {
-		shell_error(shell, "peer registration failed: %d", ret);
+		if (ret == -EBUSY) {
+			shell_error(shell,
+				    "UWB is busy: stop polling or SYNC before registering a peer (%d)",
+				    ret);
+		} else {
+			shell_error(shell, "peer registration failed: %d", ret);
+		}
 		return ret;
 	}
 	format_eui64(eui64, text);
@@ -343,6 +349,131 @@ static int cmd_uwb_poll_start(const struct shell *shell, size_t argc,
 	return 0;
 }
 
+static int cmd_uwb_schedule_show(const struct shell *shell, size_t argc,
+				char **argv)
+{
+	struct receptec_uwb_poll_status status;
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	char text[24];
+	uint32_t configured_period_ms;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	receptec_uwb_poll_get(&status);
+	if (receptec_uwb_schedule_period_get(&configured_period_ms) < 0) {
+		return -EAGAIN;
+	}
+	shell_print(shell, "schedule running=%u mode=%s period=%u ms cycles=%u overruns=%u",
+		    status.running, status.schedule_mode ? "per-peer" : "inactive",
+		    status.running ? status.period_us / 1000U : configured_period_ms,
+		    status.cycles, status.overruns);
+	for (uint8_t slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
+		enum receptec_uwb_peer_action configured_action;
+		const char *action;
+
+		if (receptec_uwb_peer_get(slot, eui64) == 0) {
+			if (receptec_uwb_schedule_get(slot, &configured_action) < 0) {
+				return -EAGAIN;
+			}
+			action = configured_action == RECEPTEC_UWB_PEER_ACTION_DATA_REQ ?
+				"data_req" : "sync";
+			format_eui64(eui64, text);
+			shell_print(shell, "slot %u: %s peer=%s", slot, action, text);
+		} else {
+			shell_print(shell, "slot %u: sync (empty; skipped)", slot);
+		}
+	}
+	return 0;
+}
+
+static int cmd_uwb_schedule_set(const struct shell *shell, size_t argc,
+				char **argv)
+{
+	uint8_t slot;
+	enum receptec_uwb_peer_action action;
+	int ret;
+
+	if (argc != 3U || parse_slot(shell, argv[1], &slot) < 0) {
+		shell_error(shell, "usage: uwb schedule set <slot> sync|data_req");
+		return -EINVAL;
+	}
+	if (strcmp(argv[2], "sync") == 0) {
+		action = RECEPTEC_UWB_PEER_ACTION_SYNC;
+	} else if (strcmp(argv[2], "data_req") == 0) {
+		action = RECEPTEC_UWB_PEER_ACTION_DATA_REQ;
+	} else {
+		shell_error(shell, "action must be sync or data_req");
+		return -EINVAL;
+	}
+	ret = receptec_uwb_schedule_set(slot, action);
+	if (ret < 0) {
+		shell_error(shell, "schedule update failed: %d", ret);
+		return ret;
+	}
+	shell_print(shell, "slot %u action set to %s (saved)", slot, argv[2]);
+	return 0;
+}
+
+static int cmd_uwb_schedule_start(const struct shell *shell, size_t argc,
+				  char **argv)
+{
+	unsigned long period_ms = 0UL;
+	uint32_t configured_period_ms;
+	char *end;
+	int ret;
+
+	if (argc > 1U) {
+		errno = 0;
+		period_ms = strtoul(argv[1], &end, 10);
+		if (errno != 0 || end == argv[1] || *end != '\0' ||
+		    period_ms == 0UL || period_ms > 60000UL) {
+			shell_error(shell, "usage: uwb schedule start [period_ms 1..60000]");
+			return -EINVAL;
+		}
+		ret = receptec_uwb_schedule_period_set((uint32_t)period_ms);
+		if (ret < 0) {
+			shell_error(shell, "could not save schedule period: %d", ret);
+			return ret;
+		}
+	}
+	ret = receptec_uwb_schedule_period_get(&configured_period_ms);
+	if (ret < 0) {
+		shell_error(shell, "could not read schedule period: %d", ret);
+		return ret;
+	}
+	ret = receptec_uwb_schedule_start();
+	if (ret < 0) {
+		shell_error(shell, "schedule start failed: %d (-%d busy, -%d no peer, -%d slot budget)",
+			    ret, EBUSY, ENOENT, EINVAL);
+		return ret;
+	}
+	shell_print(shell, "per-peer schedule started every %u ms (saved); SYNC is the default; use uwb schedule show/stats/stop",
+		    configured_period_ms);
+	return 0;
+}
+
+static int cmd_uwb_schedule_stop(const struct shell *shell, size_t argc,
+				 char **argv)
+{
+	struct receptec_uwb_poll_status status;
+	int ret;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	receptec_uwb_poll_get(&status);
+	if (!status.running || !status.schedule_mode) {
+		shell_error(shell, "per-peer schedule is not running");
+		return -EALREADY;
+	}
+	ret = receptec_uwb_poll_stop();
+	if (ret < 0) {
+		shell_error(shell, "schedule did not stop: %d", ret);
+		return ret;
+	}
+	shell_print(shell, "UWB schedule stopped");
+	return 0;
+}
+
 static int cmd_uwb_poll_stop(const struct shell *shell, size_t argc, char **argv)
 {
 	int ret;
@@ -368,7 +499,12 @@ static int cmd_uwb_poll_stats(const struct shell *shell, size_t argc, char **arg
 	ARG_UNUSED(argv);
 	receptec_uwb_poll_get(&status);
 	elapsed_ms = status.started_ms == 0 ? 0 : status.stopped_ms - status.started_ms;
-	if (status.sync_mode) {
+	if (status.schedule_mode) {
+		shell_print(shell, "poll running=%u mode=PER_PEER period=%u ms elapsed=%u ms "
+			    "cycles=%u overruns=%u", status.running,
+			    status.period_us / 1000U, (uint32_t)elapsed_ms,
+			    status.cycles, status.overruns);
+	} else if (status.sync_mode) {
 		shell_print(shell, "poll running=%u mode=SYNC slot=%u period=%u ms elapsed=%u ms "
 			    "cycles=%u overruns=%u", status.running, status.peer_slot,
 			    status.period_us / 1000U, (uint32_t)elapsed_ms,
@@ -387,10 +523,11 @@ static int cmd_uwb_poll_stats(const struct shell *shell, size_t argc, char **arg
 			continue;
 		}
 		shell_print(shell,
-			    "slot %u: transactions=%u ok=%u (%u.%u%%) by_attempt=%u/%u/%u "
+			    "slot %u action=%s transactions=%u ok=%u (%u.%u%%) by_attempt=%u/%u/%u "
 			    "attempts=%u timeouts=%u rx_err=%u bad=%u late=%u exhausted=%u "
 			    "bytes=%u sample_gaps=%u",
-			    slot, p->transactions, p->completed, permille / 10U,
+			    slot, status.action[slot] == RECEPTEC_UWB_PEER_ACTION_DATA_REQ ?
+			    "DATA_REQ" : "SYNC", p->transactions, p->completed, permille / 10U,
 			    permille % 10U, p->completed_on_attempt[0],
 			    p->completed_on_attempt[1], p->completed_on_attempt[2],
 			    p->attempts, p->timeouts, p->rx_errors, p->bad_frames,
@@ -458,6 +595,18 @@ static int cmd_uwb_lna(const struct shell *shell, size_t argc, char **argv)
 	shell_print(shell, "external LNA %s", argv[1]);
 	return 0;
 }
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+	sub_schedule,
+	SHELL_CMD(show, NULL, "Show per-peer actions (default: SYNC)",
+		  cmd_uwb_schedule_show),
+	SHELL_CMD_ARG(set, NULL, "Set action: set <slot> sync|data_req",
+		      cmd_uwb_schedule_set, 3, 0),
+	SHELL_CMD_ARG(start, NULL, "Start per-peer schedule: start [period_ms]",
+		      cmd_uwb_schedule_start, 1, 1),
+	SHELL_CMD(stop, NULL, "Stop per-peer schedule", cmd_uwb_schedule_stop),
+	SHELL_CMD(stats, NULL, "Show per-peer link counters", cmd_uwb_poll_stats),
+	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_sync,
@@ -592,6 +741,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(sync, &sub_sync, "Periodic SYNC; `sync <slot>` uses 1000 ms",
 		     cmd_uwb_sync, 2, 1),
 	SHELL_CMD(peer, &sub_peer, "Manage registered COLETEC peers", NULL),
+	SHELL_CMD(schedule, &sub_schedule, "Configure per-peer UWB schedule", NULL),
 	SHELL_CMD(poll, &sub_poll, "Periodic DATA_REQ polling", NULL),
 	SHELL_CMD(test, &sub_test, "Runtime UWB tests against the COLETEC", NULL),
 	SHELL_CMD_ARG(lna, NULL, "External receive LNA (bench A/B): lna on|off",

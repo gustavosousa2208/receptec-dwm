@@ -107,6 +107,9 @@ static dwt_txconfig_t tx_config = {
 static bool radio_ready;
 static bool poll_running;
 static bool peer_registry_ready;
+/* Persisted per-peer actions; zero is SYNC so unset peers have a safe default. */
+static enum receptec_uwb_peer_action peer_actions[RECEPTEC_UWB_MAX_PEERS];
+static uint32_t schedule_period_ms = 1000U;
 static struct receptec_uwb_peer_registry peer_registry;
 static uint8_t tx_bytes[RECEPTEC_UWB_MAX_LOGICAL_SIZE];
 static uint8_t rx_bytes[RECEPTEC_UWB_MAX_LOGICAL_SIZE];
@@ -242,6 +245,8 @@ static int initialize_qorvo_driver(void)
 int receptec_uwb_radio_init(void)
 {
 	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	uint8_t stored_action;
+	uint32_t stored_period_ms;
 	ssize_t hwinfo_len;
 	int ret;
 
@@ -249,6 +254,21 @@ int receptec_uwb_radio_init(void)
 	if (ret < 0) {
 		printk("Peer storage init failed: %d\n", ret);
 		return ret;
+	}
+	ret = receptec_uwb_schedule_period_load(&stored_period_ms);
+	if (ret == 0 && stored_period_ms >= 1U && stored_period_ms <= 60000U) {
+		schedule_period_ms = stored_period_ms;
+	} else if (ret == -ENOENT || ret == 0) {
+		printk("UWB schedule period invalid/unavailable (%d); using 1000 ms\n",
+		       ret == 0 ? -EINVAL : ret);
+		schedule_period_ms = 1000U;
+		ret = receptec_uwb_schedule_period_save(schedule_period_ms);
+		if (ret < 0) {
+			printk("Schedule: could not persist default period: %d\n", ret);
+		}
+	} else {
+		printk("UWB schedule period load failed (%d); using 1000 ms\n", ret);
+		schedule_period_ms = 1000U;
 	}
 	ret = receptec_uwb_identity_storage_load(receptec_eui);
 	if (ret == -ENOENT) {
@@ -308,6 +328,27 @@ int receptec_uwb_radio_init(void)
 		}
 
 		printk("Peer storage: restored slot %u\n", slot);
+		ret = receptec_uwb_schedule_action_load(slot, &stored_action);
+		if (ret == 0 &&
+		    (stored_action == RECEPTEC_UWB_PEER_ACTION_SYNC ||
+		     stored_action == RECEPTEC_UWB_PEER_ACTION_DATA_REQ)) {
+			peer_actions[slot] =
+				(enum receptec_uwb_peer_action)stored_action;
+		} else if (ret == -ENOENT) {
+			peer_actions[slot] = RECEPTEC_UWB_PEER_ACTION_SYNC;
+			ret = receptec_uwb_schedule_action_save(
+				slot, RECEPTEC_UWB_PEER_ACTION_SYNC);
+			if (ret < 0) {
+				printk("Schedule: could not persist default SYNC for slot %u: %d\n",
+				       slot, ret);
+			}
+		} else {
+			printk("Schedule: invalid action for slot %u (%d); using SYNC\n",
+			       slot, ret == 0 ? -EINVAL : ret);
+			peer_actions[slot] = RECEPTEC_UWB_PEER_ACTION_SYNC;
+			(void)receptec_uwb_schedule_action_save(
+				slot, RECEPTEC_UWB_PEER_ACTION_SYNC);
+		}
 	}
 
 	peer_registry_ready = true;
@@ -406,7 +447,18 @@ int receptec_uwb_peer_register(
 		(void)receptec_uwb_peer_registry_unregister(
 			&peer_registry,
 			slot);
+		goto out;
 	}
+
+	/* A new peer starts at SYNC, and its default is durable as well. */
+	ret = receptec_uwb_schedule_action_save(
+		slot, RECEPTEC_UWB_PEER_ACTION_SYNC);
+	if (ret < 0) {
+		(void)receptec_uwb_peer_storage_delete(slot);
+		(void)receptec_uwb_peer_registry_unregister(&peer_registry, slot);
+		goto out;
+	}
+	peer_actions[slot] = RECEPTEC_UWB_PEER_ACTION_SYNC;
 
 out:
 	k_mutex_unlock(&uwb_peer_mutex);
@@ -416,6 +468,7 @@ out:
 int receptec_uwb_peer_unregister(uint8_t slot)
 {
 	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	enum receptec_uwb_peer_action previous_action;
 	int ret;
 
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
@@ -451,10 +504,22 @@ int receptec_uwb_peer_unregister(uint8_t slot)
 	if (ret < 0) {
 		goto out;
 	}
+	previous_action = peer_actions[slot];
+	ret = receptec_uwb_schedule_action_delete(slot);
+	if (ret < 0) {
+		(void)receptec_uwb_peer_storage_save(slot, eui64);
+		goto out;
+	}
 
 	ret = receptec_uwb_peer_registry_unregister(
 		&peer_registry,
 		slot);
+	if (ret == 0) {
+		peer_actions[slot] = RECEPTEC_UWB_PEER_ACTION_SYNC;
+	} else {
+		(void)receptec_uwb_peer_storage_save(slot, eui64);
+		(void)receptec_uwb_schedule_action_save(slot, previous_action);
+	}
 
 out:
 	k_mutex_unlock(&uwb_peer_mutex);
@@ -957,17 +1022,10 @@ static bool sync_transaction(uint8_t slot,
 		if (ret == 0) {
 			stats->completed++;
 			stats->completed_on_attempt[attempt]++;
-			printk("PERIODIC SYNC/ACK OK: seq=%u slot=%u attempt=%u\n",
-			       sequence, slot, (uint32_t)attempt + 1U);
 			return true;
 		}
-		printk("PERIODIC SYNC attempt failed: seq=%u slot=%u attempt=%u "
-		       "error=%d%s\n", sequence, slot, (uint32_t)attempt + 1U,
-		       ret, attempt + 1U < UWB_POLL_ATTEMPTS ? " retrying" : "");
 	}
 	stats->exhausted++;
-	printk("PERIODIC SYNC/ACK exhausted: slot=%u; retrying next period\n",
-	       slot);
 	return false;
 }
 
@@ -1438,6 +1496,35 @@ static void ut_cycle(uint8_t slot, const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_S
 	}
 }
 
+static const char *peer_action_name(enum receptec_uwb_peer_action action)
+{
+	return action == RECEPTEC_UWB_PEER_ACTION_DATA_REQ ? "DATA_REQ" : "SYNC";
+}
+
+/* A compact cumulative health snapshot; no per-attempt console noise. */
+static void print_schedule_summary(void)
+{
+	for (uint8_t slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
+		const struct receptec_uwb_poll_peer_stats *p = &poll_status.peer[slot];
+		uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE];
+		uint32_t permille;
+
+		if (p->transactions == 0U ||
+		    receptec_uwb_peer_registry_get(&peer_registry, slot,
+						   peer_eui64) < 0) {
+			continue;
+		}
+		permille = (uint32_t)(((uint64_t)p->completed * 1000ULL) /
+				      p->transactions);
+		printk("UWB link slot=%u action=%s cycles=%u ok=%u/%u (%u.%u%%) "
+		       "timeout=%u rx_err=%u bad=%u late=%u exhausted=%u\n",
+		       slot, peer_action_name(poll_status.action[slot]),
+		       poll_status.cycles, p->completed, p->transactions,
+		       permille / 10U, permille % 10U, p->timeouts, p->rx_errors,
+		       p->bad_frames, p->late_schedules, p->exhausted);
+	}
+}
+
 int receptec_uwb_test_start(const char *name, uint8_t arg, uint8_t slot)
 {
 	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
@@ -1538,7 +1625,8 @@ static void run_poll(uint32_t period_us)
 
 		uint16_t scheduler_lateness_us = 0U;
 
-		if (poll_status.sync_mode && poll_status.cycles > 0U) {
+		if ((poll_status.sync_mode || poll_status.schedule_mode) &&
+		    poll_status.cycles > 0U) {
 			int64_t remaining_ticks = (int64_t)next_sync_prepare_tick -
 					   k_uptime_ticks();
 
@@ -1608,6 +1696,16 @@ static void run_poll(uint32_t period_us)
 					(void)sync_transaction(slot, peer_eui64,
 							       slot_epoch_dx,
 							       scheduler_lateness_us);
+				} else if (poll_status.schedule_mode && !ut.active) {
+					if (poll_status.action[slot] ==
+					    RECEPTEC_UWB_PEER_ACTION_DATA_REQ) {
+						(void)poll_transaction(slot, peer_eui64,
+								       slot_epoch_dx);
+					} else {
+						(void)sync_transaction(slot, peer_eui64,
+								       slot_epoch_dx,
+								       scheduler_lateness_us);
+					}
 				} else if (!ut.active) {
 					(void)poll_transaction(slot, peer_eui64,
 							       slot_epoch_dx);
@@ -1619,8 +1717,12 @@ static void run_poll(uint32_t period_us)
 		}
 		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 		poll_status.cycles++;
+		if (poll_status.schedule_mode &&
+		    poll_status.cycles % 10U == 0U) {
+			print_schedule_summary();
+		}
 		k_mutex_unlock(&uwb_peer_mutex);
-		if (poll_status.sync_mode) {
+		if (poll_status.sync_mode || poll_status.schedule_mode) {
 			next_sync_prepare_tick += sync_period_ticks;
 		} else {
 			epoch_dx += us_to_dx_time(period_us);
@@ -1694,6 +1796,9 @@ int receptec_uwb_poll_start(uint32_t period_ms)
 	memset(&poll_status, 0, sizeof(poll_status));
 	memset(poll_last, 0, sizeof(poll_last));
 	poll_status.period_us = period_us;
+	for (uint8_t slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
+		poll_status.action[slot] = RECEPTEC_UWB_PEER_ACTION_DATA_REQ;
+	}
 	atomic_set(&poll_stop_requested, 0);
 	poll_running = true;
 	k_sem_give(&poll_start_sem);
@@ -1730,9 +1835,140 @@ int receptec_uwb_sync_start(uint8_t peer_slot, uint32_t period_ms)
 	}
 	memset(&poll_status, 0, sizeof(poll_status));
 	memset(poll_last, 0, sizeof(poll_last));
+	poll_status.action[peer_slot] = RECEPTEC_UWB_PEER_ACTION_SYNC;
 	poll_status.sync_mode = true;
 	poll_status.peer_slot = peer_slot;
 	poll_status.period_us = period_us;
+	atomic_set(&poll_stop_requested, 0);
+	poll_running = true;
+	k_sem_give(&poll_start_sem);
+unlock:
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+int receptec_uwb_schedule_set(uint8_t peer_slot,
+			      enum receptec_uwb_peer_action action)
+{
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	int ret = 0;
+
+	if (peer_slot >= RECEPTEC_UWB_MAX_PEERS ||
+	    (action != RECEPTEC_UWB_PEER_ACTION_SYNC &&
+	     action != RECEPTEC_UWB_PEER_ACTION_DATA_REQ)) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!radio_ready || !peer_registry_ready) {
+		ret = -EAGAIN;
+	} else if (poll_running) {
+		ret = -EBUSY;
+	} else if (receptec_uwb_peer_registry_get(&peer_registry, peer_slot,
+						 eui64) < 0) {
+		ret = -ENOENT;
+	} else {
+		ret = receptec_uwb_schedule_action_save(peer_slot,
+							(uint8_t)action);
+		if (ret == 0) {
+			peer_actions[peer_slot] = action;
+			poll_status.action[peer_slot] = action;
+		}
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+int receptec_uwb_schedule_get(uint8_t peer_slot,
+			      enum receptec_uwb_peer_action *action)
+{
+	int ret = 0;
+
+	if (peer_slot >= RECEPTEC_UWB_MAX_PEERS || action == NULL) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!peer_registry_ready) {
+		ret = -EAGAIN;
+	} else {
+		*action = peer_actions[peer_slot];
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+int receptec_uwb_schedule_period_set(uint32_t period_ms)
+{
+	int ret;
+
+	if (period_ms == 0U || period_ms > 60000U) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!peer_registry_ready) {
+		ret = -EAGAIN;
+	} else if (poll_running) {
+		ret = -EBUSY;
+	} else {
+		ret = receptec_uwb_schedule_period_save(period_ms);
+		if (ret == 0) {
+			schedule_period_ms = period_ms;
+		}
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+int receptec_uwb_schedule_period_get(uint32_t *period_ms)
+{
+	if (period_ms == NULL) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!peer_registry_ready) {
+		k_mutex_unlock(&uwb_peer_mutex);
+		return -EAGAIN;
+	}
+	*period_ms = schedule_period_ms;
+	k_mutex_unlock(&uwb_peer_mutex);
+	return 0;
+}
+
+int receptec_uwb_schedule_start(void)
+{
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	uint32_t period_us;
+	int highest = -1;
+	int ret = 0;
+
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!radio_ready || !peer_registry_ready) {
+		ret = -EAGAIN;
+		goto unlock;
+	}
+	if (poll_running) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+	period_us = schedule_period_ms * 1000U;
+	for (uint8_t slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
+		if (receptec_uwb_peer_registry_get(&peer_registry, slot,
+						   eui64) == 0) {
+			highest = slot;
+		}
+	}
+	if (highest < 0) {
+		ret = -ENOENT;
+		goto unlock;
+	}
+	if (period_us < (uint32_t)(highest + 1) * UWB_POLL_SLOT_US) {
+		ret = -EINVAL;
+		goto unlock;
+	}
+	memset(&poll_status, 0, sizeof(poll_status));
+	memset(poll_last, 0, sizeof(poll_last));
+	poll_status.schedule_mode = true;
+	poll_status.period_us = period_us;
+	memcpy(poll_status.action, peer_actions, sizeof(peer_actions));
 	atomic_set(&poll_stop_requested, 0);
 	poll_running = true;
 	k_sem_give(&poll_start_sem);
