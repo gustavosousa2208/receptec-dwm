@@ -1903,6 +1903,14 @@ static int range_run_dstwr_initiator(uint8_t peer_slot,
 							     &response) != RECEPTEC_UWB_OK ||
 			    response.round_id != round_id ||
 			    response.pair_index != 0U) {
+				/*
+				 * A rejected frame leaves the radio idle: DW3xxx
+				 * does not auto-re-arm RX after an RXFCG event, so
+				 * without this the real RESPONSE would never be
+				 * heard once anything else (e.g. a stale RESULT
+				 * retry from a previous round) arrives first.
+				 */
+				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 				continue;
 			}
 			response_rx_ts = range_read_rx_timestamp();
@@ -1950,6 +1958,15 @@ static int range_run_dstwr_initiator(uint8_t peer_slot,
 		return -EIO;
 	}
 	dwt_writetxfctrl(radio_length, 0U, 0U);
+	/*
+	 * forcetrxoff()+clear right before the delayed-time write/starttx,
+	 * mirroring the POLL send above: without it dwt_starttx(DELAYED)
+	 * refused every FINAL here, even with the target safely in the
+	 * future (the RESPONSE wait loop leaves more software work between
+	 * the last forcetrxoff() and this starttx() than POLL's path does).
+	 */
+	dwt_forcetrxoff();
+	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 	dwt_setdelayedtrxtime((uint32_t)(final_target >> 8U));
 	if (dwt_starttx(DWT_START_TX_DELAYED) != DWT_SUCCESS) {
 		(void)receptec_radio_irq_enable(false);
