@@ -93,4 +93,34 @@ int receptec_uwb_test_start(const char *name, uint8_t arg, uint8_t slot);
 /* Ask the running test to end at its next cycle boundary (result: FAIL reason=aborted). */
 int receptec_uwb_test_abort(void);
 
+struct receptec_uwb_range_round_status {
+	bool running;
+	uint8_t peer_slot;
+	uint32_t period_us;
+	uint64_t round_id;
+	uint32_t rounds;
+	uint32_t successes;
+	uint32_t plan_timeouts;
+	uint32_t range_failures;
+	bool last_valid;
+	uint8_t last_status;
+	uint32_t last_distance_mm;
+	int64_t last_update_ms;
+};
+
+/*
+ * Minimal A-T DS-TWR proof of concept (contract UWB v1.2 S5-S9, pair_index 0
+ * only): each period, send ROUND_ARM then a pair_index=0 RANGE_PLAN ARM to
+ * one tag peer, run one DS-TWR exchange with this RECEPTEC as initiator
+ * (POLL -> RESPONSE -> FINAL), and read back the tag's RANGE_RESULT uplink.
+ * Deliberately not the full master state machine in S9: no B/A-B
+ * participation, no retry on a dropped ARM/ACK/result, and round_id uses an
+ * in-RAM counter (boot_generation is always 0, not NVS-persisted). Shares
+ * the single radio-owner thread with poll/sync/schedule: -EBUSY while any
+ * of those run, and vice versa.
+ */
+int receptec_uwb_range_start(uint8_t peer_slot, uint32_t period_ms);
+int receptec_uwb_range_stop(void);
+void receptec_uwb_range_get(struct receptec_uwb_range_round_status *out);
+
 #endif /* RECEPTEC_UWB_RADIO_H_ */

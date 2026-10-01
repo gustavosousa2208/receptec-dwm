@@ -1651,6 +1651,609 @@ int receptec_uwb_test_abort(void)
 	return 0;
 }
 
+/* ---- Minimal A-T DS-TWR round (contract UWB v1.2 S5-S9, pair_index 0 only) ----
+ *
+ * See the scope note on receptec_uwb_range_start() in uwb_radio.h: this is a
+ * proof of concept, not the full master state machine. It owns the radio the
+ * same way run_poll()'s thread does, but runs on its own dedicated thread so
+ * run_poll() itself stays untouched; poll_running still gates mutual exclusion
+ * between the two.
+ */
+
+#define UWB_RANGE_THREAD_STACK_SIZE 2048U
+#define UWB_RANGE_THREAD_PRIORITY 7
+#define UWB_RANGE_PLAN_ACK_TIMEOUT_US 40000U
+#define UWB_RANGE_RESPONSE_TIMEOUT_US 20000U
+#define UWB_RANGE_RESULT_TIMEOUT_US 60000U
+#define UWB_RANGE_FINAL_DELAY_US 1500U
+#define RANGE_TIMESTAMP_MASK ((1ULL << 40) - 1ULL)
+
+static struct receptec_uwb_range_round_status range_status;
+static K_SEM_DEFINE(range_start_sem, 0, 1);
+static atomic_t range_stop_requested = ATOMIC_INIT(0);
+
+static uint64_t range_timestamp_to_u64(const uint8_t timestamp[5])
+{
+	uint64_t value = 0U;
+
+	for (int i = 4; i >= 0; --i) {
+		value = (value << 8) | timestamp[i];
+	}
+	return value;
+}
+
+static uint64_t range_read_rx_timestamp(void)
+{
+	uint8_t timestamp[5];
+
+	dwt_readrxtimestamp(timestamp, DWT_COMPAT_NONE);
+	return range_timestamp_to_u64(timestamp);
+}
+
+static uint64_t range_read_tx_timestamp(void)
+{
+	uint8_t timestamp[5];
+
+	dwt_readtxtimestamp(timestamp);
+	return range_timestamp_to_u64(timestamp);
+}
+
+/* DW3xxx time is 499.2 MHz x 128: 1 us = 319488 / 5 full-resolution ticks
+ * (us_to_dx_time() above gives the same ratio already divided by 256, for
+ * the high-word-only delayed-TX register).
+ */
+static uint64_t range_us_to_dtu(uint32_t us)
+{
+	return ((uint64_t)us * 319488ULL + 2ULL) / 5ULL;
+}
+
+static void range_put_le(uint8_t *out, uint64_t value, size_t count)
+{
+	for (size_t i = 0U; i < count; ++i) {
+		out[i] = (uint8_t)(value & 0xFFU);
+		value >>= 8U;
+	}
+}
+
+static int range_load_plan_frame(enum receptec_uwb_plan_phase phase,
+				 uint8_t pair_index,
+				 const uint8_t destination[RECEPTEC_UWB_EUI64_SIZE],
+				 const uint8_t initiator[RECEPTEC_UWB_EUI64_SIZE],
+				 const uint8_t responder[RECEPTEC_UWB_EUI64_SIZE],
+				 uint64_t round_id, uint8_t sequence)
+{
+	uint8_t plan_bytes[RECEPTEC_UWB_PLAN_SIZE];
+	struct receptec_uwb_plan plan = {
+		.phase = phase,
+		.round_id = round_id,
+		.pair_index = pair_index,
+		.report_mode = RECEPTEC_UWB_REPORT_AGGREGATE,
+	};
+	struct receptec_uwb_frame frame = {
+		.sequence = sequence,
+		.type = RECEPTEC_UWB_RANGE_PLAN,
+		.payload = plan_bytes,
+		.payload_length = sizeof(plan_bytes),
+	};
+	size_t logical_length;
+	uint16_t radio_length;
+
+	memcpy(plan.initiator, initiator, RECEPTEC_UWB_EUI64_SIZE);
+	memcpy(plan.responder, responder, RECEPTEC_UWB_EUI64_SIZE);
+	if (receptec_uwb_plan_encode(plan_bytes, &plan) != RECEPTEC_UWB_OK) {
+		return -EINVAL;
+	}
+	memcpy(frame.destination, destination, RECEPTEC_UWB_EUI64_SIZE);
+	memcpy(frame.source, receptec_eui, RECEPTEC_UWB_EUI64_SIZE);
+	if (receptec_uwb_encode(tx_bytes, sizeof(tx_bytes), &frame,
+				&logical_length) != RECEPTEC_UWB_OK) {
+		return -EINVAL;
+	}
+	radio_length = (uint16_t)(logical_length + RECEPTEC_UWB_FCS_SIZE);
+	if (dwt_writetxdata(radio_length, tx_bytes, 0U) != DWT_SUCCESS) {
+		return -EIO;
+	}
+	dwt_writetxfctrl(radio_length, 0U, 0U);
+	return 0;
+}
+
+/* Send one RANGE_PLAN (ROUND_ARM or a per-pair ARM) and wait for its ACK. The
+ * ACK is a plain zero-payload ACK exactly like the legacy SYNC/DATA_REQ flow,
+ * so the existing control-response matcher applies unchanged.
+ */
+static int range_send_plan_and_await_ack(uint8_t peer_slot,
+					 const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
+					 enum receptec_uwb_plan_phase phase,
+					 uint8_t pair_index,
+					 const uint8_t initiator[RECEPTEC_UWB_EUI64_SIZE],
+					 const uint8_t responder[RECEPTEC_UWB_EUI64_SIZE],
+					 uint64_t round_id)
+{
+	uint8_t sequence;
+	int status;
+
+	status = receptec_uwb_peer_registry_next_sequence(&peer_registry,
+							   peer_slot, &sequence);
+	if (status < 0) {
+		return status;
+	}
+	status = range_load_plan_frame(phase, pair_index, peer_eui64, initiator,
+				       responder, round_id, sequence);
+	if (status < 0) {
+		return status;
+	}
+	dwt_forcetrxoff();
+	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+	dwt_setrxaftertxdelay(0U);
+	dwt_setrxtimeout(us_to_rx_timeout(UWB_RANGE_PLAN_ACK_TIMEOUT_US));
+	status = receptec_radio_irq_enable(true);
+	if (status < 0) {
+		return status;
+	}
+	if (dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED) !=
+	    DWT_SUCCESS) {
+		(void)receptec_radio_irq_enable(false);
+		return -EIO;
+	}
+	status = await_matching_control_response(peer_eui64, sequence,
+						 RECEPTEC_UWB_ACK,
+						 UWB_RANGE_PLAN_ACK_TIMEOUT_US);
+	dwt_forcetrxoff();
+	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+	(void)receptec_radio_irq_enable(false);
+	return status;
+}
+
+/* One DS-TWR exchange with this RECEPTEC as initiator: POLL (delayed TX,
+ * rounded to the 512-tick boundary every on-air TX timestamp needs per
+ * valid_u40_tx()) -> wait RESPONSE -> delayed FINAL at response_rx+1500us.
+ * Returns 0 once FINAL is confirmed sent; the result itself arrives later as
+ * a RANGE_RESULT uplink, read by the caller.
+ */
+static int range_run_dstwr_initiator(uint8_t peer_slot,
+				     const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
+				     uint64_t round_id)
+{
+	struct receptec_uwb_frame frame;
+	struct receptec_uwb_twr_final final_msg = {
+		.round_id = round_id, .pair_index = 0U,
+	};
+	uint8_t poll_payload[RECEPTEC_UWB_POLL_SIZE];
+	uint8_t final_payload[RECEPTEC_UWB_FINAL_SIZE];
+	uint16_t radio_length;
+	size_t logical_length;
+	uint64_t now_dtu, poll_target, response_rx_ts, final_target;
+	uint8_t sequence;
+	int64_t deadline;
+	int status;
+
+	status = receptec_uwb_peer_registry_next_sequence(&peer_registry,
+							   peer_slot, &sequence);
+	if (status < 0) {
+		return status;
+	}
+	range_put_le(poll_payload, round_id, 8U);
+	poll_payload[8] = 0U;
+	memset(&frame, 0, sizeof(frame));
+	frame.sequence = sequence;
+	frame.type = RECEPTEC_UWB_RANGE_POLL;
+	frame.payload = poll_payload;
+	frame.payload_length = sizeof(poll_payload);
+	memcpy(frame.destination, peer_eui64, RECEPTEC_UWB_EUI64_SIZE);
+	memcpy(frame.source, receptec_eui, RECEPTEC_UWB_EUI64_SIZE);
+	if (receptec_uwb_encode(tx_bytes, sizeof(tx_bytes), &frame,
+				&logical_length) != RECEPTEC_UWB_OK) {
+		return -EINVAL;
+	}
+	radio_length = (uint16_t)(logical_length + RECEPTEC_UWB_FCS_SIZE);
+	if (dwt_writetxdata(radio_length, tx_bytes, 0U) != DWT_SUCCESS) {
+		return -EIO;
+	}
+	dwt_writetxfctrl(radio_length, 0U, 1U);
+
+	dwt_forcetrxoff();
+	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+	dwt_setrxaftertxdelay(0U);
+	dwt_setrxtimeout(us_to_rx_timeout(UWB_RANGE_RESPONSE_TIMEOUT_US));
+	now_dtu = (uint64_t)dwt_readsystimestamphi32() << 8U;
+	poll_target = (now_dtu + range_us_to_dtu(1000U) + 511ULL) &
+		      (RANGE_TIMESTAMP_MASK & ~511ULL);
+	dwt_setdelayedtrxtime((uint32_t)(poll_target >> 8U));
+	status = receptec_radio_irq_enable(true);
+	if (status < 0) {
+		return status;
+	}
+	if (dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED) !=
+	    DWT_SUCCESS) {
+		(void)receptec_radio_irq_enable(false);
+		return -ETIME;
+	}
+	final_msg.poll_tx_ts = poll_target;
+
+	deadline = k_uptime_get() + UWB_RANGE_RESPONSE_TIMEOUT_US / 1000 + 20;
+	status = -ETIMEDOUT;
+	for (;;) {
+		int64_t remaining_ms = deadline - k_uptime_get();
+		uint32_t radio_status;
+		uint16_t radio_len;
+		uint8_t ranging;
+		struct receptec_uwb_twr_response response;
+
+		if (remaining_ms <= 0) {
+			break;
+		}
+		(void)receptec_radio_wait_event(K_MSEC(remaining_ms));
+		radio_status = dwt_readsysstatuslo();
+		if ((radio_status & DWT_INT_RXFCG_BIT_MASK) != 0U) {
+			clear_radio_events(DWT_INT_RXFCG_BIT_MASK);
+			radio_len = dwt_getframelength(&ranging);
+			if (radio_len < RECEPTEC_UWB_HEADER_SIZE + RECEPTEC_UWB_FCS_SIZE ||
+			    radio_len > RECEPTEC_UWB_MAX_PSDU_SIZE) {
+				continue;
+			}
+			dwt_readrxdata(rx_bytes, radio_len - RECEPTEC_UWB_FCS_SIZE, 0U);
+			if (receptec_uwb_decode(rx_bytes,
+						radio_len - RECEPTEC_UWB_FCS_SIZE,
+						&frame) != RECEPTEC_UWB_OK ||
+			    frame.type != RECEPTEC_UWB_RANGE_RESPONSE ||
+			    memcmp(frame.source, peer_eui64, RECEPTEC_UWB_EUI64_SIZE) != 0 ||
+			    memcmp(frame.destination, receptec_eui, RECEPTEC_UWB_EUI64_SIZE) != 0 ||
+			    receptec_uwb_twr_response_decode(frame.payload,
+							     frame.payload_length,
+							     &response) != RECEPTEC_UWB_OK ||
+			    response.round_id != round_id ||
+			    response.pair_index != 0U) {
+				continue;
+			}
+			response_rx_ts = range_read_rx_timestamp();
+			status = 0;
+			break;
+		}
+		if ((radio_status & SYS_STATUS_ALL_RX_TO) != 0U ||
+		    (radio_status & UWB_RX_REARM_ERROR_MASK) != 0U) {
+			clear_radio_events(radio_status &
+					   (SYS_STATUS_ALL_RX_TO | UWB_RX_REARM_ERROR_MASK));
+			break;
+		}
+	}
+	dwt_forcetrxoff();
+	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+	if (status < 0) {
+		(void)receptec_radio_irq_enable(false);
+		return status;
+	}
+
+	final_msg.response_rx_ts = response_rx_ts;
+	final_target = (response_rx_ts + range_us_to_dtu(UWB_RANGE_FINAL_DELAY_US) +
+		       511ULL) & (RANGE_TIMESTAMP_MASK & ~511ULL);
+	final_msg.final_tx_ts = final_target;
+	if (receptec_uwb_twr_final_encode(final_payload, &final_msg) !=
+	    RECEPTEC_UWB_OK) {
+		(void)receptec_radio_irq_enable(false);
+		return -EINVAL;
+	}
+	memset(&frame, 0, sizeof(frame));
+	frame.sequence = sequence;
+	frame.type = RECEPTEC_UWB_RANGE_FINAL;
+	frame.payload = final_payload;
+	frame.payload_length = sizeof(final_payload);
+	memcpy(frame.destination, peer_eui64, RECEPTEC_UWB_EUI64_SIZE);
+	memcpy(frame.source, receptec_eui, RECEPTEC_UWB_EUI64_SIZE);
+	if (receptec_uwb_encode(tx_bytes, sizeof(tx_bytes), &frame,
+				&logical_length) != RECEPTEC_UWB_OK) {
+		(void)receptec_radio_irq_enable(false);
+		return -EINVAL;
+	}
+	radio_length = (uint16_t)(logical_length + RECEPTEC_UWB_FCS_SIZE);
+	if (dwt_writetxdata(radio_length, tx_bytes, 0U) != DWT_SUCCESS) {
+		(void)receptec_radio_irq_enable(false);
+		return -EIO;
+	}
+	dwt_writetxfctrl(radio_length, 0U, 0U);
+	dwt_setdelayedtrxtime((uint32_t)(final_target >> 8U));
+	if (dwt_starttx(DWT_START_TX_DELAYED) != DWT_SUCCESS) {
+		(void)receptec_radio_irq_enable(false);
+		return -ETIME;
+	}
+	(void)receptec_radio_wait_event(K_MSEC(20));
+	if ((dwt_readsysstatuslo() & DWT_INT_TXFRS_BIT_MASK) == 0U) {
+		dwt_forcetrxoff();
+		clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+		(void)receptec_radio_irq_enable(false);
+		return -ETIMEDOUT;
+	}
+	/* Confirm the delayed TX actually landed on its programmed timestamp,
+	 * the same check coletec-tag's range_send_frame() makes: a mismatch
+	 * here means the radio missed the slot even though starttx() accepted it.
+	 */
+	if (((range_read_tx_timestamp() ^ final_target) &
+	     (RANGE_TIMESTAMP_MASK & ~511ULL)) != 0U) {
+		clear_radio_events(DWT_INT_TXFRS_BIT_MASK);
+		(void)receptec_radio_irq_enable(false);
+		return -ETIME;
+	}
+	clear_radio_events(DWT_INT_TXFRS_BIT_MASK);
+	(void)receptec_radio_irq_enable(false);
+	return 0;
+}
+
+/* Wait for the tag's RANGE_RESULT uplink for this round's pair 0 and ACK it. */
+static int range_await_result(uint8_t peer_slot,
+			      const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
+			      uint64_t round_id,
+			      enum receptec_uwb_range_status *out_status,
+			      uint32_t *out_distance_mm)
+{
+	struct receptec_uwb_frame frame;
+	struct receptec_uwb_result result;
+	int64_t deadline = k_uptime_get() + UWB_RANGE_RESULT_TIMEOUT_US / 1000;
+	int status = -ETIMEDOUT;
+
+	dwt_forcetrxoff();
+	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+	dwt_setrxaftertxdelay(0U);
+	dwt_setrxtimeout(us_to_rx_timeout(UWB_RANGE_RESULT_TIMEOUT_US));
+	status = receptec_radio_irq_enable(true);
+	if (status < 0) {
+		return status;
+	}
+	if (dwt_rxenable(DWT_START_RX_IMMEDIATE) != DWT_SUCCESS) {
+		(void)receptec_radio_irq_enable(false);
+		return -EIO;
+	}
+	status = -ETIMEDOUT;
+	for (;;) {
+		int64_t remaining_ms = deadline - k_uptime_get();
+		uint32_t radio_status;
+		uint16_t radio_len;
+		uint8_t ranging;
+
+		if (remaining_ms <= 0) {
+			break;
+		}
+		(void)receptec_radio_wait_event(K_MSEC(remaining_ms));
+		radio_status = dwt_readsysstatuslo();
+		if ((radio_status & DWT_INT_RXFCG_BIT_MASK) != 0U) {
+			clear_radio_events(DWT_INT_RXFCG_BIT_MASK);
+			radio_len = dwt_getframelength(&ranging);
+			if (radio_len < RECEPTEC_UWB_HEADER_SIZE + RECEPTEC_UWB_FCS_SIZE ||
+			    radio_len > RECEPTEC_UWB_MAX_PSDU_SIZE) {
+				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+				continue;
+			}
+			dwt_readrxdata(rx_bytes, radio_len - RECEPTEC_UWB_FCS_SIZE, 0U);
+			if (receptec_uwb_decode(rx_bytes,
+						radio_len - RECEPTEC_UWB_FCS_SIZE,
+						&frame) != RECEPTEC_UWB_OK ||
+			    frame.type != RECEPTEC_UWB_RANGE_RESULT ||
+			    memcmp(frame.source, peer_eui64, RECEPTEC_UWB_EUI64_SIZE) != 0 ||
+			    memcmp(frame.destination, receptec_eui, RECEPTEC_UWB_EUI64_SIZE) != 0 ||
+			    receptec_uwb_result_decode(frame.payload,
+						       frame.payload_length,
+						       &result) != RECEPTEC_UWB_OK ||
+			    result.round_id != round_id || result.record_count != 1U ||
+			    result.records[0].pair_index != 0U) {
+				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+				continue;
+			}
+			*out_status = result.records[0].status;
+			*out_distance_mm = result.records[0].distance_mm;
+			status = 0;
+			break;
+		}
+		if ((radio_status & SYS_STATUS_ALL_RX_TO) != 0U ||
+		    (radio_status & UWB_RX_REARM_ERROR_MASK) != 0U) {
+			clear_radio_events(radio_status &
+					   (SYS_STATUS_ALL_RX_TO | UWB_RX_REARM_ERROR_MASK));
+			break;
+		}
+	}
+	if (status == 0) {
+		/* Plain zero-payload ACK, matching the uplink's sequence/EUIs. */
+		struct receptec_uwb_frame ack = {
+			.sequence = frame.sequence,
+			.type = RECEPTEC_UWB_ACK,
+		};
+		size_t ack_length;
+		uint16_t ack_radio_length;
+
+		memcpy(ack.destination, peer_eui64, RECEPTEC_UWB_EUI64_SIZE);
+		memcpy(ack.source, receptec_eui, RECEPTEC_UWB_EUI64_SIZE);
+		if (receptec_uwb_encode(tx_bytes, sizeof(tx_bytes), &ack,
+					&ack_length) == RECEPTEC_UWB_OK) {
+			ack_radio_length = (uint16_t)(ack_length + RECEPTEC_UWB_FCS_SIZE);
+			if (dwt_writetxdata(ack_radio_length, tx_bytes, 0U) ==
+			    DWT_SUCCESS) {
+				dwt_writetxfctrl(ack_radio_length, 0U, 0U);
+				dwt_forcetrxoff();
+				clear_radio_events(UWB_RADIO_EVENT_MASK |
+						   DWT_INT_TXFRS_BIT_MASK);
+				if (dwt_starttx(DWT_START_TX_IMMEDIATE) == DWT_SUCCESS) {
+					(void)receptec_radio_wait_event(K_MSEC(20));
+					clear_radio_events(DWT_INT_TXFRS_BIT_MASK);
+				}
+			}
+		}
+	}
+	dwt_forcetrxoff();
+	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+	(void)receptec_radio_irq_enable(false);
+	return status;
+}
+
+/* One full round: ROUND_ARM -> pair-0 ARM -> DS-TWR initiator -> result uplink. */
+static void range_round(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE])
+{
+	enum receptec_uwb_range_status outcome_status = RECEPTEC_UWB_RANGE_NO_RESULT;
+	uint32_t distance_mm = RECEPTEC_UWB_DISTANCE_INVALID;
+	uint64_t round_id;
+	int status;
+
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	round_id = ++range_status.round_id;
+	range_status.rounds++;
+	k_mutex_unlock(&uwb_peer_mutex);
+
+	status = range_send_plan_and_await_ack(range_status.peer_slot, peer_eui64,
+					       RECEPTEC_UWB_PLAN_ROUND_ARM, 0xFFU,
+					       receptec_eui, peer_eui64, round_id);
+	if (status < 0) {
+		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+		range_status.plan_timeouts++;
+		range_status.last_valid = false;
+		k_mutex_unlock(&uwb_peer_mutex);
+		return;
+	}
+	status = range_send_plan_and_await_ack(range_status.peer_slot, peer_eui64,
+					       RECEPTEC_UWB_PLAN_ARM, 0U,
+					       receptec_eui, peer_eui64, round_id);
+	if (status < 0) {
+		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+		range_status.plan_timeouts++;
+		range_status.last_valid = false;
+		k_mutex_unlock(&uwb_peer_mutex);
+		return;
+	}
+	status = range_run_dstwr_initiator(range_status.peer_slot, peer_eui64,
+					   round_id);
+	if (status == 0) {
+		status = range_await_result(range_status.peer_slot, peer_eui64,
+					    round_id, &outcome_status,
+					    &distance_mm);
+	}
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (status == 0) {
+		range_status.successes++;
+		range_status.last_valid = true;
+		range_status.last_status = (uint8_t)outcome_status;
+		range_status.last_distance_mm = distance_mm;
+	} else {
+		range_status.range_failures++;
+		range_status.last_valid = false;
+	}
+	range_status.last_update_ms = k_uptime_get();
+	k_mutex_unlock(&uwb_peer_mutex);
+	printk("UWB range: round=%llu status=%u distance_mm=%u\n",
+	       round_id, (unsigned int)outcome_status, distance_mm);
+}
+
+static void range_thread_entry(void *unused_a, void *unused_b, void *unused_c)
+{
+	ARG_UNUSED(unused_a);
+	ARG_UNUSED(unused_b);
+	ARG_UNUSED(unused_c);
+
+	for (;;) {
+		uint32_t period_us;
+		uint8_t peer_slot;
+		uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE];
+		int64_t next_tick_ms;
+
+		k_sem_take(&range_start_sem, K_FOREVER);
+		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+		period_us = range_status.period_us;
+		peer_slot = range_status.peer_slot;
+		k_mutex_unlock(&uwb_peer_mutex);
+		next_tick_ms = k_uptime_get();
+
+		while (atomic_get(&range_stop_requested) == 0) {
+			int64_t sleep_ms;
+
+			k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+			if (receptec_uwb_peer_registry_get(&peer_registry, peer_slot,
+							   peer_eui64) < 0) {
+				k_mutex_unlock(&uwb_peer_mutex);
+				break;
+			}
+			k_mutex_unlock(&uwb_peer_mutex);
+
+			range_round(peer_eui64);
+			next_tick_ms += period_us / 1000;
+			sleep_ms = next_tick_ms - k_uptime_get();
+			if (sleep_ms < 0) {
+				next_tick_ms = k_uptime_get();
+				continue;
+			}
+			while (sleep_ms > 0 &&
+			       atomic_get(&range_stop_requested) == 0) {
+				int32_t chunk_ms = (int32_t)MIN(sleep_ms, 100);
+
+				k_msleep(chunk_ms);
+				sleep_ms -= chunk_ms;
+			}
+		}
+		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+		dwt_forcetrxoff();
+		clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+		range_status.running = false;
+		poll_running = false;
+		k_mutex_unlock(&uwb_peer_mutex);
+	}
+}
+
+K_THREAD_DEFINE(uwb_range_thread, UWB_RANGE_THREAD_STACK_SIZE, range_thread_entry,
+		NULL, NULL, NULL, UWB_RANGE_THREAD_PRIORITY, 0, 0);
+
+int receptec_uwb_range_start(uint8_t peer_slot, uint32_t period_ms)
+{
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	int ret = 0;
+
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!radio_ready || !peer_registry_ready) {
+		ret = -EAGAIN;
+		goto unlock;
+	}
+	if (poll_running) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+	if (peer_slot >= RECEPTEC_UWB_MAX_PEERS || period_ms == 0U ||
+	    period_ms > 60000U) {
+		ret = -EINVAL;
+		goto unlock;
+	}
+	if (receptec_uwb_peer_registry_get(&peer_registry, peer_slot, eui64) < 0) {
+		ret = -ENOENT;
+		goto unlock;
+	}
+	range_status.running = true;
+	range_status.peer_slot = peer_slot;
+	range_status.period_us = period_ms * 1000U;
+	range_status.rounds = 0U;
+	range_status.successes = 0U;
+	range_status.plan_timeouts = 0U;
+	range_status.range_failures = 0U;
+	range_status.last_valid = false;
+	atomic_set(&range_stop_requested, 0);
+	poll_running = true;
+	k_sem_give(&range_start_sem);
+unlock:
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+int receptec_uwb_range_stop(void)
+{
+	int ret = 0;
+
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!range_status.running) {
+		ret = -EALREADY;
+	} else {
+		atomic_set(&range_stop_requested, 1);
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+void receptec_uwb_range_get(struct receptec_uwb_range_round_status *out)
+{
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	*out = range_status;
+	k_mutex_unlock(&uwb_peer_mutex);
+}
+
 static void run_poll(uint32_t period_us)
 {
 	uint32_t epoch_dx;

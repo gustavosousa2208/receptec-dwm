@@ -619,6 +619,93 @@ static int cmd_uwb_lna(const struct shell *shell, size_t argc, char **argv)
 	return 0;
 }
 
+/*
+ * uwb range: minimal A-T DS-TWR proof of concept (contract UWB v1.2 S5-S9,
+ * pair_index 0 only). See the scope note on receptec_uwb_range_start() in
+ * uwb_radio.h: no B/A-B, no retry, in-RAM round_id. Shares the radio with
+ * poll/sync/schedule, so it refuses to start while any of those run.
+ */
+static int cmd_uwb_range_start(const struct shell *shell, size_t argc,
+			       char **argv)
+{
+	uint8_t slot;
+	unsigned long period_ms = 1000UL;
+	char *end;
+	int ret;
+
+	if (parse_slot(shell, argv[1], &slot) < 0) {
+		return -EINVAL;
+	}
+	if (argc > 2U) {
+		errno = 0;
+		period_ms = strtoul(argv[2], &end, 10);
+		if (errno != 0 || end == argv[2] || *end != '\0' ||
+		    period_ms == 0UL || period_ms > 60000UL) {
+			shell_error(shell, "usage: uwb range start <slot> [period_ms 1..60000]");
+			return -EINVAL;
+		}
+	}
+	ret = receptec_uwb_range_start(slot, (uint32_t)period_ms);
+	if (ret < 0) {
+		shell_error(shell, "range start failed: %d (-%d busy, -%d no peer)",
+			    ret, EBUSY, ENOENT);
+		return ret;
+	}
+	shell_print(shell, "A-T range round every %lu ms against slot %u; `uwb range status`, `uwb range stop`",
+		    period_ms, slot);
+	return 0;
+}
+
+static int cmd_uwb_range_stop(const struct shell *shell, size_t argc,
+			      char **argv)
+{
+	int ret;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	ret = receptec_uwb_range_stop();
+	if (ret < 0) {
+		shell_error(shell, "range is not running: %d", ret);
+		return ret;
+	}
+	shell_print(shell, "range round stopping");
+	return 0;
+}
+
+static int cmd_uwb_range_status(const struct shell *shell, size_t argc,
+				char **argv)
+{
+	struct receptec_uwb_range_round_status status;
+
+	ARG_UNUSED(argc);
+	ARG_UNUSED(argv);
+	receptec_uwb_range_get(&status);
+	shell_print(shell, "range running=%u slot=%u period=%u ms rounds=%u successes=%u "
+		    "plan_timeouts=%u range_failures=%u",
+		    status.running, status.peer_slot, status.period_us / 1000U,
+		    status.rounds, status.successes, status.plan_timeouts,
+		    status.range_failures);
+	if (status.last_valid) {
+		shell_print(shell, "last round=%llu status=%u distance_mm=%u",
+			    status.round_id, status.last_status,
+			    status.last_distance_mm);
+	} else {
+		shell_print(shell, "last round=%llu: no valid result yet",
+			    status.round_id);
+	}
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+	sub_range,
+	SHELL_CMD_ARG(start, NULL,
+		      "Start periodic A-T round: start <slot> [period_ms]",
+		      cmd_uwb_range_start, 2, 1),
+	SHELL_CMD(stop, NULL, "Stop the range round", cmd_uwb_range_stop),
+	SHELL_CMD(status, NULL, "Show round counters and last result",
+		  cmd_uwb_range_status),
+	SHELL_SUBCMD_SET_END);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_schedule,
 	SHELL_CMD(show, NULL, "Show per-peer actions (default: SYNC)",
@@ -765,6 +852,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		     cmd_uwb_sync, 2, 1),
 	SHELL_CMD(peer, &sub_peer, "Manage registered COLETEC peers", NULL),
 	SHELL_CMD(schedule, &sub_schedule, "Configure per-peer UWB schedule", NULL),
+	SHELL_CMD(range, &sub_range, "A-T DS-TWR round (proof of concept)", NULL),
 	SHELL_CMD_ARG(stop, NULL, "Send STOP (requires timeout config): stop <slot>",
 		      cmd_uwb_stop, 2, 0),
 	SHELL_CMD(poll, &sub_poll, "Periodic DATA_REQ polling", NULL),
