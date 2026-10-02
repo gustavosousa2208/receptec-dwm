@@ -96,6 +96,7 @@ int receptec_uwb_test_abort(void);
 struct receptec_uwb_range_round_status {
 	bool running;
 	uint8_t peer_slot;
+	uint8_t pair_index;
 	uint32_t period_us;
 	uint64_t round_id;
 	uint32_t rounds;
@@ -109,18 +110,39 @@ struct receptec_uwb_range_round_status {
 };
 
 /*
- * Minimal A-T DS-TWR proof of concept (contract UWB v1.2 S5-S9, pair_index 0
- * only): each period, send ROUND_ARM then a pair_index=0 RANGE_PLAN ARM to
- * one tag peer, run one DS-TWR exchange with this RECEPTEC as initiator
- * (POLL -> RESPONSE -> FINAL), and read back the tag's RANGE_RESULT uplink.
- * Deliberately not the full master state machine in S9: no B/A-B
- * participation, no retry on a dropped ARM/ACK/result, and round_id uses an
- * in-RAM counter (boot_generation is always 0, not NVS-persisted). Shares
- * the single radio-owner thread with poll/sync/schedule: -EBUSY while any
- * of those run, and vice versa.
+ * Minimal DS-TWR-as-initiator proof of concept (contract UWB v1.2 S5-S9):
+ * each period, send ROUND_ARM then a RANGE_PLAN ARM for `pair_index` to the
+ * peer in `peer_slot`, run one DS-TWR exchange with this RECEPTEC as
+ * initiator (POLL -> RESPONSE -> FINAL), and read back the responder's
+ * RANGE_RESULT uplink. `pair_index` must match what the responder expects
+ * for this peer (0=A-T and 1=B-T are initiated by whichever anchor this
+ * board's own CONFIG_RECEPTEC_FIXED_ANCHOR_ID names; 2=A-B is initiated by
+ * the master against the base, regardless of the master's own anchor id).
+ * Deliberately not the full master state machine in S9: no simultaneous
+ * multi-pair scheduling, no retry on a dropped ARM/ACK/result, and round_id
+ * uses an in-RAM counter (boot_generation is always 0, not NVS-persisted).
+ * Shares the single radio-owner thread with poll/sync/schedule: -EBUSY
+ * while any of those run, and vice versa.
  */
-int receptec_uwb_range_start(uint8_t peer_slot, uint32_t period_ms);
+int receptec_uwb_range_start(uint8_t peer_slot, uint32_t period_ms,
+			     uint8_t pair_index);
 int receptec_uwb_range_stop(void);
 void receptec_uwb_range_get(struct receptec_uwb_range_round_status *out);
+
+/*
+ * One-shot DS-TWR responder (contract UWB v1.2 S5-S9): listens up to
+ * `timeout_ms` for ROUND_ARM, then ARM for `pair_index`, then POLL/FINAL
+ * from the registered master in `master_slot`, computes the distance and
+ * uplinks RANGE_RESULT to that master. Used today for pair_index=2 (A-B),
+ * the only pair where a RECEPTEC-family board plays responder; returns 0
+ * with *out_status==RECEPTEC_UWB_RANGE_OK on a successful measurement, a
+ * negative errno otherwise (-EBUSY/-EAGAIN as receptec_uwb_range_start()).
+ * Blocks the calling thread for up to timeout_ms; call it from the shell,
+ * not from range_thread.
+ */
+int receptec_uwb_range_respond(uint8_t master_slot, uint8_t pair_index,
+			       uint32_t timeout_ms,
+			       enum receptec_uwb_range_status *out_status,
+			       uint32_t *out_distance_mm);
 
 #endif /* RECEPTEC_UWB_RADIO_H_ */
