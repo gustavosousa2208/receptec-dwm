@@ -41,8 +41,30 @@
 #include "deca_interface.h"
 #include "deca_private.h"
 
-#define UWB_TX_ANTENNA_DELAY 16385U
-#define UWB_RX_ANTENNA_DELAY 16385U
+/*
+ * DW3110 antenna delay, calibrated 2026-10-02 against two known A-B
+ * distances (receptec-qorvo <-> fake-coletec-0, both DW3110): 0.54m and
+ * 1.5m. Previous value (16385) was Qorvo's generic, uncalibrated default,
+ * shared uncritically across every radio in this project regardless of
+ * chip generation (also used as-is for the DW3720 tag, which this
+ * calibration does not touch -- no independent ground-truth distance was
+ * available for A-T/B-T, see atletec-1t2.8). Measured bias before this fix
+ * was consistently short: A-B read ~520-580mm at 0.54m true and
+ * ~1540-1620mm at 1.5m true. The two points disagree by more than their
+ * own sampling noise (implied offset +41mm at 0.54m vs +71mm at 1.5m),
+ * which a 2-point fit can't distinguish from a real inter-radio clock-rate
+ * mismatch vs. imprecision in the 1.5m reference itself (not independently
+ * re-measured). Pooling both under the assumption of no clock-rate error
+ * (physically the sane default for DW3xxx-class crystals; a true rate
+ * mismatch of the magnitude a naive 2-point slope fit implied would be
+ * ~100x too large to be real) gives a weighted +58mm total offset, i.e.
+ * ~6.2 ticks per radio. See atletec-vc6 for redoing this with a wider,
+ * better-separated baseline (>=3m) once bench space allows, which would
+ * let a 3-point fit actually test for a real clock-rate term instead of
+ * assuming it away.
+ */
+#define UWB_TX_ANTENNA_DELAY 16391U
+#define UWB_RX_ANTENNA_DELAY 16391U
 #define UWB_RESPONSE_TIMEOUT_US 100000U
 #define UWB_RADIO_EVENT_MASK \
 	(DWT_INT_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_ERR | SYS_STATUS_ALL_RX_TO)
