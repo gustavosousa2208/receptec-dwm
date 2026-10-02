@@ -737,10 +737,11 @@ static int cmd_uwb_range_status(const struct shell *shell, size_t argc,
 	ARG_UNUSED(argv);
 	receptec_uwb_range_get(&status);
 	shell_print(shell, "range running=%u slot=%u period=%u ms rounds=%u successes=%u "
-		    "plan_timeouts=%u range_failures=%u",
+		    "plan_timeouts=%u round_arm_timeouts=%u range_failures=%u last_arm_send_status=%d",
 		    status.running, status.peer_slot, status.period_us / 1000U,
 		    status.rounds, status.successes, status.plan_timeouts,
-		    status.range_failures);
+		    status.round_arm_timeouts, status.range_failures,
+		    status.last_arm_send_status);
 	if (status.last_valid) {
 		shell_print(shell, "last round=%llu status=%u distance_mm=%u",
 			    status.round_id, status.last_status,

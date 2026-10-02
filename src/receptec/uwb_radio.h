@@ -102,6 +102,8 @@ struct receptec_uwb_range_round_status {
 	uint32_t rounds;
 	uint32_t successes;
 	uint32_t plan_timeouts;
+	uint32_t round_arm_timeouts;
+	int32_t last_arm_send_status;
 	uint32_t range_failures;
 	bool last_valid;
 	uint8_t last_status;

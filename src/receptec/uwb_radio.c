@@ -2158,7 +2158,8 @@ static int range_send_frame(enum receptec_uwb_packet_type type,
 			    const uint8_t destination[RECEPTEC_UWB_EUI64_SIZE],
 			    uint8_t sequence, const uint8_t *payload,
 			    size_t payload_length, bool ranging, bool delayed,
-			    uint64_t target_ts, uint64_t *actual_ts)
+			    uint64_t target_ts, uint64_t *actual_ts,
+			    bool response_expected)
 {
 	struct receptec_uwb_frame frame = {
 		.sequence = sequence, .type = type,
@@ -2186,7 +2187,8 @@ static int range_send_frame(enum receptec_uwb_packet_type type,
 
 		dwt_setdelayedtrxtime((uint32_t)(raw >> 8U));
 	}
-	if (dwt_starttx(delayed ? DWT_START_TX_DELAYED : DWT_START_TX_IMMEDIATE) !=
+	if (dwt_starttx((delayed ? DWT_START_TX_DELAYED : DWT_START_TX_IMMEDIATE) |
+			(response_expected ? DWT_RESPONSE_EXPECTED : 0)) !=
 	    DWT_SUCCESS) {
 		return -ETIME;
 	}
@@ -2209,14 +2211,24 @@ static int range_send_frame(enum receptec_uwb_packet_type type,
 }
 
 /* ACK, 1 ms after the confirmed frame's RX timestamp (contract UWB v1.2 S4). */
+/*
+ * Contract nominal is 1 ms (UWB v1.2 S4), but 1000us left dwt_starttx(DELAYED)
+ * rejected every time on hardware (ack_rc=-ETIME, confirmed with no other
+ * instrumentation in the path) -- the same symptom, same root cause (not
+ * enough margin for decode+validate+encode before the delayed TX arms), as
+ * the two prior ACK/FINAL margin bugs fixed earlier in this feature
+ * (coletec-tag's range_ack() and this file's own FINAL send). 2000us is the
+ * same proven value coletec-tag's range_ack() uses.
+ */
 static int range_send_ack(const uint8_t destination[RECEPTEC_UWB_EUI64_SIZE],
-			  uint8_t sequence, uint64_t request_rx_ts)
+			  uint8_t sequence, uint64_t request_rx_ts,
+			  bool response_expected)
 {
-	uint64_t target = (request_rx_ts + range_us_to_dtu(1000U) + 511ULL) &
+	uint64_t target = (request_rx_ts + range_us_to_dtu(2000U) + 511ULL) &
 			  (RANGE_TIMESTAMP_MASK & ~511ULL);
 
 	return range_send_frame(RECEPTEC_UWB_ACK, destination, sequence, NULL,
-				0U, false, true, target, NULL);
+				0U, false, true, target, NULL, response_expected);
 }
 
 /*
@@ -2302,12 +2314,16 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index,
 		}
 		rx_ts = range_read_rx_timestamp();
 		dwt_readrxdata(rx_bytes, radio_len - RECEPTEC_UWB_FCS_SIZE, 0U);
-		if (receptec_uwb_decode(rx_bytes, radio_len - RECEPTEC_UWB_FCS_SIZE,
-					&frame) != RECEPTEC_UWB_OK ||
-		    memcmp(frame.source, master_eui64, RECEPTEC_UWB_EUI64_SIZE) != 0 ||
-		    memcmp(frame.destination, receptec_eui, RECEPTEC_UWB_EUI64_SIZE) != 0) {
-			(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
-			continue;
+		{
+			int decode_rc = receptec_uwb_decode(
+				rx_bytes, radio_len - RECEPTEC_UWB_FCS_SIZE, &frame);
+
+			if (decode_rc != RECEPTEC_UWB_OK ||
+			    memcmp(frame.source, master_eui64, RECEPTEC_UWB_EUI64_SIZE) != 0 ||
+			    memcmp(frame.destination, receptec_eui, RECEPTEC_UWB_EUI64_SIZE) != 0) {
+				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+				continue;
+			}
 		}
 
 		if (frame.type == RECEPTEC_UWB_RANGE_PLAN) {
@@ -2322,15 +2338,29 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index,
 				continue;
 			}
 			if (plan.phase == RECEPTEC_UWB_PLAN_ROUND_ARM) {
+				int ack_rc;
+
 				if (memcmp(plan.initiator, master_eui64,
 					   RECEPTEC_UWB_EUI64_SIZE) == 0) {
 					round_id = plan.round_id;
 					have_round = true;
 					armed = false;
 				}
-				(void)range_send_ack(master_eui64, frame.sequence,
-						     rx_ts);
-				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+				/*
+				 * response_expected=true: DWT_RESPONSE_EXPECTED arms
+				 * RX in hardware the instant this delayed ACK's TX
+				 * completes. A manual dwt_rxenable() after the fact
+				 * was too slow -- the master, auto-armed the same
+				 * way after its own TX, reacts fast enough that the
+				 * follow-up ARM consistently arrived before this
+				 * software's re-arm ran (confirmed: ack always
+				 * succeeded, but zero ARM frames were ever seen).
+				 */
+				ack_rc = range_send_ack(master_eui64, frame.sequence,
+							rx_ts, true);
+				if (ack_rc < 0) {
+					(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+				}
 				continue;
 			}
 			if (plan.phase != RECEPTEC_UWB_PLAN_ARM || !have_round ||
@@ -2342,8 +2372,10 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index,
 				continue;
 			}
 			armed = true;
-			(void)range_send_ack(master_eui64, frame.sequence, rx_ts);
-			(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+			if (range_send_ack(master_eui64, frame.sequence, rx_ts, true) <
+			    0) {
+				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+			}
 			continue;
 		}
 
@@ -2358,7 +2390,15 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index,
 				continue;
 			}
 			poll_rx_ts = rx_ts;
-			response_target = (poll_rx_ts + range_us_to_dtu(1500U) +
+			/*
+			 * Contract nominal is 1500us (S6.2), but that's a target for
+			 * the ToF math, not a hard deadline (same note as
+			 * UWB_RANGE_FINAL_DELAY_US above). Confirmed on hardware:
+			 * dwt_starttx(DELAYED) for RESPONSE was rejected every single
+			 * time at 1500us; reusing the already-proven 3000us budget
+			 * from this file's own FINAL send fixes it.
+			 */
+			response_target = (poll_rx_ts + range_us_to_dtu(UWB_RANGE_FINAL_DELAY_US) +
 					  511ULL) & (RANGE_TIMESTAMP_MASK & ~511ULL);
 			response_msg.round_id = round_id;
 			response_msg.pair_index = pair_index;
@@ -2375,13 +2415,23 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index,
 					     response_payload,
 					     sizeof(response_payload), true, true,
 					     response_target,
-					     &response_actual_ts) < 0) {
+					     &response_actual_ts, true) < 0) {
 				*out_status = RECEPTEC_UWB_RANGE_RADIO_LATE;
 				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 				continue;
 			}
-			response_msg.response_tx_ts = response_actual_ts;
-			(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+			/*
+			 * Keep response_msg.response_tx_ts as the aligned target
+			 * (already assigned above, matching what the wire payload
+			 * carries) -- NOT response_actual_ts. receptec_uwb_distance_mm()
+			 * requires response_tx_ts to pass valid_u40_tx() (bits 8:0
+			 * zero); the raw hardware TX readback almost never is
+			 * (confirmed: distance_rc=-1/ERR_ARGUMENT every time while
+			 * this overwrote it with the unaligned actual timestamp).
+			 * coletec_uwb.c's range_respond_poll() keeps the same
+			 * distinction (wire/record value vs. its own actual-ts local
+			 * var, which its distance function has no such gate on).
+			 */
 			continue;
 		}
 
@@ -2408,12 +2458,11 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index,
 				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 				continue;
 			}
-			if (receptec_uwb_distance_mm(&response_msg, &final_msg,
-						     rx_ts, &distance_mm) < 0) {
-				final_status = RECEPTEC_UWB_RANGE_BAD_MEASUREMENT;
-			} else {
-				final_status = RECEPTEC_UWB_RANGE_OK;
-			}
+			final_status = receptec_uwb_distance_mm(
+					&response_msg, &final_msg, rx_ts,
+					&distance_mm) < 0 ?
+				RECEPTEC_UWB_RANGE_BAD_MEASUREMENT :
+				RECEPTEC_UWB_RANGE_OK;
 			result.records[0].pair_index = pair_index;
 			memcpy(result.records[0].initiator, master_eui64,
 			       RECEPTEC_UWB_EUI64_SIZE);
@@ -2433,7 +2482,7 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index,
 						       frame.sequence,
 						       result_payload,
 						       result_length, false,
-						       false, 0U, NULL);
+						       false, 0U, NULL, false);
 			}
 			*out_status = final_status;
 			*out_distance_mm = result.records[0].distance_mm;
@@ -2446,6 +2495,8 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index,
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 	(void)receptec_radio_irq_enable(false);
+	printk("UWB respond: pair=%u status=%u distance_mm=%u\n", pair_index,
+	       *out_status, *out_distance_mm);
 	return status;
 }
 
@@ -2499,7 +2550,7 @@ static void range_round(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 					       receptec_eui, peer_eui64, round_id);
 	if (status < 0) {
 		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
-		range_status.plan_timeouts++;
+		range_status.round_arm_timeouts++;
 		range_status.last_valid = false;
 		k_mutex_unlock(&uwb_peer_mutex);
 		return;
@@ -2509,6 +2560,7 @@ static void range_round(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 					       receptec_eui, peer_eui64, round_id);
 	if (status < 0) {
 		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+		range_status.last_arm_send_status = status;
 		range_status.plan_timeouts++;
 		range_status.last_valid = false;
 		k_mutex_unlock(&uwb_peer_mutex);
@@ -2627,6 +2679,8 @@ int receptec_uwb_range_start(uint8_t peer_slot, uint32_t period_ms,
 	range_status.rounds = 0U;
 	range_status.successes = 0U;
 	range_status.plan_timeouts = 0U;
+	range_status.round_arm_timeouts = 0U;
+	range_status.last_arm_send_status = 0;
 	range_status.range_failures = 0U;
 	range_status.last_valid = false;
 	atomic_set(&range_stop_requested, 0);
