@@ -1651,7 +1651,8 @@ int receptec_uwb_test_abort(void)
 	return 0;
 }
 
-/* ---- Minimal A-T DS-TWR round (contract UWB v1.2 S5-S9, pair_index 0 only) ----
+/* ---- Minimal DS-TWR round (contract UWB v1.2 S5-S9), pair_index taken from
+ * CONFIG_RECEPTEC_FIXED_ANCHOR_ID (0=A-T, 1=B-T) ----
  *
  * See the scope note on receptec_uwb_range_start() in uwb_radio.h: this is a
  * proof of concept, not the full master state machine. It owns the radio the
@@ -1828,7 +1829,8 @@ static int range_run_dstwr_initiator(uint8_t peer_slot,
 {
 	struct receptec_uwb_frame frame;
 	struct receptec_uwb_twr_final final_msg = {
-		.round_id = round_id, .pair_index = 0U,
+		.round_id = round_id,
+		.pair_index = CONFIG_RECEPTEC_FIXED_ANCHOR_ID,
 	};
 	uint8_t poll_payload[RECEPTEC_UWB_POLL_SIZE];
 	uint8_t final_payload[RECEPTEC_UWB_FINAL_SIZE];
@@ -1845,7 +1847,7 @@ static int range_run_dstwr_initiator(uint8_t peer_slot,
 		return status;
 	}
 	range_put_le(poll_payload, round_id, 8U);
-	poll_payload[8] = 0U;
+	poll_payload[8] = CONFIG_RECEPTEC_FIXED_ANCHOR_ID;
 	memset(&frame, 0, sizeof(frame));
 	frame.sequence = sequence;
 	frame.type = RECEPTEC_UWB_RANGE_POLL;
@@ -1930,7 +1932,7 @@ static int range_run_dstwr_initiator(uint8_t peer_slot,
 							     frame.payload_length,
 							     &response) != RECEPTEC_UWB_OK ||
 			    response.round_id != round_id ||
-			    response.pair_index != 0U) {
+			    response.pair_index != CONFIG_RECEPTEC_FIXED_ANCHOR_ID) {
 				/*
 				 * A rejected frame leaves the radio idle: DW3xxx
 				 * does not auto-re-arm RX after an RXFCG event, so
@@ -2157,8 +2159,15 @@ static void range_round(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE])
 		k_mutex_unlock(&uwb_peer_mutex);
 		return;
 	}
+	/*
+	 * Contract S2.1: pair_index 0 is A-T (master-initiated), pair_index 1
+	 * is B-T (base-initiated). CONFIG_RECEPTEC_FIXED_ANCHOR_ID is 0 for
+	 * the master build and 1 for the fixed-anchor (base) build, so it
+	 * already names which pair this board's own round belongs to.
+	 */
 	status = range_send_plan_and_await_ack(range_status.peer_slot, peer_eui64,
-					       RECEPTEC_UWB_PLAN_ARM, 0U,
+					       RECEPTEC_UWB_PLAN_ARM,
+					       CONFIG_RECEPTEC_FIXED_ANCHOR_ID,
 					       receptec_eui, peer_eui64, round_id);
 	if (status < 0) {
 		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
