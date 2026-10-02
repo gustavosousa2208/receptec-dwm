@@ -1665,7 +1665,19 @@ int receptec_uwb_test_abort(void)
 #define UWB_RANGE_PLAN_ACK_TIMEOUT_US 40000U
 #define UWB_RANGE_RESPONSE_TIMEOUT_US 20000U
 #define UWB_RANGE_RESULT_TIMEOUT_US 60000U
-#define UWB_RANGE_FINAL_DELAY_US 1500U
+/*
+ * Contract UWB v1.2 S6.2 nominally schedules FINAL 1500 us after the response
+ * RX timestamp, but that is a target for the hardware-timestamp math, not a
+ * hard deadline: the actual values embedded in the frame (not this constant)
+ * drive the ToF computation. Measured on hardware (receptec-qorvo, 6 clean
+ * samples with no extra instrumentation in this path): decoding/validating
+ * the RESPONSE and encoding/arming the delayed FINAL consistently takes
+ * ~1648 us end to end, so 1500 us left dwt_starttx(DELAYED) a reproducible
+ * ~148 us late every time. 3000 us leaves >1300 us of margin and is still far
+ * inside the tag's 20 ms wait for FINAL (range_respond_poll) and the
+ * contract's 20 ms DS-TWR phase timeout.
+ */
+#define UWB_RANGE_FINAL_DELAY_US 3000U
 #define RANGE_TIMESTAMP_MASK ((1ULL << 40) - 1ULL)
 
 static struct receptec_uwb_range_round_status range_status;
@@ -1858,7 +1870,23 @@ static int range_run_dstwr_initiator(uint8_t peer_slot,
 	now_dtu = (uint64_t)dwt_readsystimestamphi32() << 8U;
 	poll_target = (now_dtu + range_us_to_dtu(1000U) + 511ULL) &
 		      (RANGE_TIMESTAMP_MASK & ~511ULL);
-	dwt_setdelayedtrxtime((uint32_t)(poll_target >> 8U));
+	{
+		/*
+		 * dwt_setdelayedtrxtime() programs when the PHY starts
+		 * transmitting, not the RMARKER; the chip adds antenna delay
+		 * on top (confirmed on hardware: the actual TX timestamp
+		 * read back after a delayed send was consistently exactly
+		 * UWB_TX_ANTENNA_DELAY past the programmed value when this
+		 * subtraction was missing). poll_target/final_target stay
+		 * the true RMARKER value embedded in the payload; only the
+		 * register write is adjusted, mirroring coletec-tag's
+		 * range_send_frame().
+		 */
+		uint64_t poll_raw = (poll_target - UWB_TX_ANTENNA_DELAY + 511ULL) &
+				    RANGE_TIMESTAMP_MASK;
+
+		dwt_setdelayedtrxtime((uint32_t)(poll_raw >> 8U));
+	}
 	status = receptec_radio_irq_enable(true);
 	if (status < 0) {
 		return status;
@@ -1957,7 +1985,8 @@ static int range_run_dstwr_initiator(uint8_t peer_slot,
 		(void)receptec_radio_irq_enable(false);
 		return -EIO;
 	}
-	dwt_writetxfctrl(radio_length, 0U, 0U);
+	/* Contract UWB v1.2 S3.2: ranging bit set for RANGE_FINAL. */
+	dwt_writetxfctrl(radio_length, 0U, 1U);
 	/*
 	 * forcetrxoff()+clear right before the delayed-time write/starttx,
 	 * mirroring the POLL send above: without it dwt_starttx(DELAYED)
@@ -1967,7 +1996,13 @@ static int range_run_dstwr_initiator(uint8_t peer_slot,
 	 */
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
-	dwt_setdelayedtrxtime((uint32_t)(final_target >> 8U));
+	{
+		/* See the matching comment on the POLL send above. */
+		uint64_t final_raw = (final_target - UWB_TX_ANTENNA_DELAY + 511ULL) &
+				     RANGE_TIMESTAMP_MASK;
+
+		dwt_setdelayedtrxtime((uint32_t)(final_raw >> 8U));
+	}
 	if (dwt_starttx(DWT_START_TX_DELAYED) != DWT_SUCCESS) {
 		(void)receptec_radio_irq_enable(false);
 		return -ETIME;
@@ -2050,6 +2085,7 @@ static int range_await_result(uint8_t peer_slot,
 						       &result) != RECEPTEC_UWB_OK ||
 			    result.round_id != round_id || result.record_count != 1U ||
 			    result.records[0].pair_index != 0U) {
+				/* See the same re-arm note in range_run_dstwr_initiator(). */
 				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 				continue;
 			}
