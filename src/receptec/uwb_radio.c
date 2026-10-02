@@ -2567,17 +2567,99 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index,
 			result.records[0].distance_mm =
 				final_status == RECEPTEC_UWB_RANGE_OK ?
 					distance_mm : RECEPTEC_UWB_DISTANCE_INVALID;
+			/*
+			 * Contract UWB v1.2 S4: RANGE_RESULT gets up to two total
+			 * transmissions, each followed by a short wait for its ACK.
+			 * The first cut of this uplink sent once and ignored the
+			 * return value entirely -- coletec_uwb.c's range_report()
+			 * already does the two-attempt retry; this mirrors it.
+			 */
 			if (receptec_uwb_result_encode(result_payload,
 						       sizeof(result_payload),
 						       &result,
 						       &result_length) ==
 			    RECEPTEC_UWB_OK) {
-				(void)range_send_frame(RECEPTEC_UWB_RANGE_RESULT,
-						       master_eui64,
-						       frame.sequence,
-						       result_payload,
-						       result_length, false,
-						       false, 0U, NULL, false);
+				bool acked = false;
+
+				for (unsigned int attempt = 0; attempt < 2U && !acked;
+				     ++attempt) {
+					int64_t ack_deadline;
+
+					if (range_send_frame(RECEPTEC_UWB_RANGE_RESULT,
+							     master_eui64,
+							     frame.sequence,
+							     result_payload,
+							     result_length, false,
+							     false, 0U, NULL,
+							     true) < 0) {
+						break;
+					}
+					ack_deadline = k_uptime_get() + 20;
+					while (k_uptime_get() < ack_deadline) {
+						uint32_t ack_radio_status;
+						int64_t ack_remaining_ms =
+							ack_deadline - k_uptime_get();
+
+						if (ack_remaining_ms <= 0) {
+							break;
+						}
+						(void)receptec_radio_wait_event(
+							K_MSEC(ack_remaining_ms));
+						ack_radio_status =
+							dwt_readsysstatuslo();
+						if ((ack_radio_status &
+						     DWT_INT_RXFCG_BIT_MASK) != 0U) {
+							struct receptec_uwb_frame ack_frame;
+							uint16_t ack_len;
+							uint8_t ack_ranging;
+
+							clear_radio_events(
+								DWT_INT_RXFCG_BIT_MASK);
+							ack_len = dwt_getframelength(
+								&ack_ranging);
+							if (ack_len >=
+							    RECEPTEC_UWB_HEADER_SIZE +
+								    RECEPTEC_UWB_FCS_SIZE &&
+							    ack_len <=
+								    RECEPTEC_UWB_MAX_PSDU_SIZE) {
+								dwt_readrxdata(
+									rx_bytes,
+									ack_len -
+										RECEPTEC_UWB_FCS_SIZE,
+									0U);
+								if (receptec_uwb_decode(
+									    rx_bytes,
+									    ack_len -
+										    RECEPTEC_UWB_FCS_SIZE,
+									    &ack_frame) ==
+									    RECEPTEC_UWB_OK &&
+								    ack_frame.type ==
+									    RECEPTEC_UWB_ACK &&
+								    ack_frame.sequence ==
+									    frame.sequence &&
+								    memcmp(ack_frame.source,
+									   master_eui64,
+									   RECEPTEC_UWB_EUI64_SIZE) ==
+									    0) {
+									acked = true;
+									break;
+								}
+							}
+							(void)dwt_rxenable(
+								DWT_START_RX_IMMEDIATE);
+						} else if ((ack_radio_status &
+							    (SYS_STATUS_ALL_RX_TO |
+							     UWB_RX_REARM_ERROR_MASK)) !=
+							   0U) {
+							clear_radio_events(
+								ack_radio_status &
+								(SYS_STATUS_ALL_RX_TO |
+								 UWB_RX_REARM_ERROR_MASK));
+							(void)dwt_rxenable(
+								DWT_START_RX_IMMEDIATE);
+						}
+					}
+				}
 			}
 			*out_status = final_status;
 			*out_distance_mm = result.records[0].distance_mm;
