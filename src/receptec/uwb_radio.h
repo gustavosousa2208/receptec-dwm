@@ -147,4 +147,21 @@ int receptec_uwb_range_respond(uint8_t master_slot, uint8_t pair_index,
 			       enum receptec_uwb_range_status *out_status,
 			       uint32_t *out_distance_mm);
 
+/*
+ * Passively wait up to `timeout_ms` for a RANGE_RESULT for `pair_index`
+ * from the peer in `peer_slot`, without initiating anything. Contract UWB
+ * v1.2 S2.1 always addresses RANGE_RESULT to the master, even for pairs
+ * the master did not initiate (B-T: B initiates, T reports to the master).
+ * On the master, this is how to see a pair's distance when some other
+ * node drove that round -- e.g. `receptec_uwb_range_listen(<T's slot>, 1,
+ * ...)` while B runs its own `uwb range start` for pair 1. No round_id is
+ * checked (the master never armed that round), so *out_round_id reports
+ * whichever round the result named. Same busy/-EBUSY rules as the other
+ * range_* entry points; blocks the calling thread, call from the shell.
+ */
+int receptec_uwb_range_listen(uint8_t peer_slot, uint8_t pair_index,
+			      uint32_t timeout_ms,
+			      enum receptec_uwb_range_status *out_status,
+			      uint32_t *out_distance_mm, uint64_t *out_round_id);
+
 #endif /* RECEPTEC_UWB_RADIO_H_ */

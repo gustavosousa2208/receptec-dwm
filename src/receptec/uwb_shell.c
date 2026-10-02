@@ -728,6 +728,50 @@ static int cmd_uwb_range_respond(const struct shell *shell, size_t argc,
 	return 0;
 }
 
+static int cmd_uwb_range_listen(const struct shell *shell, size_t argc,
+				char **argv)
+{
+	uint8_t peer_slot;
+	unsigned long pair_index, timeout_ms = 5000UL;
+	enum receptec_uwb_range_status out_status;
+	uint32_t out_distance_mm;
+	uint64_t out_round_id;
+	char *end;
+	int ret;
+
+	if (parse_slot(shell, argv[1], &peer_slot) < 0) {
+		return -EINVAL;
+	}
+	errno = 0;
+	pair_index = strtoul(argv[2], &end, 10);
+	if (errno != 0 || end == argv[2] || *end != '\0' || pair_index > 2UL) {
+		shell_error(shell, "usage: uwb range listen <peer_slot> <pair_index 0|1|2> [timeout_ms]");
+		return -EINVAL;
+	}
+	if (argc > 3U) {
+		errno = 0;
+		timeout_ms = strtoul(argv[3], &end, 10);
+		if (errno != 0 || end == argv[3] || *end != '\0' ||
+		    timeout_ms == 0UL || timeout_ms > 60000UL) {
+			shell_error(shell, "usage: uwb range listen <peer_slot> <pair_index 0|1|2> [timeout_ms]");
+			return -EINVAL;
+		}
+	}
+	shell_print(shell, "listening up to %lu ms for a RANGE_RESULT of pair_index=%lu from slot %u",
+		    timeout_ms, pair_index, peer_slot);
+	ret = receptec_uwb_range_listen(peer_slot, (uint8_t)pair_index,
+					(uint32_t)timeout_ms, &out_status,
+					&out_distance_mm, &out_round_id);
+	if (ret < 0) {
+		shell_error(shell, "listen failed: %d (-%d busy, -%d no peer)",
+			    ret, EBUSY, ENOENT);
+		return ret;
+	}
+	shell_print(shell, "listen round=%llu status=%u distance_mm=%u",
+		    out_round_id, out_status, out_distance_mm);
+	return 0;
+}
+
 static int cmd_uwb_range_status(const struct shell *shell, size_t argc,
 				char **argv)
 {
@@ -764,6 +808,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(respond, NULL,
 		      "One-shot DS-TWR responder: respond <master_slot> <pair_index 0|1|2> [timeout_ms]",
 		      cmd_uwb_range_respond, 3, 1),
+	SHELL_CMD_ARG(listen, NULL,
+		      "Passively wait for another node's RANGE_RESULT: listen <peer_slot> <pair_index 0|1|2> [timeout_ms]",
+		      cmd_uwb_range_listen, 3, 1),
 	SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
