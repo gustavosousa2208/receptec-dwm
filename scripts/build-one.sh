@@ -7,7 +7,8 @@ if [ -z "${ATLETEC_ZEPHYR_WORKSPACE:-}" ] && [ -f "$HOME/source/atletec/.envrc" 
 	. "$HOME/source/atletec/.envrc"
 fi
 
-script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+script_resolved=$(readlink -f -- "$0" 2>/dev/null || realpath -- "$0" 2>/dev/null || echo "$0")
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$script_resolved")" && pwd)
 app_dir=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 build_root=${ATLETEC_BUILD_ROOT:-}
 if [ -z "$build_root" ] && [ -n "${ATLETEC_ZEPHYR_WORKSPACE:-}" ]; then
@@ -15,6 +16,18 @@ if [ -z "$build_root" ] && [ -n "${ATLETEC_ZEPHYR_WORKSPACE:-}" ]; then
 fi
 if [ -z "$build_root" ]; then
 	build_root="$app_dir/build"
+fi
+
+# Nordic roles are built from the sibling nrf52-bringup-fw checkout, so their
+# output belongs with the other Nordic build trees, not with the receptec ones.
+workspace_source=$(CDPATH='' cd -- "$app_dir/.." && pwd)
+nrf52_dir="$workspace_source/nrf52-bringup-fw"
+nordic_build_root=
+if [ -n "${ATLETEC_ZEPHYR_WORKSPACE:-}" ]; then
+	nordic_build_root="$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/nrf52-bringup-fw"
+fi
+if [ -z "$nordic_build_root" ]; then
+	nordic_build_root="$nrf52_dir/build"
 fi
 
 role=
@@ -25,7 +38,7 @@ usage()
 	cat <<'EOF'
 Usage: scripts/build-one.sh TARGET [--test-conf tests/SCENARIO.conf]
 
-TARGET: fake-coletec-0 | fake-coletec-1 | fake-coletec-0-anchor | receptec | receptec-qorvo
+TARGET: fake-coletec-0 | fake-coletec-1 | fake-coletec-0-anchor | receptec | receptec-qorvo | prod-coletec-qorvo
 
 Builds one image. Each physical board has one canonical output directory. Output goes to $ATLETEC_BUILD_ROOT, else
 $ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec, else build/ in this
@@ -34,12 +47,19 @@ corresponding RECEPTEC output directories. --test-conf applies only to fake
 COLETEC images. fake-coletec-0-anchor reconfigures the same
 build-fake-coletec-0 directory used by fake-coletec-0, building the RECEPTEC
 application on that board as fixed UWB anchor 1.
+--source-dir DIR builds prod-coletec-qorvo from that nrf52-bringup-fw
+checkout (for example a codex/* worktree) instead of the sibling one.
+prod-coletec-qorvo is the Nordic Rev4 product image
+(decawave_dwm3001cdk/nrf52833, -DATLETEC_HW=ON -DATLETEC_HW_REV=4), built from
+the sibling nrf52-bringup-fw checkout. Its output goes to
+$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/nrf52-bringup-fw
+(build-prod-coletec-qorvo); $PROD_COLETEC_QORVO_BUILD_DIR overrides it.
 EOF
 }
 
 [ "$#" -ge 1 ] || { usage >&2; exit 2; }
 case "$1" in
-	fake-coletec-0|fake-coletec-1|fake-coletec-0-anchor|receptec|receptec-qorvo) role=$1; shift ;;
+	fake-coletec-0|fake-coletec-1|fake-coletec-0-anchor|receptec|receptec-qorvo|prod-coletec-qorvo) role=$1; shift ;;
 	-h|--help) usage; exit 0 ;;
 	*) echo "Unknown target: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -51,10 +71,23 @@ while [ "$#" -gt 0 ]; do
 			test_config=$2
 			shift 2
 			;;
+		--source-dir)
+			[ "$#" -ge 2 ] || { echo "Missing source directory" >&2; exit 2; }
+			source_opt=$2
+			shift 2
+			;;
 		-h|--help) usage; exit 0 ;;
 		*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
 	esac
 done
+
+if [ -n "${source_opt:-}" ]; then
+	[ "$role" = prod-coletec-qorvo ] || { echo "--source-dir applies to prod-coletec-qorvo only." >&2; exit 2; }
+	nrf52_dir=$(CDPATH='' cd -- "$source_opt" 2>/dev/null && pwd) || {
+		echo "--source-dir not found: $source_opt" >&2
+		exit 2
+	}
+fi
 
 if [ "$test_config" != none ]; then
 	case "$test_config" in tests/*.conf) ;; *)
@@ -107,7 +140,18 @@ case "$role" in
 		identity=
 		metadata_role=RECEPTEC-QORVO
 		;;
+	prod-coletec-qorvo)
+		board=decawave_dwm3001cdk/nrf52833
+		build_dir=${PROD_COLETEC_QORVO_BUILD_DIR:-$nordic_build_root/build-prod-coletec-qorvo}
+		identity=
+		metadata_role=PROD-COLETEC-QORVO
+		;;
 esac
+
+if [ "$role" = prod-coletec-qorvo ] && [ ! -d "$nrf52_dir" ]; then
+	echo "nrf52 checkout not found beside this repo: $nrf52_dir" >&2
+	exit 1
+fi
 
 mkdir -p "$build_dir"
 log_file="$build_dir/build.log"
@@ -116,6 +160,12 @@ if [ "$test_config" = none ]; then
 	if [ "$role" = fake-coletec-0-anchor ]; then
 		if ! west build -p always -b "$board" -d "$build_dir" "$app_dir" -- \
 			-DATLETEC_FIXED_ANCHOR=ON >"$log_file" 2>&1; then
+			echo "$role build failed; log: $log_file" >&2
+			exit 1
+		fi
+	elif [ "$role" = prod-coletec-qorvo ]; then
+		if ! west build -p always -b "$board" -d "$build_dir" "$nrf52_dir" -- \
+			-DATLETEC_HW=ON -DATLETEC_HW_REV=4 >"$log_file" 2>&1; then
 			echo "$role build failed; log: $log_file" >&2
 			exit 1
 		fi
@@ -167,10 +217,21 @@ case "$role" in
 			exit 1
 		}
 		;;
+	prod-coletec-qorvo)
+		grep -qx 'CONFIG_SOC_NRF52833=y' "$config" &&
+		grep -qx 'CONFIG_BT_DIS_HW_REV_STR="Rev4"' "$config" || {
+			echo "$build_dir is not a Rev4 PROD-COLETEC build (see $log_file)" >&2
+			exit 1
+		}
+		;;
 esac
 
-source_commit=$(git -C "$app_dir" rev-parse HEAD)
-contracts_commit=$(git -C "$app_dir/contracts" rev-parse HEAD)
+case "$role" in
+prod-coletec-qorvo) fw_src=$nrf52_dir ;;
+*) fw_src=$app_dir ;;
+esac
+source_commit=$(git -C "$fw_src" rev-parse HEAD)
+contracts_commit=$(git -C "$fw_src/contracts" rev-parse HEAD)
 {
 	echo "role=$metadata_role"
 	case "$role" in
