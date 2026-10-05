@@ -79,10 +79,111 @@ static void test_ack_matching_rejects_stale_sequence(void)
 	assert(!receptec_uwb_ack_matches(NULL, peer_eui, local_eui, 5U));
 }
 
+static void test_multibase_wire_and_distance(void)
+{
+	const uint8_t master[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };
+	const uint8_t base[8] = { 8, 7, 6, 5, 4, 3, 2, 1 };
+	uint8_t payload[RECEPTEC_UWB_MAX_PAYLOAD_SIZE];
+	uint8_t frame_bytes[RECEPTEC_UWB_MAX_LOGICAL_SIZE];
+	struct receptec_uwb_plan plan = {
+		.phase = RECEPTEC_UWB_PLAN_ARM,
+		.round_id = 0x1122334455667788ULL,
+		.pair_index = 2U,
+		.report_mode = RECEPTEC_UWB_REPORT_AGGREGATE,
+	};
+	struct receptec_uwb_plan decoded_plan;
+	struct receptec_uwb_result result = {
+		.round_id = 0x1122334455667788ULL,
+		.report_mode = RECEPTEC_UWB_REPORT_AGGREGATE,
+		.record_count = 3U,
+	};
+	struct receptec_uwb_result decoded_result;
+	struct receptec_uwb_twr_response response = {
+		.round_id = 11U, .pair_index = 2U,
+	};
+	struct receptec_uwb_twr_response decoded_response;
+	struct receptec_uwb_twr_final final = {
+		.round_id = 11U, .pair_index = 2U,
+	};
+	struct receptec_uwb_twr_final decoded_final;
+	struct receptec_uwb_frame frame = {
+		.sequence = 21U, .type = RECEPTEC_UWB_RANGE_PLAN,
+	};
+	struct receptec_uwb_frame decoded_frame;
+	uint32_t millimeters = 0U;
+	size_t length;
+
+	memcpy(plan.initiator, master, 8U);
+	memcpy(plan.responder, base, 8U);
+	assert(receptec_uwb_plan_encode(payload, &plan) == RECEPTEC_UWB_OK);
+	assert(payload[0] == 1U && payload[1] == 0U && payload[2] == 0x88U &&
+	       payload[9] == 0x11U && payload[10] == 2U && payload[11] == 1U);
+	assert(receptec_uwb_plan_decode(payload, 28U, &decoded_plan) ==
+	       RECEPTEC_UWB_OK);
+	assert(decoded_plan.round_id == plan.round_id);
+	memcpy(frame.destination, base, 8U);
+	memcpy(frame.source, master, 8U);
+	frame.payload = payload;
+	frame.payload_length = 28U;
+	assert(receptec_uwb_encode(frame_bytes, sizeof(frame_bytes), &frame,
+				   &length) == RECEPTEC_UWB_OK);
+	assert(length == 48U);
+	assert(receptec_uwb_decode(frame_bytes, length, &decoded_frame) ==
+	       RECEPTEC_UWB_OK);
+	frame_bytes[20U] = 2U;
+	assert(receptec_uwb_decode(frame_bytes, length, &decoded_frame) ==
+	       RECEPTEC_UWB_ERR_RESERVED);
+	frame_bytes[20U] = 1U;
+
+	for (uint8_t i = 0U; i < 3U; ++i) {
+		result.records[i].pair_index = i;
+		memcpy(result.records[i].initiator, master, 8U);
+		memcpy(result.records[i].responder, base, 8U);
+		result.records[i].status = RECEPTEC_UWB_RANGE_OK;
+		result.records[i].distance_mm = 4692U + i;
+		result.records[i].master_rx_time_ms = 12345U + i;
+	}
+	assert(receptec_uwb_result_encode(payload, sizeof(payload), &result,
+				    &length) == RECEPTEC_UWB_OK);
+	assert(length == 89U);
+	assert(receptec_uwb_result_decode(payload, length, &decoded_result) ==
+	       RECEPTEC_UWB_OK);
+	assert(decoded_result.records[2].distance_mm == 4694U);
+	assert(receptec_uwb_result_decode(payload, length - 1U,
+					  &decoded_result) == RECEPTEC_UWB_ERR_LENGTH);
+	result.records[2].pair_index = 1U;
+	assert(receptec_uwb_result_encode(payload, sizeof(payload), &result,
+				    &length) == RECEPTEC_UWB_ERR_RESERVED);
+
+	final.poll_tx_ts = 0x100000U;
+	response.poll_rx_ts = final.poll_tx_ts + 1000U;
+	response.response_tx_ts =
+		(response.poll_rx_ts + 100000U + 511U) & ~511ULL;
+	final.response_rx_ts = response.response_tx_ts + 1000U;
+	final.final_tx_ts =
+		(final.response_rx_ts + 100000U + 511U) & ~511ULL;
+	assert(receptec_uwb_twr_response_encode(payload, &response) ==
+	       RECEPTEC_UWB_OK);
+	assert(receptec_uwb_twr_response_decode(payload, 19U,
+						  &decoded_response) == RECEPTEC_UWB_OK);
+	assert(receptec_uwb_twr_final_encode(payload, &final) ==
+	       RECEPTEC_UWB_OK);
+	assert(receptec_uwb_twr_final_decode(payload, 24U, &decoded_final) ==
+	       RECEPTEC_UWB_OK);
+	assert(receptec_uwb_distance_mm(&decoded_response, &decoded_final,
+					final.final_tx_ts + 1000U, &millimeters) ==
+	       RECEPTEC_UWB_OK);
+	assert(millimeters == 4692U);
+	assert(receptec_uwb_distance_mm(&decoded_response, &decoded_final,
+					final.final_tx_ts + 2000000000ULL,
+					&millimeters) == RECEPTEC_UWB_ERR_RESERVED);
+}
+
 int main(void)
 {
 	test_sync_vector();
 	test_response_and_rejection();
 	test_ack_matching_rejects_stale_sequence();
+	test_multibase_wire_and_distance();
 	return 0;
 }

@@ -32,7 +32,9 @@ Pinned in `contracts/`; follow `contracts/VERSIONS.md` to change it.
 `contracts/` — not a local copy.** If you find a contract doc outside `contracts/`,
 move it into `contracts/` and delete the stray (no duplicates, no symlinks).
 
-`contracts/protocol/uwb-receptec-coletec/protocol-v1.0.md` is the canonical spec.
+`contracts/VERSIONS.md` identifies the active contract. The current multibase
+profile is `protocol/uwb-receptec-coletec/protocol-v1.3-multibase.md`, layered
+on the legacy flows in `protocol-v1.0.md`.
 The `HANDOFF.md` sitting beside it contradicts it on the retry/backoff model and
 whether COLETEC keeps RX enabled through the slot. This repo now follows the
 canonical exponential-backoff rule. It keeps COLETEC RX enabled through the
