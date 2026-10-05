@@ -321,7 +321,7 @@ if [ "$mculink" = true ]; then
 	command -v pyocd >/dev/null 2>&1 || { echo "pyocd not found." >&2; exit 1; }
 	info=$(lstty mculink get --serial "$probe" --json 2>/dev/null || true)
 	case "$info" in *'"connected": true'*) ;; *) echo "MCU-Link $probe is disconnected." >&2; exit 1 ;; esac
-	device=$(lstty mculink get --serial "$probe" --field device 2>/dev/null || true)
+	device=$(lstty mculink get "${probe_opt:-$nick}" --field device 2>/dev/null || true)
 	case "$device" in nRF52833|nrf52833|nRF52833_xxAA) ;; *) echo "MCU-Link $probe is registered as $device, expected nRF52833." >&2; exit 1 ;; esac
 	probe_nickname=$nick
 elif [ "$stlink" = true ]; then
