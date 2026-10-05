@@ -32,6 +32,9 @@
 #endif
 #include "uwb_peer_registry.h"
 #include "uwb_peer_storage.h"
+#if defined(CONFIG_BT)
+#include "ble_range.h"
+#endif
 #include <receptec/uwb_protocol.h>
 #include <receptec/uwb_test_frames.h>
 #include <receptec/uwb_test_payload.h>
@@ -3106,6 +3109,12 @@ static void range_round(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 	range_status.last_update_ms = k_uptime_get();
 	log_round = !range_log_quiet;
 	k_mutex_unlock(&uwb_peer_mutex);
+#if defined(CONFIG_BT)
+	receptec_ble_range_publish(pair_index,
+				   status == 0 ? (uint8_t)outcome_status : 0xFEU,
+				   status == 0 ? distance_mm :
+				   RECEPTEC_UWB_DISTANCE_INVALID);
+#endif
 	if (log_round) {
 		printk("UWB range: round=%llu status=%u distance_mm=%u\n",
 		       round_id, (unsigned int)outcome_status, distance_mm);

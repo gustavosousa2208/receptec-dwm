@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ATLETEC Range</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #111; color: #eee;
+         max-width: 420px; margin: 2em auto; padding: 0 1em; }
+  button { font-size: 1em; padding: 0.5em 1.2em; cursor: pointer; }
+  .row { display: flex; justify-content: space-between; align-items: baseline;
+         border-bottom: 1px solid #333; padding: 0.9em 0; }
+  .pair { font-weight: 600; }
+  .dist { font-size: 1.8em; font-variant-numeric: tabular-nums; }
+  .stale { color: #666; }
+  .age { font-size: 0.8em; color: #888; }
+  #status { color: #888; margin: 1em 0; }
+</style>
+</head>
+<body>
+<h1>ATLETEC Range</h1>
+<button id="btn">Connect ATL-RANGE</button>
+<div id="status">not connected — serve over http://localhost, use Chrome/Edge</div>
+<div class="row"><span class="pair">A–T</span><span><span class="dist stale" id="d0">—</span> <span class="age" id="a0"></span></span></div>
+<div class="row"><span class="pair">B–T</span><span><span class="dist stale" id="d1">—</span> <span class="age" id="a1"></span></span></div>
+<div class="row"><span class="pair">A–B</span><span><span class="dist stale" id="d2">—</span> <span class="age" id="a2"></span></span></div>
+<script>
+const SVC = 0x3110, CHRS = [0x3111, 0x3112, 0x3113];
+const last = [0, 0, 0];
+setInterval(() => {
+  const now = Date.now();
+  for (let i = 0; i < 3; i++) {
+    if (!last[i]) continue;
+    document.getElementById('a' + i).textContent =
+      ((now - last[i]) / 1000).toFixed(0) + 's ago';
+  }
+}, 1000);
+function show(i, status, mm) {
+  const el = document.getElementById('d' + i);
+  if (status === 0 && mm !== 0xFFFFFFFF) {
+    el.textContent = (mm / 1000).toFixed(3) + ' m';
+    el.classList.remove('stale');
+    last[i] = Date.now();
+  } else {
+    el.textContent = '—';
+    el.classList.add('stale');
+  }
+}
+document.getElementById('btn').addEventListener('click', async () => {
+  const st = document.getElementById('status');
+  try {
+    st.textContent = 'scanning…';
+    const dev = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SVC] }],
+      optionalServices: [SVC],
+    });
+    st.textContent = 'connecting to ' + (dev.name || 'device') + '…';
+    const server = await dev.gatt.connect();
+    const svc = await server.getPrimaryService(SVC);
+    for (let i = 0; i < 3; i++) {
+      const chr = await svc.getCharacteristic(CHRS[i]);
+      const v0 = await chr.readValue();
+      show(i, v0.getUint8(0), v0.getUint32(1, true));
+      await chr.startNotifications();
+      chr.addEventListener('characteristicvaluechanged', ((idx) => (e) => {
+        const v = e.target.value;
+        show(idx, v.getUint8(0), v.getUint32(1, true));
+      })(i));
+    }
+    st.textContent = 'live — ' + (dev.name || 'connected');
+    dev.addEventListener('gattserverdisconnected', () => {
+      st.textContent = 'disconnected';
+    });
+  } catch (err) {
+    st.textContent = 'error: ' + err;
+  }
+});
+</script>
+</body>
+</html>

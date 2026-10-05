@@ -112,6 +112,7 @@ if(RECEPTEC_APP)
 
     if(RECEPTEC_QORVO)
         target_sources(app PRIVATE src/dw3110_port.c)
+        target_sources(app PRIVATE src/receptec/ble_range.c)
     else()
         target_compile_definitions(app PRIVATE USE_DRV_DW3720)
         target_sources(app PRIVATE

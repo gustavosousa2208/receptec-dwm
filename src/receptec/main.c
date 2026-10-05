@@ -11,6 +11,9 @@
 
 #include "uwb_radio.h"
 #include "led_shell.h"
+#if defined(CONFIG_BT)
+#include "ble_range.h"
+#endif
 
 /* Blue is the role indicator on both carriers; green is available to the shell. */
 static const struct gpio_dt_spec led_blue =
@@ -85,5 +88,8 @@ int main(void)
 	printk("UWB radio: disabled by configuration\n");
 #endif
 	indicators_start(heartbeat);
+#if defined(CONFIG_BT)
+	receptec_ble_range_init();
+#endif
 	return 0;
 }
