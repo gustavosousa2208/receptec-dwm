@@ -18,6 +18,9 @@ struct mock_settings {
 		      [RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN - 1U];
 	size_t nick_lengths[RECEPTEC_UWB_MAX_PEERS];
 	bool nick_present[RECEPTEC_UWB_MAX_PEERS];
+	uint8_t range_auto;
+	size_t range_auto_len;
+	bool range_auto_present;
 	int init_result;
 	ssize_t get_len_result;
 	ssize_t load_result;
@@ -91,6 +94,12 @@ ssize_t settings_get_val_len(const char *key)
 	if (mock.get_len_result != -1) {
 		return mock.get_len_result;
 	}
+	if (strcmp(key, "uwb/range_auto") == 0) {
+		if (!mock.range_auto_present) {
+			return 0;
+		}
+		return (ssize_t)mock.range_auto_len;
+	}
 	if (nick_slot >= 0) {
 		if (!mock.nick_present[nick_slot]) {
 			return 0;
@@ -112,6 +121,17 @@ ssize_t settings_load_one(const char *key, void *value, size_t value_size)
 	(void)snprintf(mock.last_key, sizeof(mock.last_key), "%s", key);
 	if (mock.load_result != -1) {
 		return mock.load_result;
+	}
+	if (strcmp(key, "uwb/range_auto") == 0) {
+		if (!mock.range_auto_present) {
+			return -ENOENT;
+		}
+		if (mock.range_auto_len > value_size) {
+			return -ENOMEM;
+		}
+		memcpy(value, &mock.range_auto, mock.range_auto_len);
+
+		return (ssize_t)mock.range_auto_len;
 	}
 	if (nick_slot >= 0) {
 		if (!mock.nick_present[nick_slot]) {
@@ -144,6 +164,16 @@ int settings_save_one(const char *key, const void *value, size_t value_size)
 	(void)snprintf(mock.last_key, sizeof(mock.last_key), "%s", key);
 	if (mock.save_result != 0) {
 		return mock.save_result;
+	}
+	if (strcmp(key, "uwb/range_auto") == 0) {
+		if (value_size != sizeof(mock.range_auto)) {
+			return -EINVAL;
+		}
+		memcpy(&mock.range_auto, value, value_size);
+		mock.range_auto_len = value_size;
+		mock.range_auto_present = true;
+
+		return 0;
 	}
 	if (nick_slot >= 0) {
 		if (value_size > sizeof(mock.nicknames[nick_slot])) {
@@ -309,6 +339,39 @@ static void test_nickname_rejects_bad_arguments(void)
 	assert(strcmp(loaded, "coletec-a") == 0);
 }
 
+static void test_range_auto_round_trip(void)
+{
+	bool enabled = false;
+
+	reset_mock();
+	assert(receptec_uwb_range_auto_load(NULL) == -EINVAL);
+	assert(receptec_uwb_range_auto_load(&enabled) == -ENOENT);
+	assert(receptec_uwb_range_auto_save(true) == 0);
+	assert(strcmp(mock.last_key, "uwb/range_auto") == 0);
+	assert(receptec_uwb_range_auto_load(&enabled) == 0);
+	assert(enabled);
+	assert(receptec_uwb_range_auto_save(false) == 0);
+	assert(receptec_uwb_range_auto_load(&enabled) == 0);
+	assert(!enabled);
+}
+
+static void test_range_auto_rejects_corrupt_values(void)
+{
+	bool enabled = false;
+
+	reset_mock();
+	mock.range_auto_present = true;
+	mock.range_auto_len = 0U;
+	assert(receptec_uwb_range_auto_load(&enabled) == -ENOENT);
+
+	mock.range_auto_len = 2U;
+	assert(receptec_uwb_range_auto_load(&enabled) == -EINVAL);
+
+	mock.range_auto_len = 1U;
+	mock.range_auto = 7U;
+	assert(receptec_uwb_range_auto_load(&enabled) == -EINVAL);
+}
+
 int main(void)
 {
 	test_init_and_argument_errors();
@@ -317,6 +380,8 @@ int main(void)
 	test_save_and_delete_propagate_errors();
 	test_nickname_round_trip();
 	test_nickname_rejects_bad_arguments();
+	test_range_auto_round_trip();
+	test_range_auto_rejects_corrupt_values();
 	puts("RECEPTEC UWB peer storage tests passed");
 
 	return 0;

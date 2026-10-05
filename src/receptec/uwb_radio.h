@@ -32,6 +32,15 @@ int receptec_uwb_peer_nickname_get(uint8_t slot, char *nickname,
 				   size_t capacity);
 int receptec_uwb_peer_nickname_set(uint8_t slot, const char *nickname);
 int receptec_uwb_peer_nickname_clear(uint8_t slot);
+/*
+ * Background range auto-responder: while set, this board answers DS-TWR
+ * rounds addressed to it (pair A-B) from any commissioned, enabled peer,
+ * without a manual `uwb range respond` per round. Persisted in settings and
+ * restored at boot. Initiator commands (`range start`, poll, sync) still take
+ * the radio first; an in-progress answer fails them with -EBUSY.
+ */
+int receptec_uwb_range_auto_set(bool enable);
+int receptec_uwb_range_auto_get(bool *enable);
 int receptec_uwb_radio_send_sync(uint8_t peer_slot);
 /* Send one STOP when Ttimeout is configured; otherwise return -ENOTSUP. */
 int receptec_uwb_radio_send_stop(uint8_t peer_slot);
@@ -108,6 +117,7 @@ int receptec_uwb_test_abort(void);
 
 struct receptec_uwb_range_round_status {
 	bool running;
+	bool auto_responder;
 	uint8_t peer_slot;
 	uint8_t pair_index;
 	uint32_t period_us;

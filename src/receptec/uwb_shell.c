@@ -883,9 +883,9 @@ static int cmd_uwb_range_status(const struct shell *shell, size_t argc,
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 	receptec_uwb_range_get(&status);
-	shell_print(shell, "range running=%u slot=%u period=%u ms rounds=%u successes=%u "
+	shell_print(shell, "range running=%u auto=%u slot=%u period=%u ms rounds=%u successes=%u "
 		    "plan_timeouts=%u round_arm_timeouts=%u range_failures=%u last_arm_send_status=%d",
-		    status.running, status.peer_slot, status.period_us / 1000U,
+		    status.running, status.auto_responder, status.peer_slot, status.period_us / 1000U,
 		    status.rounds, status.successes, status.plan_timeouts,
 		    status.round_arm_timeouts, status.range_failures,
 		    status.last_arm_send_status);
@@ -954,6 +954,31 @@ static int cmd_uwb_range_follow(const struct shell *shell, size_t argc,
 	return 0;
 }
 
+static int cmd_uwb_range_auto(const struct shell *shell, size_t argc,
+			      char **argv)
+{
+	bool enable;
+	int ret;
+
+	ARG_UNUSED(argc);
+	if (strcmp(argv[1], "on") == 0) {
+		enable = true;
+	} else if (strcmp(argv[1], "off") == 0) {
+		enable = false;
+	} else {
+		shell_error(shell, "usage: uwb range auto on|off");
+		return -EINVAL;
+	}
+	ret = receptec_uwb_range_auto_set(enable);
+	if (ret < 0) {
+		shell_error(shell, "range auto failed: %d", ret);
+		return ret;
+	}
+	shell_print(shell, "range auto-responder %s (saved; applies at once)",
+		    enable ? "on" : "off");
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_range,
 	SHELL_CMD_ARG(start, NULL,
@@ -962,6 +987,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD(stop, NULL, "Stop the range round", cmd_uwb_range_stop),
 	SHELL_CMD(status, NULL, "Show round counters and last result",
 		  cmd_uwb_range_status),
+	SHELL_CMD_ARG(auto, NULL,
+		      "Answer rounds in background without arming respond: auto on|off",
+		      cmd_uwb_range_auto, 2, 0),
 	SHELL_CMD_ARG(follow, NULL,
 		      "Live one-line distance readout: follow [seconds 1..3600]",
 		      cmd_uwb_range_follow, 1, 1),

@@ -137,6 +137,8 @@ static bool peer_enabled[RECEPTEC_UWB_MAX_PEERS];
 static char peer_nicknames[RECEPTEC_UWB_MAX_PEERS]
 			   [RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN];
 static bool peer_nickname_set[RECEPTEC_UWB_MAX_PEERS];
+/* Background range auto-responder; restored from settings at boot. */
+static bool range_auto_enabled;
 static uint32_t schedule_period_ms = 1000U;
 static struct receptec_uwb_peer_registry peer_registry;
 static uint8_t tx_bytes[RECEPTEC_UWB_MAX_LOGICAL_SIZE];
@@ -408,6 +410,12 @@ int receptec_uwb_radio_init(void)
 			(void)receptec_uwb_schedule_action_save(
 				slot, RECEPTEC_UWB_PEER_ACTION_SYNC);
 		}
+	}
+
+	range_auto_enabled = false;
+	if (receptec_uwb_range_auto_load(&range_auto_enabled) == 0 &&
+	    range_auto_enabled) {
+		printk("Range auto-responder restored: on\n");
 	}
 
 	peer_registry_ready = true;
@@ -2685,6 +2693,18 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index,
 			if (plan.phase == RECEPTEC_UWB_PLAN_ROUND_ARM) {
 				int ack_rc;
 
+				/*
+				 * Only the named recipient accepts a ROUND_ARM.
+				 * Anything else on the air (e.g. the master's
+				 * copy for another peer) is ignored without an
+				 * ACK, so two responders never answer the same
+				 * frame.
+				 */
+				if (memcmp(plan.responder, receptec_eui,
+					   RECEPTEC_UWB_EUI64_SIZE) != 0) {
+					(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+					continue;
+				}
 				if (memcmp(plan.initiator, master_eui64,
 					   RECEPTEC_UWB_EUI64_SIZE) == 0) {
 					round_id = plan.round_id;
@@ -3072,6 +3092,58 @@ static void range_round(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 	}
 }
 
+/*
+ * Background auto-responder: one listen window per commissioned, enabled
+ * peer for the A-B pair (the only pair where a RECEPTEC-family board is the
+ * responder). Answers rounds without a manual `uwb range respond` per round.
+ * poll_running is held across each window so an initiator command fails with
+ * -EBUSY instead of fighting for the radio mid-exchange.
+ */
+#define RANGE_AUTO_PAIR_INDEX 2U
+#define RANGE_AUTO_SLOT_WINDOW_MS 1000U
+
+static void range_auto_window(void)
+{
+	uint8_t slot;
+
+	for (slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
+		uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+		enum receptec_uwb_range_status out_status;
+		uint32_t out_distance_mm;
+		bool usable;
+		int ret;
+
+		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+		usable = range_auto_enabled && !poll_running &&
+			receptec_uwb_peer_registry_get(&peer_registry, slot,
+						       eui64) == 0 &&
+			peer_enabled[slot];
+		if (usable) {
+			poll_running = true;
+		}
+		k_mutex_unlock(&uwb_peer_mutex);
+		if (!usable) {
+			continue;
+		}
+		ret = range_respond_once(slot, RANGE_AUTO_PAIR_INDEX,
+					 RANGE_AUTO_SLOT_WINDOW_MS,
+					 &out_status, &out_distance_mm);
+		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+		poll_running = false;
+		k_mutex_unlock(&uwb_peer_mutex);
+		if (ret != -ETIMEDOUT) {
+			printk("UWB range auto: answered slot %u status=%u distance_mm=%u\n",
+			       slot, (unsigned int)out_status, out_distance_mm);
+		}
+		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+		if (!range_auto_enabled) {
+			k_mutex_unlock(&uwb_peer_mutex);
+			break;
+		}
+		k_mutex_unlock(&uwb_peer_mutex);
+	}
+}
+
 static void range_thread_entry(void *unused_a, void *unused_b, void *unused_c)
 {
 	ARG_UNUSED(unused_a);
@@ -3084,8 +3156,18 @@ static void range_thread_entry(void *unused_a, void *unused_b, void *unused_c)
 		uint8_t pair_index;
 		uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE];
 		int64_t next_tick_ms;
+		bool auto_on;
 
-		k_sem_take(&range_start_sem, K_FOREVER);
+		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+		auto_on = range_auto_enabled;
+		k_mutex_unlock(&uwb_peer_mutex);
+		if (auto_on) {
+			range_auto_window();
+		}
+		if (k_sem_take(&range_start_sem,
+			       auto_on ? K_MSEC(200) : K_FOREVER) != 0) {
+			continue;
+		}
 		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 		period_us = range_status.period_us;
 		peer_slot = range_status.peer_slot;
@@ -3199,6 +3281,7 @@ int receptec_uwb_range_stop(void)
 void receptec_uwb_range_get(struct receptec_uwb_range_round_status *out)
 {
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	range_status.auto_responder = range_auto_enabled;
 	*out = range_status;
 	k_mutex_unlock(&uwb_peer_mutex);
 }
@@ -3208,6 +3291,41 @@ void receptec_uwb_range_set_quiet(bool quiet)
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 	range_log_quiet = quiet;
 	k_mutex_unlock(&uwb_peer_mutex);
+}
+
+int receptec_uwb_range_auto_set(bool enable)
+{
+	int ret;
+
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!peer_registry_ready) {
+		ret = -EAGAIN;
+	} else {
+		ret = receptec_uwb_range_auto_save(enable);
+		if (ret == 0) {
+			range_auto_enabled = enable;
+			range_status.auto_responder = enable;
+		}
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+int receptec_uwb_range_auto_get(bool *enable)
+{
+	int ret = 0;
+
+	if (enable == NULL) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!peer_registry_ready) {
+		ret = -EAGAIN;
+	} else {
+		*enable = range_auto_enabled;
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
 }
 
 static void run_poll(uint32_t period_us)

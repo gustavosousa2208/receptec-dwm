@@ -280,6 +280,42 @@ int receptec_uwb_peer_nickname_delete(uint8_t slot)
 	return settings_delete(key);
 }
 
+int receptec_uwb_range_auto_load(bool *enabled)
+{
+	uint8_t stored;
+	ssize_t len;
+
+	if (enabled == NULL) {
+		return -EINVAL;
+	}
+	len = settings_get_val_len("uwb/range_auto");
+	if (len < 0) {
+		return (int)len;
+	}
+	if (len == 0) {
+		return -ENOENT;
+	}
+	if (len != sizeof(stored)) {
+		return -EINVAL;
+	}
+	len = settings_load_one("uwb/range_auto", &stored, sizeof(stored));
+	if (len != sizeof(stored)) {
+		return len < 0 ? (int)len : -EIO;
+	}
+	if (stored > 1U) {
+		return -EINVAL;
+	}
+	*enabled = stored != 0U;
+	return 0;
+}
+
+int receptec_uwb_range_auto_save(bool enabled)
+{
+	uint8_t stored = enabled ? 1U : 0U;
+
+	return settings_save_one("uwb/range_auto", &stored, sizeof(stored));
+}
+
 int receptec_uwb_schedule_action_load(uint8_t slot, uint8_t *action)
 {
 	char key[PEER_KEY_MAX_LEN];

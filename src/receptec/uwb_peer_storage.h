@@ -31,6 +31,10 @@ int receptec_uwb_peer_nickname_load(uint8_t slot, char *nickname,
 int receptec_uwb_peer_nickname_save(uint8_t slot, const char *nickname);
 int receptec_uwb_peer_nickname_delete(uint8_t slot);
 
+/* Global range auto-responder flag (1 byte, 0/1); -ENOENT when never saved. */
+int receptec_uwb_range_auto_load(bool *enabled);
+int receptec_uwb_range_auto_save(bool enabled);
+
 int receptec_uwb_schedule_action_load(uint8_t slot, uint8_t *action);
 int receptec_uwb_schedule_action_save(uint8_t slot, uint8_t action);
 int receptec_uwb_schedule_action_delete(uint8_t slot);
