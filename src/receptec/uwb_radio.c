@@ -2501,6 +2501,13 @@ static int range_listen_once(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 		*out_distance_mm = result.records[0].distance_mm;
 		*out_round_id = result.round_id;
 		status = 0;
+#if defined(CONFIG_BT)
+		/* Overheard pair (e.g. B-T uplinked to us): same dashboard feed. */
+		receptec_ble_range_publish(pair_index, *out_status,
+					   *out_status == RECEPTEC_UWB_RANGE_OK ?
+					   *out_distance_mm :
+					   RECEPTEC_UWB_DISTANCE_INVALID);
+#endif
 		break;
 	}
 	if (status == 0) {
