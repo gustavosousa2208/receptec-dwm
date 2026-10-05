@@ -133,6 +133,10 @@ static bool peer_registry_ready;
 static enum receptec_uwb_peer_action peer_actions[RECEPTEC_UWB_MAX_PEERS];
 /* Registration is retained when disabled; the flag only gates radio participation. */
 static bool peer_enabled[RECEPTEC_UWB_MAX_PEERS];
+/* Human-readable labels; retained alongside the EUI, never sent on-air. */
+static char peer_nicknames[RECEPTEC_UWB_MAX_PEERS]
+			   [RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN];
+static bool peer_nickname_set[RECEPTEC_UWB_MAX_PEERS];
 static uint32_t schedule_period_ms = 1000U;
 static struct receptec_uwb_peer_registry peer_registry;
 static uint8_t tx_bytes[RECEPTEC_UWB_MAX_LOGICAL_SIZE];
@@ -369,6 +373,20 @@ int receptec_uwb_radio_init(void)
 			       slot, ret);
 		}
 		peer_enabled[slot] = stored_enabled;
+		ret = receptec_uwb_peer_nickname_load(
+			slot, peer_nicknames[slot],
+			sizeof(peer_nicknames[slot]));
+		if (ret == 0) {
+			peer_nickname_set[slot] = true;
+		} else {
+			if (ret != -ENOENT) {
+				printk("Peer nickname invalid for slot %u (%d); clearing\n",
+				       slot, ret);
+				(void)receptec_uwb_peer_nickname_delete(slot);
+			}
+			peer_nicknames[slot][0] = '\0';
+			peer_nickname_set[slot] = false;
+		}
 		ret = receptec_uwb_schedule_action_load(slot, &stored_action);
 		if (ret == 0 &&
 		    (stored_action == RECEPTEC_UWB_PEER_ACTION_SYNC ||
@@ -508,6 +526,10 @@ int receptec_uwb_peer_register(
 		goto out;
 	}
 	peer_enabled[slot] = true;
+	/* A fresh registration starts unnamed; drop any stale label. */
+	peer_nicknames[slot][0] = '\0';
+	peer_nickname_set[slot] = false;
+	(void)receptec_uwb_peer_nickname_delete(slot);
 
 out:
 	k_mutex_unlock(&uwb_peer_mutex);
@@ -519,6 +541,8 @@ int receptec_uwb_peer_unregister(uint8_t slot)
 	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
 	enum receptec_uwb_peer_action previous_action;
 	bool previous_enabled;
+	char previous_nickname[RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN];
+	bool previous_nickname_set;
 	int ret;
 
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
@@ -556,6 +580,11 @@ int receptec_uwb_peer_unregister(uint8_t slot)
 	}
 	previous_action = peer_actions[slot];
 	previous_enabled = peer_enabled[slot];
+	previous_nickname_set = peer_nickname_set[slot];
+	if (previous_nickname_set) {
+		memcpy(previous_nickname, peer_nicknames[slot],
+		       sizeof(previous_nickname));
+	}
 	ret = receptec_uwb_schedule_action_delete(slot);
 	if (ret < 0) {
 		(void)receptec_uwb_peer_storage_save(slot, eui64);
@@ -567,6 +596,8 @@ int receptec_uwb_peer_unregister(uint8_t slot)
 		(void)receptec_uwb_schedule_action_save(slot, previous_action);
 		goto out;
 	}
+	/* Nicknames are per-registration; never leak one onto a future peer. */
+	(void)receptec_uwb_peer_nickname_delete(slot);
 
 	ret = receptec_uwb_peer_registry_unregister(
 		&peer_registry,
@@ -574,10 +605,16 @@ int receptec_uwb_peer_unregister(uint8_t slot)
 	if (ret == 0) {
 		peer_actions[slot] = RECEPTEC_UWB_PEER_ACTION_SYNC;
 		peer_enabled[slot] = false;
+		peer_nicknames[slot][0] = '\0';
+		peer_nickname_set[slot] = false;
 	} else {
 		(void)receptec_uwb_peer_storage_save(slot, eui64);
 		(void)receptec_uwb_schedule_action_save(slot, previous_action);
 		(void)receptec_uwb_peer_enabled_save(slot, previous_enabled);
+		if (previous_nickname_set) {
+			(void)receptec_uwb_peer_nickname_save(slot,
+							     previous_nickname);
+		}
 	}
 
 out:
@@ -634,6 +671,112 @@ int receptec_uwb_peer_enabled_set(uint8_t slot, bool enabled)
 		ret = receptec_uwb_peer_enabled_save(slot, enabled);
 		if (ret == 0) {
 			peer_enabled[slot] = enabled;
+		}
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+static bool nickname_valid(const char *nickname, size_t len)
+{
+	size_t i;
+
+	if (len == 0U || len >= RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN) {
+		return false;
+	}
+	for (i = 0U; i < len; ++i) {
+		char c = nickname[i];
+
+		if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+		      (c >= '0' && c <= '9') || c == '-' || c == '_' ||
+		      c == '.')) {
+			return false;
+		}
+	}
+	return true;
+}
+
+int receptec_uwb_peer_nickname_get(uint8_t slot, char *nickname,
+				   size_t capacity)
+{
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	int ret = 0;
+
+	if (nickname == NULL || capacity == 0U ||
+	    slot >= RECEPTEC_UWB_MAX_PEERS) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!peer_registry_ready) {
+		ret = -EAGAIN;
+	} else if (receptec_uwb_peer_registry_get(&peer_registry, slot,
+						  eui64) < 0) {
+		ret = -ENOENT;
+	} else if (!peer_nickname_set[slot]) {
+		ret = -ENOENT;
+	} else if (strlen(peer_nicknames[slot]) + 1U > capacity) {
+		ret = -ENOMEM;
+	} else {
+		memcpy(nickname, peer_nicknames[slot],
+		       strlen(peer_nicknames[slot]) + 1U);
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+int receptec_uwb_peer_nickname_set(uint8_t slot, const char *nickname)
+{
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	size_t len;
+	int ret = 0;
+
+	if (nickname == NULL || slot >= RECEPTEC_UWB_MAX_PEERS) {
+		return -EINVAL;
+	}
+	len = strlen(nickname);
+	if (!nickname_valid(nickname, len)) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!peer_registry_ready) {
+		ret = -EAGAIN;
+	} else if (receptec_uwb_peer_registry_get(&peer_registry, slot,
+						  eui64) < 0) {
+		ret = -ENOENT;
+	} else {
+		ret = receptec_uwb_peer_nickname_save(slot, nickname);
+		if (ret == 0) {
+			memcpy(peer_nicknames[slot], nickname, len + 1U);
+			peer_nickname_set[slot] = true;
+		}
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+int receptec_uwb_peer_nickname_clear(uint8_t slot)
+{
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	int ret = 0;
+
+	if (slot >= RECEPTEC_UWB_MAX_PEERS) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!peer_registry_ready) {
+		ret = -EAGAIN;
+	} else if (receptec_uwb_peer_registry_get(&peer_registry, slot,
+						  eui64) < 0) {
+		ret = -ENOENT;
+	} else if (peer_nickname_set[slot] ||
+		   receptec_uwb_peer_nickname_load(
+			   slot, peer_nicknames[slot],
+			   sizeof(peer_nicknames[slot])) == 0) {
+		ret = receptec_uwb_peer_nickname_delete(slot);
+		if (ret == 0 || ret == -ENOENT) {
+			peer_nicknames[slot][0] = '\0';
+			peer_nickname_set[slot] = false;
+			ret = 0;
 		}
 	}
 	k_mutex_unlock(&uwb_peer_mutex);

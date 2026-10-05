@@ -14,6 +14,10 @@ struct mock_settings {
 	uint8_t values[RECEPTEC_UWB_MAX_PEERS][RECEPTEC_UWB_EUI64_SIZE];
 	size_t lengths[RECEPTEC_UWB_MAX_PEERS];
 	bool present[RECEPTEC_UWB_MAX_PEERS];
+	char nicknames[RECEPTEC_UWB_MAX_PEERS]
+		      [RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN - 1U];
+	size_t nick_lengths[RECEPTEC_UWB_MAX_PEERS];
+	bool nick_present[RECEPTEC_UWB_MAX_PEERS];
 	int init_result;
 	ssize_t get_len_result;
 	ssize_t load_result;
@@ -24,17 +28,46 @@ struct mock_settings {
 
 static struct mock_settings mock;
 
-static int slot_for_key(const char *key)
+enum mock_key_ns {
+	MOCK_KEY_NONE,
+	MOCK_KEY_PEER,
+	MOCK_KEY_NICKNAME,
+};
+
+static int key_parse(const char *key, enum mock_key_ns *ns)
 {
 	unsigned int slot;
 	char trailing;
 
-	if (sscanf(key, "uwb/peer/%u%c", &slot, &trailing) != 1 ||
-	    slot >= RECEPTEC_UWB_MAX_PEERS) {
-		return -1;
+	if (sscanf(key, "uwb/peer/%u%c", &slot, &trailing) == 1 &&
+	    slot < RECEPTEC_UWB_MAX_PEERS) {
+		*ns = MOCK_KEY_PEER;
+		return (int)slot;
+	}
+	if (sscanf(key, "uwb/nickname/%u%c", &slot, &trailing) == 1 &&
+	    slot < RECEPTEC_UWB_MAX_PEERS) {
+		*ns = MOCK_KEY_NICKNAME;
+		return (int)slot;
 	}
 
-	return (int)slot;
+	*ns = MOCK_KEY_NONE;
+	return -1;
+}
+
+static int slot_for_key(const char *key)
+{
+	enum mock_key_ns ns;
+	int slot = key_parse(key, &ns);
+
+	return ns == MOCK_KEY_PEER ? slot : -1;
+}
+
+static int nickname_slot_for_key(const char *key)
+{
+	enum mock_key_ns ns;
+	int slot = key_parse(key, &ns);
+
+	return ns == MOCK_KEY_NICKNAME ? slot : -1;
 }
 
 static void reset_mock(void)
@@ -52,10 +85,17 @@ int settings_subsys_init(void)
 ssize_t settings_get_val_len(const char *key)
 {
 	int slot = slot_for_key(key);
+	int nick_slot = nickname_slot_for_key(key);
 
 	(void)snprintf(mock.last_key, sizeof(mock.last_key), "%s", key);
 	if (mock.get_len_result != -1) {
 		return mock.get_len_result;
+	}
+	if (nick_slot >= 0) {
+		if (!mock.nick_present[nick_slot]) {
+			return 0;
+		}
+		return (ssize_t)mock.nick_lengths[nick_slot];
 	}
 	if (slot < 0 || !mock.present[slot]) {
 		return 0;
@@ -67,10 +107,23 @@ ssize_t settings_get_val_len(const char *key)
 ssize_t settings_load_one(const char *key, void *value, size_t value_size)
 {
 	int slot = slot_for_key(key);
+	int nick_slot = nickname_slot_for_key(key);
 
 	(void)snprintf(mock.last_key, sizeof(mock.last_key), "%s", key);
 	if (mock.load_result != -1) {
 		return mock.load_result;
+	}
+	if (nick_slot >= 0) {
+		if (!mock.nick_present[nick_slot]) {
+			return -ENOENT;
+		}
+		if (mock.nick_lengths[nick_slot] > value_size) {
+			return -ENOMEM;
+		}
+		memcpy(value, mock.nicknames[nick_slot],
+		       mock.nick_lengths[nick_slot]);
+
+		return (ssize_t)mock.nick_lengths[nick_slot];
 	}
 	if (slot < 0 || !mock.present[slot]) {
 		return -ENOENT;
@@ -86,10 +139,21 @@ ssize_t settings_load_one(const char *key, void *value, size_t value_size)
 int settings_save_one(const char *key, const void *value, size_t value_size)
 {
 	int slot = slot_for_key(key);
+	int nick_slot = nickname_slot_for_key(key);
 
 	(void)snprintf(mock.last_key, sizeof(mock.last_key), "%s", key);
 	if (mock.save_result != 0) {
 		return mock.save_result;
+	}
+	if (nick_slot >= 0) {
+		if (value_size > sizeof(mock.nicknames[nick_slot])) {
+			return -EINVAL;
+		}
+		memcpy(mock.nicknames[nick_slot], value, value_size);
+		mock.nick_lengths[nick_slot] = value_size;
+		mock.nick_present[nick_slot] = true;
+
+		return 0;
 	}
 	if (slot < 0 || value_size > sizeof(mock.values[slot])) {
 		return -EINVAL;
@@ -104,10 +168,20 @@ int settings_save_one(const char *key, const void *value, size_t value_size)
 int settings_delete(const char *key)
 {
 	int slot = slot_for_key(key);
+	int nick_slot = nickname_slot_for_key(key);
 
 	(void)snprintf(mock.last_key, sizeof(mock.last_key), "%s", key);
 	if (mock.delete_result != 0) {
 		return mock.delete_result;
+	}
+	if (nick_slot >= 0) {
+		if (!mock.nick_present[nick_slot]) {
+			return -ENOENT;
+		}
+		mock.nick_present[nick_slot] = false;
+		mock.nick_lengths[nick_slot] = 0U;
+
+		return 0;
 	}
 	if (slot < 0 || !mock.present[slot]) {
 		return -ENOENT;
@@ -184,12 +258,65 @@ static void test_save_and_delete_propagate_errors(void)
 	assert(receptec_uwb_peer_storage_delete(1U) == -EIO);
 }
 
+static void test_nickname_round_trip(void)
+{
+	char loaded[RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN];
+
+	reset_mock();
+	assert(receptec_uwb_peer_nickname_load(1U, loaded, sizeof(loaded)) ==
+	       -ENOENT);
+	assert(receptec_uwb_peer_nickname_save(1U, "coletec-a") == 0);
+	assert(strcmp(mock.last_key, "uwb/nickname/1") == 0);
+	assert(receptec_uwb_peer_nickname_load(1U, loaded, sizeof(loaded)) ==
+	       0);
+	assert(strcmp(loaded, "coletec-a") == 0);
+	assert(receptec_uwb_peer_nickname_save(1U, "coletec-b") == 0);
+	assert(receptec_uwb_peer_nickname_load(1U, loaded, sizeof(loaded)) ==
+	       0);
+	assert(strcmp(loaded, "coletec-b") == 0);
+	assert(receptec_uwb_peer_nickname_delete(1U) == 0);
+	assert(receptec_uwb_peer_nickname_load(1U, loaded, sizeof(loaded)) ==
+	       -ENOENT);
+}
+
+static void test_nickname_rejects_bad_arguments(void)
+{
+	char loaded[RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN];
+	char too_long[RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN + 1U];
+
+	memset(too_long, 'a', sizeof(too_long) - 1U);
+	too_long[sizeof(too_long) - 1U] = '\0';
+
+	reset_mock();
+	assert(receptec_uwb_peer_nickname_load(0U, NULL, sizeof(loaded)) ==
+	       -EINVAL);
+	assert(receptec_uwb_peer_nickname_load(0U, loaded, 0U) == -EINVAL);
+	assert(receptec_uwb_peer_nickname_load(RECEPTEC_UWB_MAX_PEERS, loaded,
+					       sizeof(loaded)) == -EINVAL);
+	assert(receptec_uwb_peer_nickname_save(0U, NULL) == -EINVAL);
+	assert(receptec_uwb_peer_nickname_save(RECEPTEC_UWB_MAX_PEERS, "x") ==
+	       -EINVAL);
+	assert(receptec_uwb_peer_nickname_save(0U, "") == -EINVAL);
+	assert(receptec_uwb_peer_nickname_save(0U, too_long) == -EINVAL);
+	assert(receptec_uwb_peer_nickname_delete(RECEPTEC_UWB_MAX_PEERS) ==
+	       -EINVAL);
+
+	/* A buffer that cannot hold the stored value plus NUL is rejected. */
+	assert(receptec_uwb_peer_nickname_save(2U, "coletec-a") == 0);
+	assert(receptec_uwb_peer_nickname_load(2U, loaded, 4U) == -EINVAL);
+	assert(receptec_uwb_peer_nickname_load(2U, loaded, sizeof(loaded)) ==
+	       0);
+	assert(strcmp(loaded, "coletec-a") == 0);
+}
+
 int main(void)
 {
 	test_init_and_argument_errors();
 	test_save_load_delete_round_trip();
 	test_load_rejects_corrupt_sizes_and_propagates_errors();
 	test_save_and_delete_propagate_errors();
+	test_nickname_round_trip();
+	test_nickname_rejects_bad_arguments();
 	puts("RECEPTEC UWB peer storage tests passed");
 
 	return 0;

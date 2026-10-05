@@ -8,6 +8,7 @@
 #include <stdint.h>
 
 #include "uwb_peer_registry.h"
+#include "uwb_peer_storage.h"
 
 int receptec_uwb_radio_init(void);
 int receptec_uwb_local_eui_get(
@@ -21,6 +22,16 @@ int receptec_uwb_peer_get(uint8_t slot,
 			  uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
 int receptec_uwb_peer_enabled_get(uint8_t slot, bool *enabled);
 int receptec_uwb_peer_enabled_set(uint8_t slot, bool enabled);
+/*
+ * Human-readable per-peer label (e.g. "coletec-a"). Persisted in settings,
+ * independent of the EUI, and shown by `uwb peer list`. get() copies the
+ * label and returns -ENOENT when the slot has none; set() validates the
+ * charset ([A-Za-z0-9_.-], 1..31 chars) and persists; clear() removes it.
+ */
+int receptec_uwb_peer_nickname_get(uint8_t slot, char *nickname,
+				   size_t capacity);
+int receptec_uwb_peer_nickname_set(uint8_t slot, const char *nickname);
+int receptec_uwb_peer_nickname_clear(uint8_t slot);
 int receptec_uwb_radio_send_sync(uint8_t peer_slot);
 /* Send one STOP when Ttimeout is configured; otherwise return -ENOTSUP. */
 int receptec_uwb_radio_send_stop(uint8_t peer_slot);

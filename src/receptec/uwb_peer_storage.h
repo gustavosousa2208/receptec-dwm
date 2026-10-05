@@ -9,6 +9,9 @@
 
 #include "uwb_peer_registry.h"
 
+/* Nickname buffer size including the NUL terminator (31 usable characters). */
+#define RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN 32U
+
 int receptec_uwb_peer_storage_init(void);
 
 int receptec_uwb_peer_storage_load(

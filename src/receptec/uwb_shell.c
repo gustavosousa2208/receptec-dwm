@@ -79,6 +79,7 @@ static void print_peer_slots(const struct shell *shell)
 {
 	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
 	char text[24];
+	char nickname[RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN];
 	uint8_t slot;
 
 	for (slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
@@ -86,11 +87,18 @@ static void print_peer_slots(const struct shell *shell)
 			bool enabled;
 
 			format_eui64(eui64, text);
+			if (receptec_uwb_peer_nickname_get(slot, nickname,
+							   sizeof(nickname)) < 0) {
+				nickname[0] = '-';
+				nickname[1] = '\0';
+			}
 			if (receptec_uwb_peer_enabled_get(slot, &enabled) < 0) {
-				shell_print(shell, "slot %u: %s state=unknown", slot, text);
+				shell_print(shell, "slot %u: %s state=unknown nick=%s",
+					    slot, text, nickname);
 			} else {
-				shell_print(shell, "slot %u: %s %s", slot, text,
-					    enabled ? "enabled" : "disabled");
+				shell_print(shell, "slot %u: %s %s nick=%s", slot, text,
+					    enabled ? "enabled" : "disabled",
+					    nickname);
 			}
 		} else {
 			shell_print(shell, "slot %u: empty", slot);
@@ -358,9 +366,58 @@ static int cmd_uwb_peer_enable(const struct shell *shell, size_t argc,
 	return 0;
 }
 
+static int cmd_uwb_peer_nickname_set(const struct shell *shell, size_t argc,
+				     char **argv)
+{
+	uint8_t slot;
+	int ret;
+
+	ARG_UNUSED(argc);
+	ret = parse_slot(shell, argv[1], &slot);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = receptec_uwb_peer_nickname_set(slot, argv[2]);
+	if (ret < 0) {
+		shell_error(shell, "nickname not saved (%d): use 1..31 chars of A-Z a-z 0-9 - _ .",
+			    ret);
+		return ret;
+	}
+	shell_print(shell, "slot %u nickname set to '%s' (saved)", slot, argv[2]);
+	return 0;
+}
+
+static int cmd_uwb_peer_nickname_clear(const struct shell *shell, size_t argc,
+				       char **argv)
+{
+	uint8_t slot;
+	int ret;
+
+	ARG_UNUSED(argc);
+	ret = parse_slot(shell, argv[1], &slot);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = receptec_uwb_peer_nickname_clear(slot);
+	if (ret < 0) {
+		shell_error(shell, "nickname not cleared: %d", ret);
+		return ret;
+	}
+	shell_print(shell, "slot %u nickname cleared", slot);
+	return 0;
+}
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+	sub_peer_nickname,
+	SHELL_CMD_ARG(set, NULL, "Label a peer: nickname set <slot> <name>",
+		     cmd_uwb_peer_nickname_set, 3, 0),
+	SHELL_CMD_ARG(clear, NULL, "Remove the label: nickname clear <slot>",
+		     cmd_uwb_peer_nickname_clear, 2, 0),
+	SHELL_SUBCMD_SET_END);
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_peer,
-	SHELL_CMD(list, NULL, "List registered peer slots and EUIs",
+	SHELL_CMD(list, NULL, "List registered peer slots, EUIs and nicknames",
 		 cmd_uwb_peer_list),
 	SHELL_CMD_ARG(register, NULL,
 		     "Register peer: register <slot> <EUI-64 in on-air byte order>",
@@ -376,6 +433,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		     cmd_uwb_peer_enable, 2, 0),
 	SHELL_CMD_ARG(disable, NULL, "Disable peer but retain its config: disable <slot>",
 		     cmd_uwb_peer_enable, 2, 0),
+	SHELL_CMD(nickname, &sub_peer_nickname, "Label a peer slot", NULL),
 	SHELL_SUBCMD_SET_END);
 
 static int cmd_uwb_poll_start(const struct shell *shell, size_t argc,
@@ -428,6 +486,7 @@ static int cmd_uwb_schedule_show(const struct shell *shell, size_t argc,
 		enum receptec_uwb_peer_action configured_action;
 		bool enabled;
 		const char *action;
+		char nickname[RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN];
 
 		if (receptec_uwb_peer_get(slot, eui64) == 0) {
 			if (receptec_uwb_schedule_get(slot, &configured_action) < 0 ||
@@ -437,8 +496,14 @@ static int cmd_uwb_schedule_show(const struct shell *shell, size_t argc,
 			action = configured_action == RECEPTEC_UWB_PEER_ACTION_DATA_REQ ?
 				"data_req" : "sync";
 			format_eui64(eui64, text);
-			shell_print(shell, "slot %u: %s peer=%s state=%s", slot, action,
-				    text, enabled ? "enabled" : "disabled");
+			if (receptec_uwb_peer_nickname_get(slot, nickname,
+							   sizeof(nickname)) < 0) {
+				nickname[0] = '-';
+				nickname[1] = '\0';
+			}
+			shell_print(shell, "slot %u: %s peer=%s state=%s nick=%s", slot,
+				    action, text, enabled ? "enabled" : "disabled",
+				    nickname);
 		} else {
 			shell_print(shell, "slot %u: sync (empty; skipped)", slot);
 		}

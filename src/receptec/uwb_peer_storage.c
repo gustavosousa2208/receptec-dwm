@@ -4,6 +4,7 @@
 
 #include <errno.h>
 #include <stddef.h>
+#include <string.h>
 
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/byteorder.h>
@@ -48,6 +49,17 @@ static int make_enabled_key(uint8_t slot, char key[PEER_KEY_MAX_LEN])
 		return -EINVAL;
 	}
 	len = snprintk(key, PEER_KEY_MAX_LEN, "uwb/enabled/%u", slot);
+	return len > 0 && len < (int)PEER_KEY_MAX_LEN ? 0 : -ENOSPC;
+}
+
+static int make_nickname_key(uint8_t slot, char key[PEER_KEY_MAX_LEN])
+{
+	int len;
+
+	if (slot >= RECEPTEC_UWB_MAX_PEERS) {
+		return -EINVAL;
+	}
+	len = snprintk(key, PEER_KEY_MAX_LEN, "uwb/nickname/%u", slot);
 	return len > 0 && len < (int)PEER_KEY_MAX_LEN ? 0 : -ENOSPC;
 }
 
@@ -193,6 +205,74 @@ int receptec_uwb_peer_enabled_delete(uint8_t slot)
 {
 	char key[PEER_KEY_MAX_LEN];
 	int ret = make_enabled_key(slot, key);
+
+	if (ret < 0) {
+		return ret;
+	}
+	return settings_delete(key);
+}
+
+int receptec_uwb_peer_nickname_load(uint8_t slot, char *nickname,
+				    size_t capacity)
+{
+	char key[PEER_KEY_MAX_LEN];
+	ssize_t len;
+	int ret;
+
+	if (nickname == NULL || capacity == 0U) {
+		return -EINVAL;
+	}
+	ret = make_nickname_key(slot, key);
+	if (ret < 0) {
+		return ret;
+	}
+	len = settings_get_val_len(key);
+	if (len < 0) {
+		return (int)len;
+	}
+	if (len == 0) {
+		return -ENOENT;
+	}
+	if (len >= (ssize_t)capacity ||
+	    (size_t)len >= RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN) {
+		return -EINVAL;
+	}
+	len = settings_load_one(key, nickname, (size_t)len);
+	if (len < 0) {
+		return (int)len;
+	}
+	if (len == 0 || len >= (ssize_t)capacity) {
+		return -EIO;
+	}
+	nickname[len] = '\0';
+	return 0;
+}
+
+int receptec_uwb_peer_nickname_save(uint8_t slot, const char *nickname)
+{
+	char key[PEER_KEY_MAX_LEN];
+	size_t len;
+	int ret;
+
+	if (nickname == NULL) {
+		return -EINVAL;
+	}
+	len = strlen(nickname);
+	if (len == 0U || len >= RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN) {
+		return -EINVAL;
+	}
+	ret = make_nickname_key(slot, key);
+	if (ret < 0) {
+		return ret;
+	}
+	/* Stored without the NUL terminator; load() adds it back. */
+	return settings_save_one(key, nickname, len);
+}
+
+int receptec_uwb_peer_nickname_delete(uint8_t slot)
+{
+	char key[PEER_KEY_MAX_LEN];
+	int ret = make_nickname_key(slot, key);
 
 	if (ret < 0) {
 		return ret;
