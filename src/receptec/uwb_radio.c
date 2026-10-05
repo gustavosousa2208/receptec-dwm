@@ -3114,7 +3114,8 @@ static void range_auto_window(void)
 		int ret;
 
 		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
-		usable = range_auto_enabled && !poll_running &&
+		usable = range_auto_enabled && radio_ready &&
+			peer_registry_ready && !poll_running &&
 			receptec_uwb_peer_registry_get(&peer_registry, slot,
 						       eui64) == 0 &&
 			peer_enabled[slot];
@@ -3123,6 +3124,12 @@ static void range_auto_window(void)
 		}
 		k_mutex_unlock(&uwb_peer_mutex);
 		if (!usable) {
+			/*
+			 * Radio not up yet (early boot) or responder busy:
+			 * back off instead of touching the DW chip or
+			 * spinning the window.
+			 */
+			k_msleep(200);
 			continue;
 		}
 		ret = range_respond_once(slot, RANGE_AUTO_PAIR_INDEX,
