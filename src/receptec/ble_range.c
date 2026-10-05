@@ -94,13 +94,15 @@ static void ble_connected(struct bt_conn *conn, uint8_t err)
 	ARG_UNUSED(conn);
 }
 
+static int ble_range_adv_start(void);
+
 static void ble_disconnected(struct bt_conn *conn, uint8_t reason)
 {
 	int ret;
 
 	printk("BLE range: central disconnected (reason %u), re-advertising\n",
 	       reason);
-	ret = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, NULL, 0, NULL, 0);
+	ret = ble_range_adv_start();
 	if (ret < 0) {
 		printk("BLE range: re-advertise failed: %d\n", ret);
 	}
@@ -112,22 +114,35 @@ BT_CONN_CB_DEFINE(ble_range_conn_cb) = {
 	.disconnected = ble_disconnected,
 };
 
+static const uint8_t adv_flags[] = {
+	BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR,
+};
+/* 00003100-4550-5453-4154-4c4554454300, air order (LSB first). */
+static const uint8_t adv_uuid[] = {
+	0x00, 0x43, 0x45, 0x45, 0x54, 0x4C, 0x54, 0x41,
+	0x53, 0x54, 0x50, 0x45, 0x00, 0x31, 0x00, 0x00,
+};
+static const struct bt_data adv_data[] = {
+	BT_DATA(BT_DATA_FLAGS, adv_flags, sizeof(adv_flags)),
+	BT_DATA(BT_DATA_UUID128_ALL, adv_uuid, sizeof(adv_uuid)),
+};
+/* Device name rides in the scan response: flags + UUID128 + name do not fit
+ * the 31-byte legacy advertisement together (3+18+11=32).
+ */
+static const struct bt_data scan_rsp[] = {
+	BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME,
+		sizeof(CONFIG_BT_DEVICE_NAME) - 1U),
+};
+
+static int ble_range_adv_start(void)
+{
+	return bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, adv_data,
+			       ARRAY_SIZE(adv_data), scan_rsp,
+			       ARRAY_SIZE(scan_rsp));
+}
+
 static void ble_thread_entry(void *unused_a, void *unused_b, void *unused_c)
 {
-	static const uint8_t adv_flags[] = {
-		BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR,
-	};
-	/* 00003100-4550-5453-4154-4c4554454300, air order (LSB first). */
-	static const uint8_t adv_uuid[] = {
-		0x00, 0x43, 0x45, 0x45, 0x54, 0x4C, 0x54, 0x41,
-		0x53, 0x54, 0x50, 0x45, 0x00, 0x31, 0x00, 0x00,
-	};
-	static const struct bt_data adv_data[] = {
-		BT_DATA(BT_DATA_FLAGS, adv_flags, sizeof(adv_flags)),
-		BT_DATA(BT_DATA_UUID128_ALL, adv_uuid, sizeof(adv_uuid)),
-		BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME,
-			sizeof(CONFIG_BT_DEVICE_NAME) - 1U),
-	};
 	int ret;
 
 	ARG_UNUSED(unused_a);
@@ -140,8 +155,7 @@ static void ble_thread_entry(void *unused_a, void *unused_b, void *unused_c)
 		return;
 	}
 	printk("BLE range: advertising as '%s'\n", bt_get_name());
-	ret = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, adv_data,
-			      ARRAY_SIZE(adv_data), NULL, 0);
+	ret = ble_range_adv_start();
 	if (ret < 0) {
 		printk("BLE range: advertise failed (%d); UWB unaffected\n",
 		       ret);
