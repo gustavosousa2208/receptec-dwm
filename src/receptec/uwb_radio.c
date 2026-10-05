@@ -131,6 +131,8 @@ static bool poll_running;
 static bool peer_registry_ready;
 /* Persisted per-peer actions; zero is SYNC so unset peers have a safe default. */
 static enum receptec_uwb_peer_action peer_actions[RECEPTEC_UWB_MAX_PEERS];
+/* Registration is retained when disabled; the flag only gates radio participation. */
+static bool peer_enabled[RECEPTEC_UWB_MAX_PEERS];
 static uint32_t schedule_period_ms = 1000U;
 static struct receptec_uwb_peer_registry peer_registry;
 static uint8_t tx_bytes[RECEPTEC_UWB_MAX_LOGICAL_SIZE];
@@ -268,6 +270,7 @@ int receptec_uwb_radio_init(void)
 {
 	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
 	uint8_t stored_action;
+	bool stored_enabled;
 	uint32_t stored_period_ms;
 	ssize_t hwinfo_len;
 	int ret;
@@ -350,6 +353,22 @@ int receptec_uwb_radio_init(void)
 		}
 
 		printk("Peer storage: restored slot %u\n", slot);
+		ret = receptec_uwb_peer_enabled_load(slot, &stored_enabled);
+		if (ret == -ENOENT) {
+			/* Existing registrations predate this flag and remain enabled. */
+			stored_enabled = true;
+			ret = receptec_uwb_peer_enabled_save(slot, stored_enabled);
+		} else if (ret < 0) {
+			printk("Peer enabled state invalid for slot %u (%d); enabling safely\n",
+			       slot, ret);
+			stored_enabled = true;
+			ret = receptec_uwb_peer_enabled_save(slot, stored_enabled);
+		}
+		if (ret < 0) {
+			printk("Peer enabled state could not be persisted for slot %u: %d\n",
+			       slot, ret);
+		}
+		peer_enabled[slot] = stored_enabled;
 		ret = receptec_uwb_schedule_action_load(slot, &stored_action);
 		if (ret == 0 &&
 		    (stored_action == RECEPTEC_UWB_PEER_ACTION_SYNC ||
@@ -481,6 +500,14 @@ int receptec_uwb_peer_register(
 		goto out;
 	}
 	peer_actions[slot] = RECEPTEC_UWB_PEER_ACTION_SYNC;
+	ret = receptec_uwb_peer_enabled_save(slot, true);
+	if (ret < 0) {
+		(void)receptec_uwb_schedule_action_delete(slot);
+		(void)receptec_uwb_peer_storage_delete(slot);
+		(void)receptec_uwb_peer_registry_unregister(&peer_registry, slot);
+		goto out;
+	}
+	peer_enabled[slot] = true;
 
 out:
 	k_mutex_unlock(&uwb_peer_mutex);
@@ -491,6 +518,7 @@ int receptec_uwb_peer_unregister(uint8_t slot)
 {
 	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
 	enum receptec_uwb_peer_action previous_action;
+	bool previous_enabled;
 	int ret;
 
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
@@ -527,9 +555,16 @@ int receptec_uwb_peer_unregister(uint8_t slot)
 		goto out;
 	}
 	previous_action = peer_actions[slot];
+	previous_enabled = peer_enabled[slot];
 	ret = receptec_uwb_schedule_action_delete(slot);
 	if (ret < 0) {
 		(void)receptec_uwb_peer_storage_save(slot, eui64);
+		goto out;
+	}
+	ret = receptec_uwb_peer_enabled_delete(slot);
+	if (ret < 0 && ret != -ENOENT) {
+		(void)receptec_uwb_peer_storage_save(slot, eui64);
+		(void)receptec_uwb_schedule_action_save(slot, previous_action);
 		goto out;
 	}
 
@@ -538,9 +573,11 @@ int receptec_uwb_peer_unregister(uint8_t slot)
 		slot);
 	if (ret == 0) {
 		peer_actions[slot] = RECEPTEC_UWB_PEER_ACTION_SYNC;
+		peer_enabled[slot] = false;
 	} else {
 		(void)receptec_uwb_peer_storage_save(slot, eui64);
 		(void)receptec_uwb_schedule_action_save(slot, previous_action);
+		(void)receptec_uwb_peer_enabled_save(slot, previous_enabled);
 	}
 
 out:
@@ -556,6 +593,49 @@ int receptec_uwb_peer_get(uint8_t slot,
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 	ret = peer_registry_ready ?
 		receptec_uwb_peer_registry_get(&peer_registry, slot, eui64) : -EAGAIN;
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+int receptec_uwb_peer_enabled_get(uint8_t slot, bool *enabled)
+{
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	int ret = 0;
+
+	if (enabled == NULL || slot >= RECEPTEC_UWB_MAX_PEERS) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!peer_registry_ready) {
+		ret = -EAGAIN;
+	} else if (receptec_uwb_peer_registry_get(&peer_registry, slot, eui64) == 0) {
+		*enabled = peer_enabled[slot];
+	} else {
+		ret = -ENOENT;
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+int receptec_uwb_peer_enabled_set(uint8_t slot, bool enabled)
+{
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	int ret = 0;
+
+	if (slot >= RECEPTEC_UWB_MAX_PEERS) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!peer_registry_ready) {
+		ret = -EAGAIN;
+	} else if (receptec_uwb_peer_registry_get(&peer_registry, slot, eui64) < 0) {
+		ret = -ENOENT;
+	} else if (peer_enabled[slot] != enabled) {
+		ret = receptec_uwb_peer_enabled_save(slot, enabled);
+		if (ret == 0) {
+			peer_enabled[slot] = enabled;
+		}
+	}
 	k_mutex_unlock(&uwb_peer_mutex);
 	return ret;
 }
@@ -699,6 +779,10 @@ static int send_control_once(uint8_t peer_slot,
 	ret = receptec_uwb_peer_registry_get(&peer_registry, peer_slot,
 						 peer_eui64);
 	if (ret < 0) {
+		goto unlock;
+	}
+	if (!peer_enabled[peer_slot]) {
+		ret = -EACCES;
 		goto unlock;
 	}
 	ret = receptec_uwb_peer_registry_next_sequence(&peer_registry,
@@ -2704,6 +2788,7 @@ int receptec_uwb_range_respond(uint8_t master_slot, uint8_t pair_index,
 			       enum receptec_uwb_range_status *out_status,
 			       uint32_t *out_distance_mm)
 {
+	uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE];
 	int ret;
 
 	if (pair_index > 2U || timeout_ms == 0U || timeout_ms > 60000U) {
@@ -2717,6 +2802,16 @@ int receptec_uwb_range_respond(uint8_t master_slot, uint8_t pair_index,
 	if (poll_running) {
 		k_mutex_unlock(&uwb_peer_mutex);
 		return -EBUSY;
+	}
+	if (master_slot >= RECEPTEC_UWB_MAX_PEERS ||
+	    receptec_uwb_peer_registry_get(&peer_registry, master_slot,
+					   peer_eui64) < 0) {
+		k_mutex_unlock(&uwb_peer_mutex);
+		return -ENOENT;
+	}
+	if (!peer_enabled[master_slot]) {
+		k_mutex_unlock(&uwb_peer_mutex);
+		return -EACCES;
 	}
 	poll_running = true;
 	k_mutex_unlock(&uwb_peer_mutex);
@@ -2754,6 +2849,10 @@ int receptec_uwb_range_listen(uint8_t peer_slot, uint8_t pair_index,
 	    0) {
 		k_mutex_unlock(&uwb_peer_mutex);
 		return -ENOENT;
+	}
+	if (!peer_enabled[peer_slot]) {
+		k_mutex_unlock(&uwb_peer_mutex);
+		return -EACCES;
 	}
 	poll_running = true;
 	k_mutex_unlock(&uwb_peer_mutex);
@@ -2848,6 +2947,7 @@ static void range_thread_entry(void *unused_a, void *unused_b, void *unused_c)
 
 		while (atomic_get(&range_stop_requested) == 0) {
 			int64_t sleep_ms;
+			bool enabled;
 
 			k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 			if (receptec_uwb_peer_registry_get(&peer_registry, peer_slot,
@@ -2855,9 +2955,12 @@ static void range_thread_entry(void *unused_a, void *unused_b, void *unused_c)
 				k_mutex_unlock(&uwb_peer_mutex);
 				break;
 			}
+			enabled = peer_enabled[peer_slot];
 			k_mutex_unlock(&uwb_peer_mutex);
 
-			range_round(peer_eui64, pair_index);
+			if (enabled) {
+				range_round(peer_eui64, pair_index);
+			}
 			next_tick_ms += period_us / 1000;
 			sleep_ms = next_tick_ms - k_uptime_get();
 			if (sleep_ms < 0) {
@@ -2908,6 +3011,10 @@ int receptec_uwb_range_start(uint8_t peer_slot, uint32_t period_ms,
 		ret = -ENOENT;
 		goto unlock;
 	}
+	if (!peer_enabled[peer_slot]) {
+		ret = -EACCES;
+		goto unlock;
+	}
 	range_status.running = true;
 	range_status.peer_slot = peer_slot;
 	range_status.pair_index = pair_index;
@@ -2951,6 +3058,7 @@ void receptec_uwb_range_get(struct receptec_uwb_range_round_status *out)
 static void run_poll(uint32_t period_us)
 {
 	uint32_t epoch_dx;
+	bool enabled_snapshot[RECEPTEC_UWB_MAX_PEERS];
 	uint64_t sync_period_ticks = k_us_to_ticks_ceil64(period_us);
 	uint64_t next_sync_prepare_tick;
 
@@ -3021,11 +3129,18 @@ static void run_poll(uint32_t period_us)
 			}
 		}
 
+		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+		memcpy(enabled_snapshot, peer_enabled, sizeof(enabled_snapshot));
+		k_mutex_unlock(&uwb_peer_mutex);
+
 		for (uint8_t slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
 			uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE];
 
 			if (atomic_get(&poll_stop_requested) != 0) {
 				break;
+			}
+			if (!enabled_snapshot[slot]) {
+				continue;
 			}
 			if (poll_status.sync_mode && slot != poll_status.peer_slot) {
 				continue;
@@ -3110,6 +3225,7 @@ int receptec_uwb_poll_start(uint32_t period_ms)
 	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
 	uint32_t period_us = period_ms * 1000U;
 	int highest = -1;
+	int enabled_count = 0;
 	int ret = 0;
 
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
@@ -3123,11 +3239,12 @@ int receptec_uwb_poll_start(uint32_t period_ms)
 	}
 	for (uint8_t slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
 		if (receptec_uwb_peer_registry_get(&peer_registry, slot,
-						   eui64) == 0) {
+						   eui64) == 0 && peer_enabled[slot]) {
 			highest = slot;
+			enabled_count++;
 		}
 	}
-	if (highest < 0) {
+	if (highest < 0 || enabled_count == 0) {
 		ret = -ENOENT;
 		goto unlock;
 	}
@@ -3175,6 +3292,10 @@ int receptec_uwb_sync_start(uint8_t peer_slot, uint32_t period_ms)
 	}
 	if (receptec_uwb_peer_registry_get(&peer_registry, peer_slot, eui64) < 0) {
 		ret = -ENOENT;
+		goto unlock;
+	}
+	if (!peer_enabled[peer_slot]) {
+		ret = -EACCES;
 		goto unlock;
 	}
 	memset(&poll_status, 0, sizeof(poll_status));
@@ -3282,6 +3403,7 @@ int receptec_uwb_schedule_start(void)
 	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
 	uint32_t period_us;
 	int highest = -1;
+	int enabled_count = 0;
 	int ret = 0;
 
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
@@ -3296,11 +3418,12 @@ int receptec_uwb_schedule_start(void)
 	period_us = schedule_period_ms * 1000U;
 	for (uint8_t slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
 		if (receptec_uwb_peer_registry_get(&peer_registry, slot,
-						   eui64) == 0) {
+						   eui64) == 0 && peer_enabled[slot]) {
 			highest = slot;
+			enabled_count++;
 		}
 	}
-	if (highest < 0) {
+	if (highest < 0 || enabled_count == 0) {
 		ret = -ENOENT;
 		goto unlock;
 	}

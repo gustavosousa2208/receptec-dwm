@@ -83,8 +83,15 @@ static void print_peer_slots(const struct shell *shell)
 
 	for (slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
 		if (receptec_uwb_peer_get(slot, eui64) == 0) {
+			bool enabled;
+
 			format_eui64(eui64, text);
-			shell_print(shell, "slot %u: %s", slot, text);
+			if (receptec_uwb_peer_enabled_get(slot, &enabled) < 0) {
+				shell_print(shell, "slot %u: %s state=unknown", slot, text);
+			} else {
+				shell_print(shell, "slot %u: %s %s", slot, text,
+					    enabled ? "enabled" : "disabled");
+			}
 		} else {
 			shell_print(shell, "slot %u: empty", slot);
 		}
@@ -328,6 +335,29 @@ static int cmd_uwb_peer_unregister(const struct shell *shell, size_t argc,
 	return 0;
 }
 
+static int cmd_uwb_peer_enable(const struct shell *shell, size_t argc,
+			       char **argv)
+{
+	uint8_t slot;
+	bool enabled = strcmp(argv[0], "enable") == 0;
+	int ret;
+
+	ARG_UNUSED(argc);
+	ret = parse_slot(shell, argv[1], &slot);
+	if (ret < 0) {
+		return ret;
+	}
+	ret = receptec_uwb_peer_enabled_set(slot, enabled);
+	if (ret < 0) {
+		shell_error(shell, "peer %s failed: %d",
+			    enabled ? "enable" : "disable", ret);
+		return ret;
+	}
+	shell_print(shell, "slot %u %s; EUI and schedule retained", slot,
+		    enabled ? "enabled" : "disabled");
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_peer,
 	SHELL_CMD(list, NULL, "List registered peer slots and EUIs",
@@ -342,6 +372,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		     cmd_uwb_peer_unregister, 2, 0),
 	SHELL_CMD_ARG(clear, NULL, "Remove peer: clear <slot>",
 		     cmd_uwb_peer_unregister, 2, 0),
+	SHELL_CMD_ARG(enable, NULL, "Enable registered peer: enable <slot>",
+		     cmd_uwb_peer_enable, 2, 0),
+	SHELL_CMD_ARG(disable, NULL, "Disable peer but retain its config: disable <slot>",
+		     cmd_uwb_peer_enable, 2, 0),
 	SHELL_SUBCMD_SET_END);
 
 static int cmd_uwb_poll_start(const struct shell *shell, size_t argc,
@@ -392,16 +426,19 @@ static int cmd_uwb_schedule_show(const struct shell *shell, size_t argc,
 		    status.cycles, status.overruns);
 	for (uint8_t slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
 		enum receptec_uwb_peer_action configured_action;
+		bool enabled;
 		const char *action;
 
 		if (receptec_uwb_peer_get(slot, eui64) == 0) {
-			if (receptec_uwb_schedule_get(slot, &configured_action) < 0) {
+			if (receptec_uwb_schedule_get(slot, &configured_action) < 0 ||
+			    receptec_uwb_peer_enabled_get(slot, &enabled) < 0) {
 				return -EAGAIN;
 			}
 			action = configured_action == RECEPTEC_UWB_PEER_ACTION_DATA_REQ ?
 				"data_req" : "sync";
 			format_eui64(eui64, text);
-			shell_print(shell, "slot %u: %s peer=%s", slot, action, text);
+			shell_print(shell, "slot %u: %s peer=%s state=%s", slot, action,
+				    text, enabled ? "enabled" : "disabled");
 		} else {
 			shell_print(shell, "slot %u: sync (empty; skipped)", slot);
 		}

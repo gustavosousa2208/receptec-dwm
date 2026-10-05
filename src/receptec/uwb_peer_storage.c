@@ -40,6 +40,17 @@ static int make_action_key(uint8_t slot, char key[PEER_KEY_MAX_LEN])
 	return len > 0 && len < (int)PEER_KEY_MAX_LEN ? 0 : -ENOSPC;
 }
 
+static int make_enabled_key(uint8_t slot, char key[PEER_KEY_MAX_LEN])
+{
+	int len;
+
+	if (slot >= RECEPTEC_UWB_MAX_PEERS) {
+		return -EINVAL;
+	}
+	len = snprintk(key, PEER_KEY_MAX_LEN, "uwb/enabled/%u", slot);
+	return len > 0 && len < (int)PEER_KEY_MAX_LEN ? 0 : -ENOSPC;
+}
+
 int receptec_uwb_peer_storage_init(void)
 {
 	return settings_subsys_init();
@@ -128,6 +139,64 @@ int receptec_uwb_peer_storage_delete(uint8_t slot)
 		return ret;
 	}
 
+	return settings_delete(key);
+}
+
+int receptec_uwb_peer_enabled_load(uint8_t slot, bool *enabled)
+{
+	char key[PEER_KEY_MAX_LEN];
+	uint8_t stored;
+	ssize_t len;
+	int ret;
+
+	if (enabled == NULL) {
+		return -EINVAL;
+	}
+	ret = make_enabled_key(slot, key);
+	if (ret < 0) {
+		return ret;
+	}
+	len = settings_get_val_len(key);
+	if (len < 0) {
+		return (int)len;
+	}
+	if (len == 0) {
+		return -ENOENT;
+	}
+	if (len != sizeof(stored)) {
+		return -EINVAL;
+	}
+	len = settings_load_one(key, &stored, sizeof(stored));
+	if (len != sizeof(stored)) {
+		return len < 0 ? (int)len : -EIO;
+	}
+	if (stored > 1U) {
+		return -EINVAL;
+	}
+	*enabled = stored != 0U;
+	return 0;
+}
+
+int receptec_uwb_peer_enabled_save(uint8_t slot, bool enabled)
+{
+	char key[PEER_KEY_MAX_LEN];
+	uint8_t stored = enabled ? 1U : 0U;
+	int ret = make_enabled_key(slot, key);
+
+	if (ret < 0) {
+		return ret;
+	}
+	return settings_save_one(key, &stored, sizeof(stored));
+}
+
+int receptec_uwb_peer_enabled_delete(uint8_t slot)
+{
+	char key[PEER_KEY_MAX_LEN];
+	int ret = make_enabled_key(slot, key);
+
+	if (ret < 0) {
+		return ret;
+	}
 	return settings_delete(key);
 }
 
