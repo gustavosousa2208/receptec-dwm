@@ -76,6 +76,10 @@ body {
     <div class="metric"><div class="label">A–B</div><div class="value stale" id="d2">—</div><div class="age" id="a2"></div></div>
   </div>
 </div>
+<div class="card">
+  <h3>Browser check</h3>
+  <div style="font-size:12px;color:var(--dim)" id="diag">…</div>
+</div>
 
 <script>
 // Same 128-bit scheme as the COLETEC dashboard:
@@ -88,6 +92,22 @@ const CHR_RANGE = [uuid(0x3101), uuid(0x3102), uuid(0x3103)];
 let device = null;
 let server = null;
 const last = [0, 0, 0];
+
+(async () => {
+  const ua = navigator.userAgent || '';
+  const chrome = /Chrome\//.test(ua) && !/Edg\//.test(ua);
+  const edge = /Edg\//.test(ua);
+  let radio = 'unknown';
+  if (navigator.bluetooth && navigator.bluetooth.getAvailability) {
+    try { radio = (await navigator.bluetooth.getAvailability()) ? 'on' : 'off'; }
+    catch (_) { radio = 'query failed'; }
+  }
+  document.getElementById('diag').textContent =
+    'page: ' + location.protocol + '//' + location.host +
+    ' | browser: ' + (chrome ? 'Chrome' : edge ? 'Edge' : 'other') +
+    ' | WebBT API: ' + (navigator.bluetooth ? 'present' : 'MISSING') +
+    ' | BT radio: ' + radio;
+})();
 
 // Web Bluetooth expects GATT access to be serialized: every operation goes
 // through this single chain so CCCD writes never overlap.
