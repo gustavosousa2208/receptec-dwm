@@ -897,6 +897,16 @@ static int cmd_uwb_range_status(const struct shell *shell, size_t argc,
 		shell_print(shell, "last round=%llu: no valid result yet",
 			    status.round_id);
 	}
+	{
+		struct receptec_uwb_range_autostart as;
+
+		if (receptec_uwb_range_autostart_get(&as) == 0) {
+			shell_print(shell, "autostart: slot %u pair %u every %u ms",
+				    as.slot, as.pair_index, as.period_ms);
+		} else {
+			shell_print(shell, "autostart: off");
+		}
+	}
 	return 0;
 }
 
@@ -979,6 +989,57 @@ static int cmd_uwb_range_auto(const struct shell *shell, size_t argc,
 	return 0;
 }
 
+static int cmd_uwb_range_autostart(const struct shell *shell, size_t argc,
+				   char **argv)
+{
+	uint8_t slot;
+	unsigned long period_ms = 1000UL;
+	unsigned long pair_index = CONFIG_RECEPTEC_FIXED_ANCHOR_ID;
+	char *end;
+	int ret;
+
+	if (argc > 1U && strcmp(argv[1], "off") == 0) {
+		ret = receptec_uwb_range_autostart_clear();
+		if (ret < 0) {
+			shell_error(shell, "autostart not cleared: %d", ret);
+			return ret;
+		}
+		shell_print(shell, "range autostart cleared (applies next boot)");
+		return 0;
+	}
+	if (argc < 2U || argc > 4U || parse_slot(shell, argv[1], &slot) < 0) {
+		shell_error(shell, "usage: uwb range autostart <slot> [period_ms 1..60000] [pair_index 0|1|2]  (or: autostart off)");
+		return -EINVAL;
+	}
+	if (argc > 2U) {
+		errno = 0;
+		period_ms = strtoul(argv[2], &end, 10);
+		if (errno != 0 || end == argv[2] || *end != '\0' ||
+		    period_ms == 0UL || period_ms > 60000UL) {
+			shell_error(shell, "period must be 1..60000 ms");
+			return -EINVAL;
+		}
+	}
+	if (argc > 3U) {
+		errno = 0;
+		pair_index = strtoul(argv[3], &end, 10);
+		if (errno != 0 || end == argv[3] || *end != '\0' || pair_index > 2UL) {
+			shell_error(shell, "pair_index must be 0|1|2");
+			return -EINVAL;
+		}
+	}
+	ret = receptec_uwb_range_autostart_set(slot, (uint32_t)period_ms,
+					       (uint8_t)pair_index);
+	if (ret < 0) {
+		shell_error(shell, "autostart not saved (%d): slot needs a registered peer",
+			    ret);
+		return ret;
+	}
+	shell_print(shell, "range autostart saved: slot %u pair %lu every %lu ms (starts at boot)",
+		    slot, pair_index, period_ms);
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_range,
 	SHELL_CMD_ARG(start, NULL,
@@ -990,6 +1051,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(auto, NULL,
 		      "Answer rounds in background without arming respond: auto on|off",
 		      cmd_uwb_range_auto, 2, 0),
+	SHELL_CMD_ARG(autostart, NULL,
+		      "Start this round at boot: autostart <slot> [period_ms] [pair_index] (or: autostart off)",
+		      cmd_uwb_range_autostart, 2, 2),
 	SHELL_CMD_ARG(follow, NULL,
 		      "Live one-line distance readout: follow [seconds 1..3600]",
 		      cmd_uwb_range_follow, 1, 1),

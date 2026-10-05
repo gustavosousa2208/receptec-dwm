@@ -41,6 +41,17 @@ int receptec_uwb_peer_nickname_clear(uint8_t slot);
  */
 int receptec_uwb_range_auto_set(bool enable);
 int receptec_uwb_range_auto_get(bool *enable);
+/*
+ * Range autostart: begin this round automatically at boot (power-up-and-go
+ * master). Saved persistently; cleared with
+ * receptec_uwb_range_autostart_clear(). A manual `range stop` stays stopped
+ * until the next boot or `range start`.
+ */
+int receptec_uwb_range_autostart_set(uint8_t peer_slot, uint32_t period_ms,
+				     uint8_t pair_index);
+int receptec_uwb_range_autostart_clear(void);
+int receptec_uwb_range_autostart_get(
+	struct receptec_uwb_range_autostart *out);
 int receptec_uwb_radio_send_sync(uint8_t peer_slot);
 /* Send one STOP when Ttimeout is configured; otherwise return -ENOTSUP. */
 int receptec_uwb_radio_send_stop(uint8_t peer_slot);

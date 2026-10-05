@@ -316,6 +316,72 @@ int receptec_uwb_range_auto_save(bool enabled)
 	return settings_save_one("uwb/range_auto", &stored, sizeof(stored));
 }
 
+#define RANGE_AUTOSTART_LEN 6U
+
+int receptec_uwb_range_autostart_load(
+	struct receptec_uwb_range_autostart *out)
+{
+	uint8_t encoded[RANGE_AUTOSTART_LEN];
+	ssize_t len;
+
+	if (out == NULL) {
+		return -EINVAL;
+	}
+	len = settings_get_val_len("uwb/range_autostart");
+	if (len < 0) {
+		return (int)len;
+	}
+	if (len == 0) {
+		return -ENOENT;
+	}
+	if (len != sizeof(encoded)) {
+		return -EINVAL;
+	}
+	len = settings_load_one("uwb/range_autostart", encoded,
+				sizeof(encoded));
+	if (len != sizeof(encoded)) {
+		return len < 0 ? (int)len : -EIO;
+	}
+	if (encoded[0] >= RECEPTEC_UWB_MAX_PEERS || encoded[1] > 2U) {
+		return -EINVAL;
+	}
+	out->slot = encoded[0];
+	out->pair_index = encoded[1];
+	out->period_ms = (uint32_t)encoded[2] |
+			 ((uint32_t)encoded[3] << 8) |
+			 ((uint32_t)encoded[4] << 16) |
+			 ((uint32_t)encoded[5] << 24);
+	if (out->period_ms == 0U || out->period_ms > 60000U) {
+		return -EINVAL;
+	}
+	return 0;
+}
+
+int receptec_uwb_range_autostart_save(
+	const struct receptec_uwb_range_autostart *cfg)
+{
+	uint8_t encoded[RANGE_AUTOSTART_LEN];
+
+	if (cfg == NULL || cfg->slot >= RECEPTEC_UWB_MAX_PEERS ||
+	    cfg->pair_index > 2U || cfg->period_ms == 0U ||
+	    cfg->period_ms > 60000U) {
+		return -EINVAL;
+	}
+	encoded[0] = cfg->slot;
+	encoded[1] = cfg->pair_index;
+	encoded[2] = (uint8_t)(cfg->period_ms & 0xFFU);
+	encoded[3] = (uint8_t)((cfg->period_ms >> 8) & 0xFFU);
+	encoded[4] = (uint8_t)((cfg->period_ms >> 16) & 0xFFU);
+	encoded[5] = (uint8_t)((cfg->period_ms >> 24) & 0xFFU);
+	return settings_save_one("uwb/range_autostart", encoded,
+				 sizeof(encoded));
+}
+
+int receptec_uwb_range_autostart_delete(void)
+{
+	return settings_delete("uwb/range_autostart");
+}
+
 int receptec_uwb_schedule_action_load(uint8_t slot, uint8_t *action)
 {
 	char key[PEER_KEY_MAX_LEN];

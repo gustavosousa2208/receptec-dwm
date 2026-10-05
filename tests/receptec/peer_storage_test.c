@@ -21,6 +21,9 @@ struct mock_settings {
 	uint8_t range_auto;
 	size_t range_auto_len;
 	bool range_auto_present;
+	uint8_t range_autostart[6];
+	size_t range_autostart_len;
+	bool range_autostart_present;
 	int init_result;
 	ssize_t get_len_result;
 	ssize_t load_result;
@@ -100,6 +103,12 @@ ssize_t settings_get_val_len(const char *key)
 		}
 		return (ssize_t)mock.range_auto_len;
 	}
+	if (strcmp(key, "uwb/range_autostart") == 0) {
+		if (!mock.range_autostart_present) {
+			return 0;
+		}
+		return (ssize_t)mock.range_autostart_len;
+	}
 	if (nick_slot >= 0) {
 		if (!mock.nick_present[nick_slot]) {
 			return 0;
@@ -132,6 +141,17 @@ ssize_t settings_load_one(const char *key, void *value, size_t value_size)
 		memcpy(value, &mock.range_auto, mock.range_auto_len);
 
 		return (ssize_t)mock.range_auto_len;
+	}
+	if (strcmp(key, "uwb/range_autostart") == 0) {
+		if (!mock.range_autostart_present) {
+			return -ENOENT;
+		}
+		if (mock.range_autostart_len > value_size) {
+			return -ENOMEM;
+		}
+		memcpy(value, mock.range_autostart, mock.range_autostart_len);
+
+		return (ssize_t)mock.range_autostart_len;
 	}
 	if (nick_slot >= 0) {
 		if (!mock.nick_present[nick_slot]) {
@@ -175,6 +195,16 @@ int settings_save_one(const char *key, const void *value, size_t value_size)
 
 		return 0;
 	}
+	if (strcmp(key, "uwb/range_autostart") == 0) {
+		if (value_size != sizeof(mock.range_autostart)) {
+			return -EINVAL;
+		}
+		memcpy(mock.range_autostart, value, value_size);
+		mock.range_autostart_len = value_size;
+		mock.range_autostart_present = true;
+
+		return 0;
+	}
 	if (nick_slot >= 0) {
 		if (value_size > sizeof(mock.nicknames[nick_slot])) {
 			return -EINVAL;
@@ -203,6 +233,24 @@ int settings_delete(const char *key)
 	(void)snprintf(mock.last_key, sizeof(mock.last_key), "%s", key);
 	if (mock.delete_result != 0) {
 		return mock.delete_result;
+	}
+	if (strcmp(key, "uwb/range_auto") == 0) {
+		if (!mock.range_auto_present) {
+			return -ENOENT;
+		}
+		mock.range_auto_present = false;
+		mock.range_auto_len = 0U;
+
+		return 0;
+	}
+	if (strcmp(key, "uwb/range_autostart") == 0) {
+		if (!mock.range_autostart_present) {
+			return -ENOENT;
+		}
+		mock.range_autostart_present = false;
+		mock.range_autostart_len = 0U;
+
+		return 0;
 	}
 	if (nick_slot >= 0) {
 		if (!mock.nick_present[nick_slot]) {
@@ -372,6 +420,44 @@ static void test_range_auto_rejects_corrupt_values(void)
 	assert(receptec_uwb_range_auto_load(&enabled) == -EINVAL);
 }
 
+static void test_range_autostart_round_trip(void)
+{
+	struct receptec_uwb_range_autostart cfg = {
+		.slot = 1U,
+		.pair_index = 0U,
+		.period_ms = 200U,
+	};
+	struct receptec_uwb_range_autostart loaded = {0};
+	struct receptec_uwb_range_autostart bad = {
+		.slot = RECEPTEC_UWB_MAX_PEERS,
+		.pair_index = 0U,
+		.period_ms = 200U,
+	};
+
+	reset_mock();
+	assert(receptec_uwb_range_autostart_load(NULL) == -EINVAL);
+	assert(receptec_uwb_range_autostart_load(&loaded) == -ENOENT);
+	assert(receptec_uwb_range_autostart_save(NULL) == -EINVAL);
+	assert(receptec_uwb_range_autostart_save(&bad) == -EINVAL);
+	bad.slot = 1U;
+	bad.pair_index = 3U;
+	assert(receptec_uwb_range_autostart_save(&bad) == -EINVAL);
+	bad.pair_index = 0U;
+	bad.period_ms = 0U;
+	assert(receptec_uwb_range_autostart_save(&bad) == -EINVAL);
+	assert(receptec_uwb_range_autostart_save(&cfg) == 0);
+	assert(strcmp(mock.last_key, "uwb/range_autostart") == 0);
+	assert(receptec_uwb_range_autostart_load(&loaded) == 0);
+	assert(loaded.slot == 1U && loaded.pair_index == 0U &&
+	       loaded.period_ms == 200U);
+	assert(receptec_uwb_range_autostart_delete() == 0);
+	assert(receptec_uwb_range_autostart_load(&loaded) == -ENOENT);
+
+	mock.range_autostart_present = true;
+	mock.range_autostart_len = 3U;
+	assert(receptec_uwb_range_autostart_load(&loaded) == -EINVAL);
+}
+
 int main(void)
 {
 	test_init_and_argument_errors();
@@ -382,6 +468,7 @@ int main(void)
 	test_nickname_rejects_bad_arguments();
 	test_range_auto_round_trip();
 	test_range_auto_rejects_corrupt_values();
+	test_range_autostart_round_trip();
 	puts("RECEPTEC UWB peer storage tests passed");
 
 	return 0;

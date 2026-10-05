@@ -139,6 +139,9 @@ static char peer_nicknames[RECEPTEC_UWB_MAX_PEERS]
 static bool peer_nickname_set[RECEPTEC_UWB_MAX_PEERS];
 /* Background range auto-responder; restored from settings at boot. */
 static bool range_auto_enabled;
+/* Boot-time round for a power-up-and-go master; empty unless configured. */
+static struct receptec_uwb_range_autostart range_autostart;
+static bool range_autostart_set;
 static uint32_t schedule_period_ms = 1000U;
 static struct receptec_uwb_peer_registry peer_registry;
 static uint8_t tx_bytes[RECEPTEC_UWB_MAX_LOGICAL_SIZE];
@@ -417,6 +420,8 @@ int receptec_uwb_radio_init(void)
 	    range_auto_enabled) {
 		printk("Range auto-responder restored: on\n");
 	}
+	range_autostart_set = receptec_uwb_range_autostart_load(
+		&range_autostart) == 0;
 
 	peer_registry_ready = true;
 
@@ -427,6 +432,21 @@ int receptec_uwb_radio_init(void)
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 	radio_ready = (ret == 0);
 	k_mutex_unlock(&uwb_peer_mutex);
+
+	if (ret == 0 && range_autostart_set) {
+		ret = receptec_uwb_range_start(range_autostart.slot,
+					       range_autostart.period_ms,
+					       range_autostart.pair_index);
+		if (ret < 0) {
+			printk("Range autostart not started (%d); configure peers first\n",
+			       ret);
+		} else {
+			printk("Range autostart: slot %u pair %u every %u ms\n",
+			       range_autostart.slot, range_autostart.pair_index,
+			       range_autostart.period_ms);
+		}
+		ret = 0;
+	}
 
 	return ret;
 }
@@ -3330,6 +3350,72 @@ int receptec_uwb_range_auto_get(bool *enable)
 		ret = -EAGAIN;
 	} else {
 		*enable = range_auto_enabled;
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+int receptec_uwb_range_autostart_set(uint8_t peer_slot, uint32_t period_ms,
+				     uint8_t pair_index)
+{
+	struct receptec_uwb_range_autostart cfg = {
+		.slot = peer_slot,
+		.pair_index = pair_index,
+		.period_ms = period_ms,
+	};
+	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
+	int ret;
+
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!peer_registry_ready) {
+		ret = -EAGAIN;
+	} else if (receptec_uwb_peer_registry_get(&peer_registry, peer_slot,
+						  eui64) < 0) {
+		ret = -ENOENT;
+	} else {
+		ret = receptec_uwb_range_autostart_save(&cfg);
+		if (ret == 0) {
+			range_autostart = cfg;
+			range_autostart_set = true;
+		}
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+int receptec_uwb_range_autostart_clear(void)
+{
+	int ret;
+
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!peer_registry_ready) {
+		ret = -EAGAIN;
+	} else {
+		ret = receptec_uwb_range_autostart_delete();
+		if (ret == 0 || ret == -ENOENT) {
+			range_autostart_set = false;
+			ret = 0;
+		}
+	}
+	k_mutex_unlock(&uwb_peer_mutex);
+	return ret;
+}
+
+int receptec_uwb_range_autostart_get(
+	struct receptec_uwb_range_autostart *out)
+{
+	int ret = 0;
+
+	if (out == NULL) {
+		return -EINVAL;
+	}
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	if (!peer_registry_ready) {
+		ret = -EAGAIN;
+	} else if (!range_autostart_set) {
+		ret = -ENOENT;
+	} else {
+		*out = range_autostart;
 	}
 	k_mutex_unlock(&uwb_peer_mutex);
 	return ret;

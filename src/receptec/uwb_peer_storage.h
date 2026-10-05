@@ -35,6 +35,22 @@ int receptec_uwb_peer_nickname_delete(uint8_t slot);
 int receptec_uwb_range_auto_load(bool *enabled);
 int receptec_uwb_range_auto_save(bool enabled);
 
+/*
+ * Range autostart: which round to begin at boot (slot, pair, period_ms).
+ * -ENOENT when never configured; invalid stored values read as -EINVAL.
+ */
+struct receptec_uwb_range_autostart {
+	uint8_t slot;
+	uint8_t pair_index;
+	uint32_t period_ms;
+};
+
+int receptec_uwb_range_autostart_load(
+	struct receptec_uwb_range_autostart *out);
+int receptec_uwb_range_autostart_save(
+	const struct receptec_uwb_range_autostart *cfg);
+int receptec_uwb_range_autostart_delete(void);
+
 int receptec_uwb_schedule_action_load(uint8_t slot, uint8_t *action);
 int receptec_uwb_schedule_action_save(uint8_t slot, uint8_t action);
 int receptec_uwb_schedule_action_delete(uint8_t slot);
