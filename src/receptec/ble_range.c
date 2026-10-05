@@ -10,8 +10,14 @@
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/util.h>
 
-#define BLE_RANGE_SVC_UUID 0x3110
-#define BLE_RANGE_CHR_BASE 0x3111
+#define BLE_RANGE_SVC_VAL \
+	BT_UUID_128_ENCODE(0x00003100, 0x4550, 0x5453, 0x4154, 0x4C4554454300ULL)
+#define BLE_RANGE_CHR_VAL(_short) \
+	BT_UUID_128_ENCODE(0x00000000 | (_short), 0x4550, 0x5453, 0x4154, \
+			   0x4C4554454300ULL)
+#define BLE_RANGE_SVC_UUID BT_UUID_DECLARE_128(BLE_RANGE_SVC_VAL)
+#define BLE_RANGE_CHR_UUID(_pair) \
+	BT_UUID_DECLARE_128(BLE_RANGE_CHR_VAL(0x3101 + (_pair)))
 #define BLE_RANGE_PAIR_COUNT 3U
 #define BLE_RANGE_VALUE_LEN 5U /* status u8 + distance_mm u32 LE */
 
@@ -36,20 +42,20 @@ static void ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
 }
 
 BT_GATT_SERVICE_DEFINE(range_svc,
-	BT_GATT_PRIMARY_SERVICE(BT_UUID_DECLARE_16(BLE_RANGE_SVC_UUID)),
-	BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_16(BLE_RANGE_CHR_BASE),
+	BT_GATT_PRIMARY_SERVICE(BLE_RANGE_SVC_UUID),
+	BT_GATT_CHARACTERISTIC(BLE_RANGE_CHR_UUID(0),
 			       BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
 			       BT_GATT_PERM_READ, read_range, NULL,
 			       &range_values[0]),
 	BT_GATT_CCC(ccc_changed,
 		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
-	BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_16(BLE_RANGE_CHR_BASE + 1U),
+	BT_GATT_CHARACTERISTIC(BLE_RANGE_CHR_UUID(1),
 			       BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
 			       BT_GATT_PERM_READ, read_range, NULL,
 			       &range_values[1]),
 	BT_GATT_CCC(ccc_changed,
 		    BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
-	BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_16(BLE_RANGE_CHR_BASE + 2U),
+	BT_GATT_CHARACTERISTIC(BLE_RANGE_CHR_UUID(2),
 			       BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
 			       BT_GATT_PERM_READ, read_range, NULL,
 			       &range_values[2]),
@@ -111,13 +117,14 @@ static void ble_thread_entry(void *unused_a, void *unused_b, void *unused_c)
 	static const uint8_t adv_flags[] = {
 		BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR,
 	};
+	/* 00003100-4550-5453-4154-4c4554454300, air order (LSB first). */
 	static const uint8_t adv_uuid[] = {
-		(uint8_t)(BLE_RANGE_SVC_UUID & 0xFFU),
-		(uint8_t)((BLE_RANGE_SVC_UUID >> 8) & 0xFFU),
+		0x00, 0x43, 0x45, 0x45, 0x54, 0x4C, 0x54, 0x41,
+		0x53, 0x54, 0x50, 0x45, 0x00, 0x31, 0x00, 0x00,
 	};
 	static const struct bt_data adv_data[] = {
 		BT_DATA(BT_DATA_FLAGS, adv_flags, sizeof(adv_flags)),
-		BT_DATA(BT_DATA_UUID16_ALL, adv_uuid, sizeof(adv_uuid)),
+		BT_DATA(BT_DATA_UUID128_ALL, adv_uuid, sizeof(adv_uuid)),
 		BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME,
 			sizeof(CONFIG_BT_DEVICE_NAME) - 1U),
 	};
