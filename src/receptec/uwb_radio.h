@@ -143,6 +143,12 @@ int receptec_uwb_range_start(uint8_t peer_slot, uint32_t period_ms,
 			     uint8_t pair_index);
 int receptec_uwb_range_stop(void);
 void receptec_uwb_range_get(struct receptec_uwb_range_round_status *out);
+/*
+ * Follow-mode display: while quiet is set, the range thread still records
+ * every round in the status above but skips its per-round console line, so a
+ * shell follower can redraw one updating line instead of scrolling the log.
+ */
+void receptec_uwb_range_set_quiet(bool quiet);
 
 /*
  * One-shot DS-TWR responder (contract UWB v1.2 S5-S9): listens up to

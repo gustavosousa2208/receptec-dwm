@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include <zephyr/shell/shell.h>
+#include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/util.h>
 
@@ -899,6 +900,60 @@ static int cmd_uwb_range_status(const struct shell *shell, size_t argc,
 	return 0;
 }
 
+/*
+ * Live one-line distance readout: redraws `meters: x.xxx m` on the same
+ * terminal line once per second while a round runs, then ends with a newline.
+ * The per-round log line is suppressed for the duration (see
+ * receptec_uwb_range_set_quiet()) so the screen does not scroll; counters
+ * stay available through `uwb range status`.
+ */
+static int cmd_uwb_range_follow(const struct shell *shell, size_t argc,
+				char **argv)
+{
+	struct receptec_uwb_range_round_status status;
+	unsigned long seconds = 60UL;
+	char *end;
+
+	if (argc > 1U) {
+		errno = 0;
+		seconds = strtoul(argv[1], &end, 10);
+		if (errno != 0 || end == argv[1] || *end != '\0' ||
+		    seconds == 0UL || seconds > 3600UL) {
+			shell_error(shell, "usage: uwb range follow [seconds 1..3600]");
+			return -EINVAL;
+		}
+	}
+	receptec_uwb_range_get(&status);
+	if (!status.running) {
+		shell_error(shell, "range is not running: uwb range start <slot> first");
+		return -EALREADY;
+	}
+	receptec_uwb_range_set_quiet(true);
+	while (seconds-- > 0U) {
+		receptec_uwb_range_get(&status);
+		if (!status.running) {
+			shell_fprintf(shell, SHELL_NORMAL, "\n");
+			shell_print(shell, "range stopped");
+			break;
+		}
+		if (status.last_valid) {
+			shell_fprintf(shell, SHELL_NORMAL,
+				      "\rmeters: %u.%03u m (round %llu)      ",
+				      status.last_distance_mm / 1000U,
+				      status.last_distance_mm % 1000U,
+				      status.round_id);
+		} else {
+			shell_fprintf(shell, SHELL_NORMAL,
+				      "\rmeters: -- (round %llu, no valid result yet)      ",
+				      status.round_id);
+		}
+		k_sleep(K_MSEC(1000));
+	}
+	shell_fprintf(shell, SHELL_NORMAL, "\n");
+	receptec_uwb_range_set_quiet(false);
+	return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_range,
 	SHELL_CMD_ARG(start, NULL,
@@ -907,6 +962,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD(stop, NULL, "Stop the range round", cmd_uwb_range_stop),
 	SHELL_CMD(status, NULL, "Show round counters and last result",
 		  cmd_uwb_range_status),
+	SHELL_CMD_ARG(follow, NULL,
+		      "Live one-line distance readout: follow [seconds 1..3600]",
+		      cmd_uwb_range_follow, 1, 1),
 	SHELL_CMD_ARG(respond, NULL,
 		      "One-shot DS-TWR responder: respond <master_slot> <pair_index 0|1|2> [timeout_ms]",
 		      cmd_uwb_range_respond, 3, 1),

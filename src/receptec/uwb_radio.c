@@ -1931,6 +1931,7 @@ int receptec_uwb_test_abort(void)
 #define RANGE_TIMESTAMP_MASK ((1ULL << 40) - 1ULL)
 
 static struct receptec_uwb_range_round_status range_status;
+static bool range_log_quiet;
 static K_SEM_DEFINE(range_start_sem, 0, 1);
 static atomic_t range_stop_requested = ATOMIC_INIT(0);
 
@@ -3016,6 +3017,7 @@ static void range_round(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 	enum receptec_uwb_range_status outcome_status = RECEPTEC_UWB_RANGE_NO_RESULT;
 	uint32_t distance_mm = RECEPTEC_UWB_DISTANCE_INVALID;
 	uint64_t round_id;
+	bool log_round;
 	int status;
 
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
@@ -3062,9 +3064,12 @@ static void range_round(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 		range_status.last_valid = false;
 	}
 	range_status.last_update_ms = k_uptime_get();
+	log_round = !range_log_quiet;
 	k_mutex_unlock(&uwb_peer_mutex);
-	printk("UWB range: round=%llu status=%u distance_mm=%u\n",
-	       round_id, (unsigned int)outcome_status, distance_mm);
+	if (log_round) {
+		printk("UWB range: round=%llu status=%u distance_mm=%u\n",
+		       round_id, (unsigned int)outcome_status, distance_mm);
+	}
 }
 
 static void range_thread_entry(void *unused_a, void *unused_b, void *unused_c)
@@ -3195,6 +3200,13 @@ void receptec_uwb_range_get(struct receptec_uwb_range_round_status *out)
 {
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 	*out = range_status;
+	k_mutex_unlock(&uwb_peer_mutex);
+}
+
+void receptec_uwb_range_set_quiet(bool quiet)
+{
+	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	range_log_quiet = quiet;
 	k_mutex_unlock(&uwb_peer_mutex);
 }
 
