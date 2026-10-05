@@ -53,6 +53,7 @@ dry_run=false
 backup=false
 allow_dirty=false
 stlink=false
+mculink=false
 source_opt=
 role=
 
@@ -61,7 +62,7 @@ usage()
 	cat <<'EOF'
 Usage: scripts/flash-one.sh ROLE [options]
 
-ROLE: fake-coletec-0 | fake-coletec-0-anchor | fake-coletec-1 | receptec | receptec-qorvo | prod-coletec-qorvo
+ROLE: fake-coletec-0 | fake-coletec-0-anchor | fake-coletec-1 | receptec | receptec-qorvo | receptec-qorvo-anchor | prod-coletec-qorvo
 
 Flash one board. Probe serial comes from --probe, then JLINK_SN_FAKE_COLETEC_0 /
 JLINK_SN_FAKE_COLETEC_1 / JLINK_SN_RECEPTEC / JLINK_SN_PROD_COLETEC_QORVO, then
@@ -81,6 +82,8 @@ Options:
   --dry-run        run every check, print the plan, flash nothing
   --backup         read the RECEPTEC flash back to backups/ first (receptec only)
   --allow-dirty    accept uncommitted changes outside the image sources
+  --mculink        flash receptec-qorvo-anchor through MCU-Link (pyOCD);
+                   --probe accepts its serial or lstty mculink nickname
   --stlink         flash over SWD through an ST-Link V3 (pyOCD, target nrf52833)
                    instead of a J-Link. Only for prod-coletec-qorvo. The probe
                    comes from --probe (lstty stlink nickname or serial), then
@@ -96,7 +99,7 @@ EOF
 
 [ "$#" -ge 1 ] || { usage >&2; exit 2; }
 case "$1" in
-fake-coletec-0|fake-coletec-0-anchor|fake-coletec-1|receptec|receptec-qorvo|prod-coletec-qorvo) role=$1; shift ;;
+fake-coletec-0|fake-coletec-0-anchor|fake-coletec-1|receptec|receptec-qorvo|receptec-qorvo-anchor|prod-coletec-qorvo) role=$1; shift ;;
 -h|--help) usage; exit 0 ;;
 *) echo "Unknown role: $1 (want fake-coletec-0, fake-coletec-0-anchor, fake-coletec-1, receptec, receptec-qorvo or prod-coletec-qorvo)" >&2; exit 2 ;;
 esac
@@ -109,12 +112,17 @@ while [ "$#" -gt 0 ]; do
 	--backup) backup=true; shift ;;
 	--allow-dirty) allow_dirty=true; shift ;;
 	--stlink) stlink=true; shift ;;
+	--mculink) mculink=true; shift ;;
 	--source-dir) [ "$#" -ge 2 ] || exit 2; source_opt=$2; shift 2 ;;
 	-h|--help) usage; exit 0 ;;
 	*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
 	esac
 done
 
+if [ "$mculink" = true ] && { [ "$role" != receptec-qorvo-anchor ] || [ "$stlink" = true ]; }; then
+	echo "--mculink applies only to receptec-qorvo-anchor and cannot combine with --stlink." >&2
+	exit 2
+fi
 if [ "$stlink" = true ] && [ "$role" != prod-coletec-qorvo ]; then
 	echo "--stlink applies to prod-coletec-qorvo only." >&2
 	exit 2
@@ -143,6 +151,8 @@ receptec) build_dir=$receptec_build; nick=receptec;
 	env_sn=${JLINK_SN_RECEPTEC:-}; want=nRF52840_xxAA ;;
 receptec-qorvo) build_dir=$receptec_qorvo_build; nick=receptec;
 	env_sn=${JLINK_SN_RECEPTEC:-}; want=nRF52833_xxAA ;;
+receptec-qorvo-anchor) build_dir=${RECEPTEC_QORVO_ANCHOR_BUILD_DIR:-${build_root:-$app_dir/build}/build-receptec-qorvo-anchor}; nick=receptec-qorvo-anchor;
+	env_sn=${JLINK_SN_RECEPTEC_QORVO_ANCHOR:-}; want=nRF52833_xxAA ;;
 prod-coletec-qorvo) build_dir=$prod_coletec_qorvo_build; nick=prod-coletec-qorvo;
 	env_sn=${JLINK_SN_PROD_COLETEC_QORVO:-}; want=nRF52833_xxAA ;;
 esac
@@ -159,7 +169,13 @@ esac
 have_lstty=false
 command -v lstty >/dev/null 2>&1 && have_lstty=true
 
-if [ "$stlink" = true ]; then
+if [ "$mculink" = true ]; then
+	probe_label="MCU-Link"
+	probe=${probe_opt:-$nick}
+	[ "$have_lstty" = true ] || { echo "lstty is required for MCU-Link." >&2; exit 2; }
+	probe=$(lstty mculink get "$probe" --field serial 2>/dev/null) || exit 2
+	[ -n "$probe" ] || { echo "No MCU-Link for $role." >&2; exit 2; }
+elif [ "$stlink" = true ]; then
 	# ST-Link serials are hexadecimal, so the J-Link digits-only test does not apply.
 	nick=coletec-qorvo
 	probe=$probe_opt
@@ -256,8 +272,18 @@ elif [ "$role" = receptec-qorvo ]; then
 		echo "$role image metadata or configuration is stale." >&2
 		exit 1
 	}
-	elif [ "$role" = fake-coletec-0-anchor ]; then
-	grep -qx "role=RECEPTEC-Qorvo-anchor-1" "$metadata" &&
+	elif [ "$role" = fake-coletec-0-anchor ] || [ "$role" = receptec-qorvo-anchor ]; then
+	if [ "$role" = receptec-qorvo-anchor ]; then
+		grep -qx 'CONFIG_BOARD_RECEPTEC_QORVO=y' "$config" &&
+		grep -qx 'CONFIG_SHELL_BACKEND_RTT=y' "$config" || {
+			echo "$role requires a RECEPTEC-Qorvo RTT image." >&2
+			exit 1
+		}
+		anchor_role=RECEPTEC-QORVO-ANCHOR
+	else
+		anchor_role=RECEPTEC-Qorvo-anchor-1
+	fi
+	grep -qx "role=$anchor_role" "$metadata" &&
 	grep -qx "source_commit=$source_commit" "$metadata" &&
 	grep -qx "contracts_commit=$contracts_commit" "$metadata" &&
 	grep -qx 'anchor_id=1' "$metadata" &&
@@ -291,7 +317,14 @@ else
 	}
 fi
 
-if [ "$stlink" = true ]; then
+if [ "$mculink" = true ]; then
+	command -v pyocd >/dev/null 2>&1 || { echo "pyocd not found." >&2; exit 1; }
+	info=$(lstty mculink get --serial "$probe" --json 2>/dev/null || true)
+	case "$info" in *'"connected": true'*) ;; *) echo "MCU-Link $probe is disconnected." >&2; exit 1 ;; esac
+	device=$(lstty mculink get --serial "$probe" --field device 2>/dev/null || true)
+	case "$device" in nRF52833|nrf52833|nRF52833_xxAA) ;; *) echo "MCU-Link $probe is registered as $device, expected nRF52833." >&2; exit 1 ;; esac
+	probe_nickname=$nick
+elif [ "$stlink" = true ]; then
 	command -v pyocd >/dev/null 2>&1 || {
 		echo "pyocd not found; activate the west workspace environment first." >&2
 		exit 1
@@ -374,7 +407,11 @@ if [ "$backup" = true ]; then
 	echo "RECEPTEC flash backed up to $backup_dir/flash.bin (+ uicr.bin)"
 fi
 
-if [ "$stlink" = true ]; then
+if [ "$mculink" = true ]; then
+	flash_log="$build_dir/flash-mculink.log"
+	west flash -d "$build_dir" --runner pyocd -- \
+		--target=nrf52833 --board-id="$probe" >"$flash_log" 2>&1
+elif [ "$stlink" = true ]; then
 	flash_log="$build_dir/flash-stlink.log"
 	west flash -d "$build_dir" --runner pyocd -- \
 		--target=nrf52833 --board-id="$probe" >"$flash_log" 2>&1
@@ -385,7 +422,9 @@ fi
 if [ $? -eq 0 ]; then
 	echo "$role flash passed"
 	if [ "$have_lstty" = true ]; then
-		if [ "$stlink" = true ]; then
+		if [ "$mculink" = true ]; then
+			lstty mculink use "$probe" "$role bench firmware ($source_commit)" >/dev/null 2>&1
+		elif [ "$stlink" = true ]; then
 			lstty stlink use "$probe" "$role bench firmware ($source_commit)" >/dev/null 2>&1
 		else
 			lstty jlink use "$probe" "$role bench firmware ($source_commit)" >/dev/null 2>&1

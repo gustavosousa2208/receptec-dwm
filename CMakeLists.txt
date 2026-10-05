@@ -24,6 +24,16 @@ elseif(BOARD STREQUAL "receptec/nrf52840")
         ${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec/receptec.overlay)
     set(CONF_FILE
         ${CMAKE_CURRENT_SOURCE_DIR}/prj.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec/receptec.conf)
+elseif(BOARD STREQUAL "receptec_qorvo/nrf52833" AND ATLETEC_FIXED_ANCHOR)
+    set(RECEPTEC_APP TRUE)
+    set(RECEPTEC_QORVO TRUE)
+    set(RECEPTEC_FIXED_ANCHOR TRUE)
+    set(ATLETEC_FW_TYPE "RECEPTEC fixed UWB anchor")
+    set(ATLETEC_FW_VARIANT "BASE B on RECEPTEC-Qorvo / DWM3001C / nRF52833 / DW3110")
+    set(DTC_OVERLAY_FILE
+        ${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec_qorvo/receptec_qorvo.overlay)
+    set(CONF_FILE
+        ${CMAKE_CURRENT_SOURCE_DIR}/prj.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec_qorvo/receptec_qorvo.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec_qorvo/receptec_qorvo_anchor.conf)
 elseif(BOARD STREQUAL "receptec_qorvo/nrf52833")
     set(RECEPTEC_APP TRUE)
     set(RECEPTEC_QORVO TRUE)

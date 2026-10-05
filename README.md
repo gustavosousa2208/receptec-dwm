@@ -129,6 +129,7 @@ Build just one target with `scripts/build-one.sh`:
 
 ```sh
 ./scripts/build-one.sh receptec-qorvo
+./scripts/build-one.sh receptec-qorvo-anchor
 ./scripts/build-one.sh receptec
 ./scripts/build-one.sh fake-coletec-0
 ```
@@ -138,6 +139,23 @@ The supported targets are `fake-coletec-0`, `fake-coletec-1`, `fake-coletec-0-an
 Qorvo image is written to `build/atletec/receptec/build-receptec-qorvo` in the
 shared Zephyr workspace. The fake-coletec-0 responder and fixed-anchor images
 share `build-fake-coletec-0` and must be built sequentially.
+
+`receptec-qorvo-anchor` builds a separate physical RECEPTEC-Qorvo board as
+BASE B. Its canonical directory is `build-receptec-qorvo-anchor`, its RTT prompt
+is `rtt-receptec-qorvo-anchor:~$`, and its BLE name is `ATL-BASE-B`.
+The default ranging pair is B–T (`CONFIG_RECEPTEC_FIXED_ANCHOR_ID=1`), while
+its network EUI comes from the board's hardware ID or saved identity.
+The anchor ID is a default pair selector, not a shared network address.
+Register and verify the unique EUI before ranging. The current multibase
+schedule still models the master as anchor A, one remote base B, and a tag;
+two external bases under a separate master require a coordinator extension.
+
+After confirming the connected MCU-Link's serial and nRF52833 target with
+`lstty`, flash this board with:
+
+```sh
+./scripts/flash-one.sh receptec-qorvo-anchor --mculink --probe receptec-qorvo-anchor
+```
 
 The build script verifies the compiled identity of each image and records the
 source commit, contracts pin, and optional test configuration in each build

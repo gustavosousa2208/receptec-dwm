@@ -38,7 +38,7 @@ usage()
 	cat <<'EOF'
 Usage: scripts/build-one.sh TARGET [--test-conf tests/SCENARIO.conf]
 
-TARGET: fake-coletec-0 | fake-coletec-1 | fake-coletec-0-anchor | receptec | receptec-qorvo | prod-coletec-qorvo
+TARGET: fake-coletec-0 | fake-coletec-1 | fake-coletec-0-anchor | receptec | receptec-qorvo | receptec-qorvo-anchor | prod-coletec-qorvo
 
 Builds one image. Each physical board has one canonical output directory. Output goes to $ATLETEC_BUILD_ROOT, else
 $ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec, else build/ in this
@@ -47,6 +47,9 @@ corresponding RECEPTEC output directories. --test-conf applies only to fake
 COLETEC images. fake-coletec-0-anchor reconfigures the same
 build-fake-coletec-0 directory used by fake-coletec-0, building the RECEPTEC
 application on that board as fixed UWB anchor 1.
+receptec-qorvo-anchor is a separate RECEPTEC-Qorvo physical board running
+as BASE B, with RTT and its own build-receptec-qorvo-anchor directory.
+$RECEPTEC_QORVO_ANCHOR_BUILD_DIR overrides that directory.
 --source-dir DIR builds prod-coletec-qorvo from that nrf52-bringup-fw
 checkout (for example a codex/* worktree) instead of the sibling one.
 prod-coletec-qorvo is the Nordic Rev4 product image
@@ -59,7 +62,7 @@ EOF
 
 [ "$#" -ge 1 ] || { usage >&2; exit 2; }
 case "$1" in
-	fake-coletec-0|fake-coletec-1|fake-coletec-0-anchor|receptec|receptec-qorvo|prod-coletec-qorvo) role=$1; shift ;;
+	fake-coletec-0|fake-coletec-1|fake-coletec-0-anchor|receptec|receptec-qorvo|receptec-qorvo-anchor|prod-coletec-qorvo) role=$1; shift ;;
 	-h|--help) usage; exit 0 ;;
 	*) echo "Unknown target: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -140,6 +143,12 @@ case "$role" in
 		identity=
 		metadata_role=RECEPTEC-QORVO
 		;;
+	receptec-qorvo-anchor)
+		board=receptec_qorvo/nrf52833
+		build_dir=${RECEPTEC_QORVO_ANCHOR_BUILD_DIR:-$build_root/build-receptec-qorvo-anchor}
+		identity=1
+		metadata_role=RECEPTEC-QORVO-ANCHOR
+		;;
 	prod-coletec-qorvo)
 		board=decawave_dwm3001cdk/nrf52833
 		build_dir=${PROD_COLETEC_QORVO_BUILD_DIR:-$nordic_build_root/build-prod-coletec-qorvo}
@@ -157,7 +166,7 @@ mkdir -p "$build_dir"
 log_file="$build_dir/build.log"
 echo "Building $role ($board) -> $build_dir"
 if [ "$test_config" = none ]; then
-	if [ "$role" = fake-coletec-0-anchor ]; then
+	if [ "$role" = fake-coletec-0-anchor ] || [ "$role" = receptec-qorvo-anchor ]; then
 		if ! west build -p always -b "$board" -d "$build_dir" "$app_dir" -- \
 			-DATLETEC_FIXED_ANCHOR=ON >"$log_file" 2>&1; then
 			echo "$role build failed; log: $log_file" >&2
@@ -196,7 +205,11 @@ case "$role" in
 			exit 1
 		fi
 		;;
-	fake-coletec-0-anchor)
+	fake-coletec-0-anchor|receptec-qorvo-anchor)
+		if [ "$role" = receptec-qorvo-anchor ]; then
+			grep -qx 'CONFIG_BOARD_RECEPTEC_QORVO=y' "$config" &&
+			grep -qx 'CONFIG_SHELL_BACKEND_RTT=y' "$config" || exit 1
+		fi
 		grep -qx 'CONFIG_RECEPTEC_UWB_RADIO=y' "$config" &&
 		grep -qx 'CONFIG_RECEPTEC_FIXED_ANCHOR_ID=1' "$config" &&
 		grep -qx 'CONFIG_SOC_NRF52833=y' "$config" || {
@@ -238,7 +251,7 @@ contracts_commit=$(git -C "$fw_src/contracts" rev-parse HEAD)
 		fake-coletec-0|fake-coletec-1)
 			echo "identity=COLETEC-$identity"
 			;;
-		fake-coletec-0-anchor)
+		fake-coletec-0-anchor|receptec-qorvo-anchor)
 			echo "anchor_id=1"
 			;;
 	esac
