@@ -894,9 +894,16 @@ static int await_matching_control_response(
 			if (ret == 0) {
 				return 0;
 			}
-			/* OI-07: an unrelated or malformed frame never extends timeout. */
+			/* OI-07: an unrelated or malformed frame never extends
+			 * the timeout, but the radio must be re-armed: after
+			 * RXFCG it sits idle, and without re-arm every later
+			 * frame in this window (including the awaited ACK) is
+			 * missed. That starved any initiator sharing the air
+			 * with another round's traffic.
+			 */
 			printk("UWB control response ignored: type=%u status=%d radio=0x%08X\n",
 			       expected_type, ret, status);
+			(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 		} else if ((status & SYS_STATUS_ALL_RX_TO) != 0U) {
 			if (expected_type != RECEPTEC_UWB_STOP_ACK) {
 				return -ETIMEDOUT;
