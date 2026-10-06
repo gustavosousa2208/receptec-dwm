@@ -156,20 +156,23 @@ static void ble_connected(struct bt_conn *conn, uint8_t err) {
 static int ble_range_adv_start(void);
 
 static void ble_disconnected(struct bt_conn *conn, uint8_t reason) {
-  int ret;
+  printk("BLE range: central disconnected (reason %u)\n", reason);
+  ARG_UNUSED(conn);
+}
 
-  printk("BLE range: central disconnected (reason %u), re-advertising\n",
-         reason);
-  ret = ble_range_adv_start();
-  if (ret < 0) {
+/* A disconnected callback still holds the connection object. With MAX_CONN=1,
+ * restarting there can fail with ENOMEM and leave the dashboard undiscoverable. */
+static void ble_recycled(void) {
+  int ret = ble_range_adv_start();
+  if (ret < 0 && ret != -EALREADY) {
     printk("BLE range: re-advertise failed: %d\n", ret);
   }
-  ARG_UNUSED(conn);
 }
 
 BT_CONN_CB_DEFINE(ble_range_conn_cb) = {
     .connected = ble_connected,
     .disconnected = ble_disconnected,
+    .recycled = ble_recycled,
 };
 
 static const uint8_t adv_flags[] = {

@@ -2814,8 +2814,10 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 						delegate_arm_ms = k_uptime_get();
 						memcpy(delegate_peer, plan.responder, 8);
 					}
+					bool rearm = action == RECEPTEC_UWB_DELEGATE_RUN || action == RECEPTEC_UWB_DELEGATE_IGNORE;
 					if (action != RECEPTEC_UWB_DELEGATE_IGNORE) {
 						int ret = range_send_ack(master_eui64, frame.sequence, rx_ts, true);
+						rearm = rearm || ret < 0;
 						k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 						cycle_last_error[1] = ret;
 						cycle_last_phase[1] = plan.phase + 10;
@@ -2836,8 +2838,7 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 						}
 					}
 					(void)receptec_radio_irq_enable(true);
-					if (action == RECEPTEC_UWB_DELEGATE_RUN || action == RECEPTEC_UWB_DELEGATE_IGNORE ||
-					    cycle_last_error[1] < 0)
+					if (rearm)
 						(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 					continue;
 				}
