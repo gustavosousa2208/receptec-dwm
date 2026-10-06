@@ -2818,6 +2818,7 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 							cycle_deadline = 0;
 						}
 					}
+					(void)receptec_radio_irq_enable(true);
 					(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 					continue;
 				}
