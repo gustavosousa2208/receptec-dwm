@@ -3141,9 +3141,14 @@ static void range_round(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
  * responder). Answers rounds without a manual `uwb range respond` per round.
  * poll_running is held across each window so an initiator command fails with
  * -EBUSY instead of fighting for the radio mid-exchange.
+ *
+ * The window is deliberately NOT a round multiple (700 ms vs the usual
+ * 100/1000 ms rounds): equal periods phase-lock the listener against the
+ * initiator's grid and most ARMs land inside exchange processing instead of
+ * an open window.
  */
 #define RANGE_AUTO_PAIR_INDEX 2U
-#define RANGE_AUTO_SLOT_WINDOW_MS 1000U
+#define RANGE_AUTO_SLOT_WINDOW_MS 700U
 
 static void range_auto_window(void)
 {
