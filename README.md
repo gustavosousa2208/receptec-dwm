@@ -335,14 +335,14 @@ Qualification evidence and unfinished test results remain outside repository
 tracking until the validation campaign is complete.
 
 
-## Continuous two-pair bench profile
+## Continuous three-pair bench profile
 
 Names are M=MASTER (`receptec-qorvo`), A=BASE A (`fake-coletec-0-anchor`),
 B=the separate BASE B (`receptec-qorvo-anchor`), T=TAG (`prod-coletec-qorvo`).
 Historical three-node logs used A=MASTER and B=BASE A; translate their A-T,
 B-T, A-B as M-T, A-T, M-A. Pair indices remain0=M-T,1=A-T,2=M-A.
 
-The canonical current contract is the1.4 profile in `contracts/`; this bench
+The canonical current contract is the1.5 profile in `contracts/`; this bench
 profile performs M-T and M-A once per1000ms, at offsets100 and650ms. A-T and
 the new BASE B are not scheduled. It publishes to the MASTER's BLE service;
 it does not implement full STREAM/AGGREGATE forwarding to the tag.

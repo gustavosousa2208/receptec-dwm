@@ -16,7 +16,7 @@ import time
 
 UUID = "00003104-4550-5453-4154-4c4554454300"
 RECORD = struct.Struct("<BBBBQII")
-PAIRS = {0: "M-T", 2: "M-A"}
+PAIRS = {0: "M-T", 1: "A-T", 2: "M-A"}
 
 
 def decode(payload):
@@ -93,7 +93,7 @@ class Capture:
         # Reserve-ID jumps after reboot are intentionally counted as loss and
         # flagged as a sequence discontinuity; never allocate the gap in memory.
         expected = max(all_rounds) - min(all_rounds) + 1 if all_rounds else 0
-        aligned = len(set(self.rows[0]) & set(self.rows[2]))
+        aligned = len(set.intersection(*(set(rows) for rows in self.rows.values())))
         stats = {}
         for pair, rows in self.rows.items():
             source = 1 if pair == 2 and self.args.mode == "fixed" else 0

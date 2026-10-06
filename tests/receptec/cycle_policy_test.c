@@ -14,8 +14,10 @@ static void test_profile_slots_are_disjoint(void)
 	assert(tag_due == epoch + 100 && tag_end == epoch + 375);
 	assert(base_due == epoch + 650 && base_end == epoch + 925);
 	assert(tag_due >= epoch + RECEPTEC_UWB_CYCLE_ARM_MS);
-	assert(tag_end < base_due && base_end < epoch + RECEPTEC_UWB_CYCLE_PERIOD_MS);
-	assert(receptec_uwb_cycle_offset(1) == -1);
+	assert(tag_end == epoch + receptec_uwb_cycle_offset(1));
+	assert(receptec_uwb_cycle_slot_end(epoch, 1) == base_due);
+	assert(base_end < epoch + RECEPTEC_UWB_CYCLE_PERIOD_MS);
+	assert(receptec_uwb_cycle_offset(1) == 375);
 	assert(receptec_uwb_cycle_slot_end(epoch, 255) == -1);
 }
 

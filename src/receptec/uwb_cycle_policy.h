@@ -9,10 +9,10 @@
 #define RECEPTEC_UWB_CYCLE_ARM_MS 80
 #define RECEPTEC_UWB_CYCLE_SLOT_MS 275
 
-/* Only active pairs have slots; A-T is explicitly absent in this profile. */
+/* The master serializes all three pairs within the same one-second round. */
 static inline int64_t receptec_uwb_cycle_offset(uint8_t pair)
 {
-	return pair == 0U ? 100 : (pair == 2U ? 650 : -1);
+	return pair < 3U ? 100 + 275 * pair : -1;
 }
 
 static inline int64_t receptec_uwb_cycle_slot_end(int64_t epoch, uint8_t pair)

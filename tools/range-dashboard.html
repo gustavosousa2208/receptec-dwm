@@ -127,7 +127,7 @@ function render(i) {
   if (!record) {
     el.textContent = '—';
     el.classList.add('stale');
-    detail.textContent = i === 1 ? 'Not scheduled' : 'No sample';
+    detail.textContent = 'No sample';
     return;
   }
   const age = record.age === null ? null : record.age + Math.max(0, performance.now() - record.received);
@@ -139,7 +139,7 @@ function render(i) {
   if (record.source === 2) {
     detail.textContent = record.round !== '0' ?
       'Unavailable · round ' + record.round + ' · failed (status ' + record.status + ')' :
-      (i === 1 ? 'Not scheduled / no sample' : 'No sample');
+      'No sample';
     return;
   }
   const source = record.source === 1 ? 'Constant' : record.source === 0 ? 'Measured' : 'Legacy: source unknown';

@@ -2444,7 +2444,10 @@ static int range_await_result(uint8_t peer_slot, const uint8_t peer_eui64[RECEPT
 			    receptec_uwb_result_decode(frame.payload, frame.payload_length,
 						       &result) != RECEPTEC_UWB_OK ||
 			    result.round_id != round_id || result.record_count != 1U ||
-			    result.records[0].pair_index != pair_index) {
+			    result.records[0].pair_index != pair_index ||
+		    (expected_round && (result.round_id != expected_round ||
+		     memcmp(result.records[0].responder, peer_eui64, 8) != 0 ||
+		     memcmp(result.records[0].initiator, expected_initiator, 8) != 0))) {
 				/* See the same re-arm note in range_run_dstwr_initiator(). */
 				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 				continue;
@@ -2482,7 +2485,8 @@ static int range_await_result(uint8_t peer_slot, const uint8_t peer_eui64[RECEPT
 static int range_listen_once(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 			     uint8_t pair_index, uint32_t timeout_ms,
 			     enum receptec_uwb_range_status *out_status,
-			     uint32_t *out_distance_mm, uint64_t *out_round_id)
+			     uint32_t *out_distance_mm, uint64_t *out_round_id,
+			     uint64_t expected_round, const uint8_t *expected_initiator)
 {
 	struct receptec_uwb_frame frame;
 	struct receptec_uwb_result result;
@@ -2549,7 +2553,8 @@ static int range_listen_once(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 		status = 0;
 #if defined(CONFIG_BT)
 		/* Overheard pair (e.g. A-T uplinked to us): same dashboard feed. */
-		receptec_ble_range_publish(pair_index, *out_status,
+		receptec_ble_range_publish_extended(pair_index,
+					   *out_status == 0 ? 0 : 2, *out_status, result.round_id,
 					   *out_status == RECEPTEC_UWB_RANGE_OK ?
 					   *out_distance_mm :
 					   RECEPTEC_UWB_DISTANCE_INVALID);
@@ -2681,6 +2686,10 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 	struct receptec_uwb_frame frame;
 	uint64_t round_id = 0U;
 	bool have_round = false;
+	bool delegated = false;
+	bool delegate_armed = false;
+	uint8_t delegate_peer[8] = {0};
+	int64_t delegate_arm_ms = 0;
 	bool armed = false;
 	int64_t arm_ms = 0;
 	uint64_t poll_rx_ts = 0U, response_actual_ts = 0U;
@@ -2770,8 +2779,50 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 			struct receptec_uwb_plan plan;
 
 			if (receptec_uwb_plan_decode(frame.payload, frame.payload_length, &plan) !=
-				RECEPTEC_UWB_OK ||
-			    memcmp(plan.responder, receptec_eui, RECEPTEC_UWB_EUI64_SIZE) != 0) {
+				RECEPTEC_UWB_OK) {
+				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+				continue;
+			}
+			/* M delegates A-T to this anchor. T reports the official distance
+			 * directly to M; the anchor never publishes a duplicate result. */
+			if ((plan.phase == RECEPTEC_UWB_PLAN_ARM || plan.phase == RECEPTEC_UWB_PLAN_START) &&
+			    plan.report_mode == RECEPTEC_UWB_REPORT_AGGREGATE && plan.pair_index == 1 &&
+			    have_round && !armed && plan.round_id == round_id &&
+			    memcmp(plan.initiator, receptec_eui, 8) == 0) {
+				uint8_t tag_slot = RECEPTEC_UWB_MAX_PEERS;
+				k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+				for (uint8_t slot = 0; slot < RECEPTEC_UWB_MAX_PEERS; slot++) {
+					uint8_t eui[8];
+					if (receptec_uwb_peer_registry_get(&peer_registry, slot, eui) == 0 &&
+					    memcmp(eui, plan.responder, 8) == 0 &&
+					    memcmp(eui, master_eui64, 8) != 0 &&
+					    memcmp(eui, receptec_eui, 8) != 0) tag_slot = slot;
+				}
+				k_mutex_unlock(&uwb_peer_mutex);
+				if (tag_slot < RECEPTEC_UWB_MAX_PEERS) {
+					if (plan.phase == RECEPTEC_UWB_PLAN_ARM) {
+						if (!delegate_armed) {
+							delegate_armed = true;
+							delegate_arm_ms = k_uptime_get();
+							memcpy(delegate_peer, plan.responder, 8);
+						}
+						if (memcmp(delegate_peer, plan.responder, 8) == 0 &&
+						    k_uptime_get() <= delegate_arm_ms + RECEPTEC_UWB_ARM_WINDOW_MS)
+							(void)range_send_ack(master_eui64, frame.sequence, rx_ts, true);
+					} else if (delegate_armed && memcmp(delegate_peer, plan.responder, 8) == 0 &&
+						   k_uptime_get() <= delegate_arm_ms + RECEPTEC_UWB_ARM_WINDOW_MS) {
+						if (range_send_ack(master_eui64, frame.sequence, rx_ts, true) == 0 && !delegated) {
+							delegated = true;
+							cycle_deadline = delegate_arm_ms + RECEPTEC_UWB_ARM_WINDOW_MS;
+							(void)range_run_dstwr_initiator(tag_slot, delegate_peer, round_id, 1);
+							cycle_deadline = 0;
+						}
+					}
+					(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+					continue;
+				}
+			}
+			if (memcmp(plan.responder, receptec_eui, 8) != 0) {
 				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 				continue;
 			}
@@ -2803,6 +2854,8 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 					if (action == RECEPTEC_ROUND_ADOPT) {
 						round_id = plan.round_id;
 						have_round = true;
+						delegated = false;
+						delegate_armed = false;
 						armed = false;
 						deadline = k_uptime_get() + 1100;
 					}
@@ -3093,7 +3146,7 @@ int receptec_uwb_range_listen(uint8_t peer_slot, uint8_t pair_index,
 	k_mutex_unlock(&uwb_peer_mutex);
 
 	ret = range_listen_once(peer_eui64, pair_index, timeout_ms, out_status,
-				out_distance_mm, out_round_id);
+				out_distance_mm, out_round_id, 0, NULL);
 
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 	poll_running = false;
@@ -3224,22 +3277,20 @@ static void cycle_execute(void)
 		round = cycle_next_round++;
 		cycle_deadline = start + RECEPTEC_UWB_CYCLE_ARM_MS;
 		for (int i = 0; i < 2; i++) {
-			if (i == 1 && cfg.fixed)
-				continue;
 			cycle_deadline = MIN(start + RECEPTEC_UWB_CYCLE_ARM_MS, k_uptime_get() + 40);
 			if (ready[i])
 				ready[i] = range_send_plan_and_await_ack(
 					       slots[i], peers[i], RECEPTEC_UWB_PLAN_ROUND_ARM,
 					       0xff, receptec_eui, peers[i], round) == 0;
 		}
-		for (int i = 0; i < 2; i++) {
-			uint8_t pair = i == 0 ? 0 : 2;
+		for (uint8_t pair = 0; pair < 3; pair++) {
+			int i = pair == 0 ? 0 : 1;
 			int64_t offset = receptec_uwb_cycle_offset(pair);
 			if (!cycle_wait_until(start + offset))
 				goto stopped;
 			cycle_deadline = receptec_uwb_cycle_slot_end(start, pair);
 			int64_t before = k_uptime_get();
-			if (i == 1 && cfg.fixed) {
+			if (pair == 2 && cfg.fixed) {
 #if defined(CONFIG_BT)
 				receptec_ble_range_publish_extended(pair, 1, 0, round,
 								    cfg.baseline_mm);
@@ -3247,7 +3298,33 @@ static void cycle_execute(void)
 				k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 				cycle_success[pair]++;
 				k_mutex_unlock(&uwb_peer_mutex);
-			} else if (ready[i] && before < cycle_deadline) {
+			} else if (pair == 1 && ready[0] && ready[1] && before < cycle_deadline) {
+				enum receptec_uwb_range_status outcome = RECEPTEC_UWB_RANGE_PLAN_TIMEOUT;
+				uint32_t distance = RECEPTEC_UWB_DISTANCE_INVALID;
+				uint64_t received_round = 0;
+				int ret = range_send_plan_and_await_ack(slots[0], peers[0],
+					RECEPTEC_UWB_PLAN_ARM, 1, peers[1], peers[0], round);
+				if (ret == 0) ret = range_send_plan_and_await_ack(slots[1], peers[1],
+					RECEPTEC_UWB_PLAN_ARM, 1, peers[1], peers[0], round);
+				if (ret == 0) ret = range_send_plan_and_await_ack(slots[1], peers[1],
+					RECEPTEC_UWB_PLAN_START, 1, peers[1], peers[0], round);
+				if (ret == 0) {
+					outcome = RECEPTEC_UWB_RANGE_NO_RESULT;
+					int64_t remaining = cycle_deadline - k_uptime_get();
+					ret = remaining > 0 ? range_listen_once(peers[0], 1, remaining,
+						&outcome, &distance, &received_round, round, peers[1]) : -ETIMEDOUT;
+				}
+				k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+				cycle_last_error[1] = ret;
+				cycle_last_phase[1] = outcome == RECEPTEC_UWB_RANGE_PLAN_TIMEOUT ? 1 : 3;
+				if (ret == 0 && outcome == 0) cycle_success[1]++;
+				else cycle_failure[1]++;
+				k_mutex_unlock(&uwb_peer_mutex);
+#if defined(CONFIG_BT)
+				if (ret < 0) receptec_ble_range_publish_extended(1, 2, outcome, round,
+					RECEPTEC_UWB_DISTANCE_INVALID);
+#endif
+			} else if (pair != 1 && ready[i] && before < cycle_deadline) {
 				range_pair(slots[i], peers[i], pair, round, true);
 			} else {
 				k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
@@ -3255,7 +3332,7 @@ static void cycle_execute(void)
 				k_mutex_unlock(&uwb_peer_mutex);
 #if defined(CONFIG_BT)
 				receptec_ble_range_publish_extended(
-				    pair, 2, !enabled[i] ? RECEPTEC_UWB_RANGE_NOT_SCHEDULED :
+				    pair, 2, (!enabled[i] || (pair == 1 && !enabled[0])) ? RECEPTEC_UWB_RANGE_NOT_SCHEDULED :
 				    before >= cycle_deadline ? RECEPTEC_UWB_RANGE_NOT_RUN_DEADLINE : RECEPTEC_UWB_RANGE_PLAN_TIMEOUT, round,
 				    RECEPTEC_UWB_DISTANCE_INVALID);
 #endif

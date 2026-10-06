@@ -8,7 +8,7 @@ Tracks the contract revision used by this bench firmware.
 
 | Contract | Targeted version | Status | Notes |
 |----------|-----------------|--------|-------|
-| UWB RECEPTEC↔COLETEC | 1.4 | implementing | Adds persistent peer enable/disable in local master configuration; registration and schedule are retained while disabled. Bench tag is `prod-coletec-qorvo`; M–A and M–T DS-TWR verified on the bench with per-peer nicknames. Multibase schedule persistence, result forwarding and full round orchestration remain unverified. Raspberry Pi export is outside this profile. |
+| UWB RECEPTEC↔COLETEC | 1.5 | implementing | Adds persistent peer enable/disable in local master configuration; registration and schedule are retained while disabled. Bench tag is `prod-coletec-qorvo`; M–A and M–T DS-TWR verified on the bench with per-peer nicknames. Multibase schedule persistence, result forwarding and full round orchestration remain unverified. Raspberry Pi export is outside this profile. |
 | UWB DATA payload | 1.0 | partial | RECEPTEC side: stores the 105-byte payload and decodes it in `scripts/sensor-viewer.py` (size checked against the contract's 88-byte summary). Draft contract. |
 
 Bench results must record the pin so behavior can be correlated with the exact
