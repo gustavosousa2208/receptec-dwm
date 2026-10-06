@@ -1,0 +1,21 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const html=fs.readFileSync(require('path').join(__dirname, '../../tools/range-dashboard.html'),'utf8');
+const code=html.slice(html.indexOf('let gattChain ='),html.indexOf('function render(i)'));
+const nodes=new Map();const document={getElementById:id=>{if(!nodes.has(id))nodes.set(id,{value:'300',textContent:'',disabled:false});return nodes.get(id)}};
+const ctx=vm.createContext({document,Date,DataView,ArrayBuffer,Number,Promise,setTimeout,console});
+vm.runInContext(code,ctx);
+const status=new DataView(new ArrayBuffer(48));status.setUint8(0,1);status.setUint8(1,1);status.setUint8(3,1);status.setUint32(4,300,true);status.setUint32(8,500,true);
+let writes=[];let reads=0;let active=0;let maxActive=0;
+ctx.chr={async writeValueWithResponse(v){active++;maxActive=Math.max(active,maxActive);writes.push(Array.from(new Uint8Array(v.buffer)));status.setUint16(12,v.getUint16(2,true),true);active--;},async readValue(){active++;maxActive=Math.max(active,maxActive);reads++;active--;return status;}};ctx.sample=status;
+vm.runInContext('rateCharacteristic=chr; showRate(sample);',ctx);
+(async()=>{
+ await vm.runInContext('rateCommand(1)',ctx);
+ assert.deepStrictEqual(writes[0],[1,1,1,0,44,1,0,0]);
+ assert(nodes.get('rateStatus').textContent.includes('saved: 500 ms'));
+ await vm.runInContext('rateCommand(2)',ctx);assert.deepStrictEqual(writes[1],[1,2,2,0,0,0,0,0]);
+ await vm.runInContext('rateCommand(3)',ctx);assert.deepStrictEqual(writes[2],[1,3,3,0,0,0,0,0]);
+ nodes.get('ratePeriod').value='249';await vm.runInContext('rateCommand(1)',ctx);assert.equal(writes.length,3);
+ nodes.get('ratePeriod').value='250';await Promise.all([vm.runInContext('rateCommand(1)',ctx),vm.runInContext('refreshRate()',ctx)]);assert.equal(writes.length,4);assert.equal(maxActive,1);
+ assert.throws(()=>vm.runInContext('showRate(new DataView(new ArrayBuffer(47)))',ctx));
+ console.log('PASS: temporary/save/restore encoding, limits, status decoding and serialized commands');
+})().catch(e=>{console.error(e);process.exit(1)});

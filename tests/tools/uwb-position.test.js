@@ -121,3 +121,28 @@ test('calibration cannot turn UINT32_MAX invalid distance into a position', () =
   assert.equal(p.state(1000).diagnostic.reason, 'range-bounds');
   assert.equal(p.state(1000).position, null);
 });
+
+test('moving tag remains stable across supported rates, an outlier and a lost round', () => {
+  for (const period of [250, 300, 500, 1000]) {
+    const p = createProcessor({ maxSpeedMmS: 200, jumpAllowanceMm: 0 });
+    let last = null;
+    for (let n = 0; n <= Math.ceil(10000 / period); n++) {
+      const t = 1000 + n * period, x = 300 + n * period * 0.1;
+      const s = n === 5 ? tuple(p, n + 1, t, x + 5000, 400)
+        : tuple(p, n + 1, t, x, 400, n === 8 ? { status: 1 } : {});
+      if (n === 5 || n === 8) {
+        assert.equal(s.valid, false);
+        assert.deepEqual(s.position, last.position);
+        assert.equal(s.diagnostic.reason, n === 5 ? 'velocity' : 'failed-range');
+      } else {
+        assert.equal(s.valid, true);
+        assert.ok(s.position.yMm > 0);
+        if (last) assert.ok(s.position.xMm >= last.position.xMm);
+        const lag = x - s.position.xMm;
+        assert.ok(lag >= -1e-6 && lag < 300, `period=${period}, lag=${lag}`);
+      }
+      last = s;
+    }
+    assert.equal(last.counters.rejected, 2);
+  }
+});
