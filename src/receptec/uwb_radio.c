@@ -2022,13 +2022,13 @@ static atomic_t range_stop_requested = ATOMIC_INIT(0);
 static int range_wait_tx_done(void)
 {
  int64_t deadline = bounded_deadline(k_uptime_get() + 20);
- /* RX may complete before this wait: preserve it for the next phase. */
+ /* The configured IRQ mask is RX-only: TXFRS cannot wake its semaphore.
+  * Poll TX completion without consuming or clearing any pending RX event.
+  * Keep interrupts enabled, including SPI completion and BLE. */
  while (k_uptime_get() < deadline) {
-  uint32_t status = dwt_readsysstatuslo();
-  if (status & DWT_INT_TXFRS_BIT_MASK) return 0;
-  int64_t remaining = deadline - k_uptime_get();
-  if (remaining <= 0) break;
-  (void)receptec_radio_wait_event(K_MSEC(remaining));
+  if (dwt_readsysstatuslo() & DWT_INT_TXFRS_BIT_MASK) return 0;
+  if (k_uptime_get() >= deadline) break;
+  k_busy_wait(50U);
  }
  if (dwt_readsysstatuslo() & DWT_INT_TXFRS_BIT_MASK) return 0;
  dwt_forcetrxoff();
