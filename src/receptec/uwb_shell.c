@@ -4,11 +4,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <zephyr/shell/shell.h>
 #include <zephyr/kernel.h>
+#include <zephyr/shell/shell.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/util.h>
 
+#include "uwb_peer_storage.h"
 #include "uwb_radio.h"
 
 #define UWB_DEFAULT_T_SAMPLING_MS 1000U
@@ -149,11 +150,9 @@ static int cmd_uwb_identity_set(const struct shell *shell, size_t argc,
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
-	sub_identity,
-	SHELL_CMD(show, NULL, "Show active local UWB EUI", cmd_uwb_identity_show),
-	SHELL_CMD_ARG(set, NULL, "Persist local EUI: set <EUI-64>",
-		     cmd_uwb_identity_set, 2, 0),
-	SHELL_SUBCMD_SET_END);
+    sub_identity, SHELL_CMD(show, NULL, "Show active local UWB EUI", cmd_uwb_identity_show),
+    SHELL_CMD_ARG(set, NULL, "Persist local EUI: set <EUI-64>", cmd_uwb_identity_set, 2, 0),
+    SHELL_SUBCMD_SET_END);
 
 static int cmd_uwb_status(const struct shell *shell, size_t argc, char **argv)
 {
@@ -408,34 +407,27 @@ static int cmd_uwb_peer_nickname_clear(const struct shell *shell, size_t argc,
 	return 0;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(
-	sub_peer_nickname,
-	SHELL_CMD_ARG(set, NULL, "Label a peer: nickname set <slot> <name>",
-		     cmd_uwb_peer_nickname_set, 3, 0),
-	SHELL_CMD_ARG(clear, NULL, "Remove the label: nickname clear <slot>",
-		     cmd_uwb_peer_nickname_clear, 2, 0),
-	SHELL_SUBCMD_SET_END);
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_peer_nickname,
+			       SHELL_CMD_ARG(set, NULL, "Label a peer: nickname set <slot> <name>",
+					     cmd_uwb_peer_nickname_set, 3, 0),
+			       SHELL_CMD_ARG(clear, NULL, "Remove the label: nickname clear <slot>",
+					     cmd_uwb_peer_nickname_clear, 2, 0),
+			       SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
-	sub_peer,
-	SHELL_CMD(list, NULL, "List registered peer slots, EUIs and nicknames",
-		 cmd_uwb_peer_list),
-	SHELL_CMD_ARG(register, NULL,
-		     "Register peer: register <slot> <EUI-64 in on-air byte order>",
-		     cmd_uwb_peer_register, 3, 0),
-	SHELL_CMD_ARG(set, NULL,
-		     "Persist peer: set <slot> <EUI-64 in on-air byte order>",
-		     cmd_uwb_peer_register, 3, 0),
-	SHELL_CMD_ARG(unregister, NULL, "Unregister peer: unregister <slot>",
-		     cmd_uwb_peer_unregister, 2, 0),
-	SHELL_CMD_ARG(clear, NULL, "Remove peer: clear <slot>",
-		     cmd_uwb_peer_unregister, 2, 0),
-	SHELL_CMD_ARG(enable, NULL, "Enable registered peer: enable <slot>",
-		     cmd_uwb_peer_enable, 2, 0),
-	SHELL_CMD_ARG(disable, NULL, "Disable peer but retain its config: disable <slot>",
-		     cmd_uwb_peer_enable, 2, 0),
-	SHELL_CMD(nickname, &sub_peer_nickname, "Label a peer slot", NULL),
-	SHELL_SUBCMD_SET_END);
+    sub_peer,
+    SHELL_CMD(list, NULL, "List registered peer slots, EUIs and nicknames", cmd_uwb_peer_list),
+    SHELL_CMD_ARG(register, NULL, "Register peer: register <slot> <EUI-64 in on-air byte order>",
+		  cmd_uwb_peer_register, 3, 0),
+    SHELL_CMD_ARG(set, NULL, "Persist peer: set <slot> <EUI-64 in on-air byte order>",
+		  cmd_uwb_peer_register, 3, 0),
+    SHELL_CMD_ARG(unregister, NULL, "Unregister peer: unregister <slot>", cmd_uwb_peer_unregister,
+		  2, 0),
+    SHELL_CMD_ARG(clear, NULL, "Remove peer: clear <slot>", cmd_uwb_peer_unregister, 2, 0),
+    SHELL_CMD_ARG(enable, NULL, "Enable registered peer: enable <slot>", cmd_uwb_peer_enable, 2, 0),
+    SHELL_CMD_ARG(disable, NULL, "Disable peer but retain its config: disable <slot>",
+		  cmd_uwb_peer_enable, 2, 0),
+    SHELL_CMD(nickname, &sub_peer_nickname, "Label a peer slot", NULL), SHELL_SUBCMD_SET_END);
 
 static int cmd_uwb_poll_start(const struct shell *shell, size_t argc,
 			      char **argv)
@@ -540,8 +532,7 @@ static int cmd_uwb_schedule_set(const struct shell *shell, size_t argc,
 	return 0;
 }
 
-static int cmd_uwb_schedule_start(const struct shell *shell, size_t argc,
-				  char **argv)
+static int cmd_uwb_schedule_start(const struct shell *shell, size_t argc, char **argv)
 {
 	unsigned long period_ms = 0UL;
 	uint32_t configured_period_ms;
@@ -551,8 +542,8 @@ static int cmd_uwb_schedule_start(const struct shell *shell, size_t argc,
 	if (argc > 1U) {
 		errno = 0;
 		period_ms = strtoul(argv[1], &end, 10);
-		if (errno != 0 || end == argv[1] || *end != '\0' ||
-		    period_ms == 0UL || period_ms > 60000UL) {
+		if (errno != 0 || end == argv[1] || *end != '\0' || period_ms == 0UL ||
+		    period_ms > 60000UL) {
 			shell_error(shell, "usage: uwb schedule start [period_ms 1..60000]");
 			return -EINVAL;
 		}
@@ -569,11 +560,14 @@ static int cmd_uwb_schedule_start(const struct shell *shell, size_t argc,
 	}
 	ret = receptec_uwb_schedule_start();
 	if (ret < 0) {
-		shell_error(shell, "schedule start failed: %d (-%d busy, -%d no peer, -%d slot budget)",
+		shell_error(shell,
+			    "schedule start failed: %d (-%d busy, -%d no peer, -%d slot budget)",
 			    ret, EBUSY, ENOENT, EINVAL);
 		return ret;
 	}
-	shell_print(shell, "per-peer schedule started every %u ms (saved); SYNC is the default; use uwb schedule show/stats/stop",
+	shell_print(shell,
+		    "per-peer schedule started every %u ms (saved); SYNC is the "
+		    "default; use uwb schedule show/stats/stop",
 		    configured_period_ms);
 	return 0;
 }
@@ -732,8 +726,7 @@ static int cmd_uwb_lna(const struct shell *shell, size_t argc, char **argv)
  * fixed-anchor build); pass it explicitly to drive A-B (pair_index=2) from
  * the master against a base peer.
  */
-static int cmd_uwb_range_start(const struct shell *shell, size_t argc,
-			       char **argv)
+static int cmd_uwb_range_start(const struct shell *shell, size_t argc, char **argv)
 {
 	uint8_t slot;
 	unsigned long period_ms = 1000UL;
@@ -747,9 +740,10 @@ static int cmd_uwb_range_start(const struct shell *shell, size_t argc,
 	if (argc > 2U) {
 		errno = 0;
 		period_ms = strtoul(argv[2], &end, 10);
-		if (errno != 0 || end == argv[2] || *end != '\0' ||
-		    period_ms == 0UL || period_ms > 60000UL) {
-			shell_error(shell, "usage: uwb range start <slot> [period_ms 1..60000] [pair_index 0|1|2]");
+		if (errno != 0 || end == argv[2] || *end != '\0' || period_ms == 0UL ||
+		    period_ms > 60000UL) {
+			shell_error(shell, "usage: uwb range start <slot> [period_ms 1..60000] "
+					   "[pair_index 0|1|2]");
 			return -EINVAL;
 		}
 	}
@@ -757,17 +751,20 @@ static int cmd_uwb_range_start(const struct shell *shell, size_t argc,
 		errno = 0;
 		pair_index = strtoul(argv[3], &end, 10);
 		if (errno != 0 || end == argv[3] || *end != '\0' || pair_index > 2UL) {
-			shell_error(shell, "usage: uwb range start <slot> [period_ms 1..60000] [pair_index 0|1|2]");
+			shell_error(shell, "usage: uwb range start <slot> [period_ms 1..60000] "
+					   "[pair_index 0|1|2]");
 			return -EINVAL;
 		}
 	}
 	ret = receptec_uwb_range_start(slot, (uint32_t)period_ms, (uint8_t)pair_index);
 	if (ret < 0) {
-		shell_error(shell, "range start failed: %d (-%d busy, -%d no peer)",
-			    ret, EBUSY, ENOENT);
+		shell_error(shell, "range start failed: %d (-%d busy, -%d no peer)", ret, EBUSY,
+			    ENOENT);
 		return ret;
 	}
-	shell_print(shell, "pair_index=%lu range round every %lu ms against slot %u; `uwb range status`, `uwb range stop`",
+	shell_print(shell,
+		    "pair_index=%lu range round every %lu ms against slot %u; `uwb "
+		    "range status`, `uwb range stop`",
 		    pair_index, period_ms, slot);
 	return 0;
 }
@@ -788,8 +785,7 @@ static int cmd_uwb_range_stop(const struct shell *shell, size_t argc,
 	return 0;
 }
 
-static int cmd_uwb_range_respond(const struct shell *shell, size_t argc,
-				 char **argv)
+static int cmd_uwb_range_respond(const struct shell *shell, size_t argc, char **argv)
 {
 	uint8_t master_slot;
 	unsigned long pair_index, timeout_ms = 5000UL;
@@ -804,35 +800,34 @@ static int cmd_uwb_range_respond(const struct shell *shell, size_t argc,
 	errno = 0;
 	pair_index = strtoul(argv[2], &end, 10);
 	if (errno != 0 || end == argv[2] || *end != '\0' || pair_index > 2UL) {
-		shell_error(shell, "usage: uwb range respond <master_slot> <pair_index 0|1|2> [timeout_ms]");
+		shell_error(shell, "usage: uwb range respond <master_slot> <pair_index "
+				   "0|1|2> [timeout_ms]");
 		return -EINVAL;
 	}
 	if (argc > 3U) {
 		errno = 0;
 		timeout_ms = strtoul(argv[3], &end, 10);
-		if (errno != 0 || end == argv[3] || *end != '\0' ||
-		    timeout_ms == 0UL || timeout_ms > 60000UL) {
-			shell_error(shell, "usage: uwb range respond <master_slot> <pair_index 0|1|2> [timeout_ms]");
+		if (errno != 0 || end == argv[3] || *end != '\0' || timeout_ms == 0UL ||
+		    timeout_ms > 60000UL) {
+			shell_error(shell, "usage: uwb range respond <master_slot> <pair_index "
+					   "0|1|2> [timeout_ms]");
 			return -EINVAL;
 		}
 	}
 	shell_print(shell, "listening up to %lu ms for pair_index=%lu against master slot %u",
 		    timeout_ms, pair_index, master_slot);
-	ret = receptec_uwb_range_respond(master_slot, (uint8_t)pair_index,
-					 (uint32_t)timeout_ms, &out_status,
-					 &out_distance_mm);
+	ret = receptec_uwb_range_respond(master_slot, (uint8_t)pair_index, (uint32_t)timeout_ms,
+					 &out_status, &out_distance_mm);
 	if (ret < 0) {
-		shell_error(shell, "respond failed: %d (-%d busy, -%d no peer)",
-			    ret, EBUSY, ENOENT);
+		shell_error(shell, "respond failed: %d (-%d busy, -%d no peer)", ret, EBUSY,
+			    ENOENT);
 		return ret;
 	}
-	shell_print(shell, "respond status=%u distance_mm=%u", out_status,
-		    out_distance_mm);
+	shell_print(shell, "respond status=%u distance_mm=%u", out_status, out_distance_mm);
 	return 0;
 }
 
-static int cmd_uwb_range_listen(const struct shell *shell, size_t argc,
-				char **argv)
+static int cmd_uwb_range_listen(const struct shell *shell, size_t argc, char **argv)
 {
 	uint8_t peer_slot;
 	unsigned long pair_index, timeout_ms = 5000UL;
@@ -848,61 +843,61 @@ static int cmd_uwb_range_listen(const struct shell *shell, size_t argc,
 	errno = 0;
 	pair_index = strtoul(argv[2], &end, 10);
 	if (errno != 0 || end == argv[2] || *end != '\0' || pair_index > 2UL) {
-		shell_error(shell, "usage: uwb range listen <peer_slot> <pair_index 0|1|2> [timeout_ms]");
+		shell_error(shell,
+			    "usage: uwb range listen <peer_slot> <pair_index 0|1|2> [timeout_ms]");
 		return -EINVAL;
 	}
 	if (argc > 3U) {
 		errno = 0;
 		timeout_ms = strtoul(argv[3], &end, 10);
-		if (errno != 0 || end == argv[3] || *end != '\0' ||
-		    timeout_ms == 0UL || timeout_ms > 60000UL) {
-			shell_error(shell, "usage: uwb range listen <peer_slot> <pair_index 0|1|2> [timeout_ms]");
+		if (errno != 0 || end == argv[3] || *end != '\0' || timeout_ms == 0UL ||
+		    timeout_ms > 60000UL) {
+			shell_error(shell, "usage: uwb range listen <peer_slot> <pair_index "
+					   "0|1|2> [timeout_ms]");
 			return -EINVAL;
 		}
 	}
-	shell_print(shell, "listening up to %lu ms for a RANGE_RESULT of pair_index=%lu from slot %u",
+	shell_print(shell,
+		    "listening up to %lu ms for a RANGE_RESULT of pair_index=%lu "
+		    "from slot %u",
 		    timeout_ms, pair_index, peer_slot);
-	ret = receptec_uwb_range_listen(peer_slot, (uint8_t)pair_index,
-					(uint32_t)timeout_ms, &out_status,
-					&out_distance_mm, &out_round_id);
+	ret = receptec_uwb_range_listen(peer_slot, (uint8_t)pair_index, (uint32_t)timeout_ms,
+					&out_status, &out_distance_mm, &out_round_id);
 	if (ret < 0) {
-		shell_error(shell, "listen failed: %d (-%d busy, -%d no peer)",
-			    ret, EBUSY, ENOENT);
+		shell_error(shell, "listen failed: %d (-%d busy, -%d no peer)", ret, EBUSY, ENOENT);
 		return ret;
 	}
-	shell_print(shell, "listen round=%llu status=%u distance_mm=%u",
-		    out_round_id, out_status, out_distance_mm);
+	shell_print(shell, "listen round=%llu status=%u distance_mm=%u", out_round_id, out_status,
+		    out_distance_mm);
 	return 0;
 }
 
-static int cmd_uwb_range_status(const struct shell *shell, size_t argc,
-				char **argv)
+static int cmd_uwb_range_status(const struct shell *shell, size_t argc, char **argv)
 {
 	struct receptec_uwb_range_round_status status;
 
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 	receptec_uwb_range_get(&status);
-	shell_print(shell, "range running=%u auto=%u slot=%u period=%u ms rounds=%u successes=%u "
-		    "plan_timeouts=%u round_arm_timeouts=%u range_failures=%u last_arm_send_status=%d",
-		    status.running, status.auto_responder, status.peer_slot, status.period_us / 1000U,
-		    status.rounds, status.successes, status.plan_timeouts,
-		    status.round_arm_timeouts, status.range_failures,
-		    status.last_arm_send_status);
+	shell_print(shell,
+		    "range running=%u auto=%u slot=%u period=%u ms rounds=%u successes=%u "
+		    "plan_timeouts=%u round_arm_timeouts=%u range_failures=%u "
+		    "last_arm_send_status=%d",
+		    status.running, status.auto_responder, status.peer_slot,
+		    status.period_us / 1000U, status.rounds, status.successes, status.plan_timeouts,
+		    status.round_arm_timeouts, status.range_failures, status.last_arm_send_status);
 	if (status.last_valid) {
-		shell_print(shell, "last round=%llu status=%u distance_mm=%u",
-			    status.round_id, status.last_status,
-			    status.last_distance_mm);
+		shell_print(shell, "last round=%llu status=%u distance_mm=%u", status.round_id,
+			    status.last_status, status.last_distance_mm);
 	} else {
-		shell_print(shell, "last round=%llu: no valid result yet",
-			    status.round_id);
+		shell_print(shell, "last round=%llu: no valid result yet", status.round_id);
 	}
 	{
 		struct receptec_uwb_range_autostart as;
 
 		if (receptec_uwb_range_autostart_get(&as) == 0) {
-			shell_print(shell, "autostart: slot %u pair %u every %u ms",
-				    as.slot, as.pair_index, as.period_ms);
+			shell_print(shell, "autostart: slot %u pair %u every %u ms", as.slot,
+				    as.pair_index, as.period_ms);
 		} else {
 			shell_print(shell, "autostart: off");
 		}
@@ -989,8 +984,7 @@ static int cmd_uwb_range_auto(const struct shell *shell, size_t argc,
 	return 0;
 }
 
-static int cmd_uwb_range_autostart(const struct shell *shell, size_t argc,
-				   char **argv)
+static int cmd_uwb_range_autostart(const struct shell *shell, size_t argc, char **argv)
 {
 	uint8_t slot;
 	unsigned long period_ms = 1000UL;
@@ -1008,14 +1002,15 @@ static int cmd_uwb_range_autostart(const struct shell *shell, size_t argc,
 		return 0;
 	}
 	if (argc < 2U || argc > 4U || parse_slot(shell, argv[1], &slot) < 0) {
-		shell_error(shell, "usage: uwb range autostart <slot> [period_ms 1..60000] [pair_index 0|1|2]  (or: autostart off)");
+		shell_error(shell, "usage: uwb range autostart <slot> [period_ms 1..60000] "
+				   "[pair_index 0|1|2]  (or: autostart off)");
 		return -EINVAL;
 	}
 	if (argc > 2U) {
 		errno = 0;
 		period_ms = strtoul(argv[2], &end, 10);
-		if (errno != 0 || end == argv[2] || *end != '\0' ||
-		    period_ms == 0UL || period_ms > 60000UL) {
+		if (errno != 0 || end == argv[2] || *end != '\0' || period_ms == 0UL ||
+		    period_ms > 60000UL) {
 			shell_error(shell, "period must be 1..60000 ms");
 			return -EINVAL;
 		}
@@ -1028,11 +1023,9 @@ static int cmd_uwb_range_autostart(const struct shell *shell, size_t argc,
 			return -EINVAL;
 		}
 	}
-	ret = receptec_uwb_range_autostart_set(slot, (uint32_t)period_ms,
-					       (uint8_t)pair_index);
+	ret = receptec_uwb_range_autostart_set(slot, (uint32_t)period_ms, (uint8_t)pair_index);
 	if (ret < 0) {
-		shell_error(shell, "autostart not saved (%d): slot needs a registered peer",
-			    ret);
+		shell_error(shell, "autostart not saved (%d): slot needs a registered peer", ret);
 		return ret;
 	}
 	shell_print(shell, "range autostart saved: slot %u pair %lu every %lu ms (starts at boot)",
@@ -1040,66 +1033,124 @@ static int cmd_uwb_range_autostart(const struct shell *shell, size_t argc,
 	return 0;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(
-	sub_range,
-	SHELL_CMD_ARG(start, NULL,
-		      "Start periodic DS-TWR round: start <slot> [period_ms] [pair_index 0|1|2]",
-		      cmd_uwb_range_start, 2, 2),
-	SHELL_CMD(stop, NULL, "Stop the range round", cmd_uwb_range_stop),
-	SHELL_CMD(status, NULL, "Show round counters and last result",
-		  cmd_uwb_range_status),
-	SHELL_CMD_ARG(auto, NULL,
-		      "Answer rounds in background without arming respond: auto on|off",
-		      cmd_uwb_range_auto, 2, 0),
-	SHELL_CMD_ARG(autostart, NULL,
-		      "Start this round at boot: autostart <slot> [period_ms] [pair_index] (or: autostart off)",
-		      cmd_uwb_range_autostart, 2, 2),
-	SHELL_CMD_ARG(follow, NULL,
-		      "Live one-line distance readout: follow [seconds 1..3600]",
-		      cmd_uwb_range_follow, 1, 1),
-	SHELL_CMD_ARG(respond, NULL,
-		      "One-shot DS-TWR responder: respond <master_slot> <pair_index 0|1|2> [timeout_ms]",
-		      cmd_uwb_range_respond, 3, 1),
-	SHELL_CMD_ARG(listen, NULL,
-		      "Passively wait for another node's RANGE_RESULT: listen <peer_slot> <pair_index 0|1|2> [timeout_ms]",
-		      cmd_uwb_range_listen, 3, 1),
-	SHELL_SUBCMD_SET_END);
+static int cmd_cycle(const struct shell *shell, size_t argc, char **argv)
+{
+	struct receptec_uwb_cycle_config cfg = {0};
+	bool running;
+	uint32_t success[3], failure[3], max_ms[3], overruns;
+	int ret = receptec_uwb_cycle_get(&cfg, &running, success, failure, max_ms, &overruns);
+	if (!strcmp(argv[1], "status")) {
+		shell_print(shell,
+			    "cycle configured=%d running=%d period=1000 tag=%u base_a=%u "
+			    "autostart=%d baseline=%s baseline_mm=%u overruns=%u",
+			    ret == 0, running, cfg.tag_slot, cfg.base_slot, cfg.autostart,
+			    cfg.fixed ? "fixed" : "measured", cfg.baseline_mm, overruns);
+		for (int i = 0; i < 3; i++)
+			shell_print(shell, "pair=%d successes=%u failures=%u max_ms=%u", i,
+				    success[i], failure[i], max_ms[i]);
+		return 0;
+	}
+	if (!strcmp(argv[1], "start") && argc == 2)
+		ret = receptec_uwb_cycle_start();
+	else if (!strcmp(argv[1], "stop") && argc == 2)
+		ret = receptec_uwb_range_stop();
+	else if (!strcmp(argv[1], "configure") && argc == 4) {
+		if (parse_slot(shell, argv[2], &cfg.tag_slot) ||
+		    parse_slot(shell, argv[3], &cfg.base_slot))
+			return -EINVAL;
+		ret = receptec_uwb_cycle_configure(&cfg);
+	} else if (ret == 0 && !strcmp(argv[1], "autostart") && argc == 3 &&
+		   (!strcmp(argv[2], "on") || !strcmp(argv[2], "off"))) {
+		cfg.autostart = !strcmp(argv[2], "on");
+		ret = receptec_uwb_cycle_configure(&cfg);
+	} else if (ret == 0 && !strcmp(argv[1], "baseline") && argc == 3 &&
+		   !strcmp(argv[2], "measured")) {
+		cfg.fixed = false;
+		ret = receptec_uwb_cycle_configure(&cfg);
+	} else if (ret == 0 && !strcmp(argv[1], "baseline") && argc == 4 &&
+		   !strcmp(argv[2], "fixed")) {
+		char *end;
+		errno = 0;
+		unsigned long value = strtoul(argv[3], &end, 10);
+		if (errno || end == argv[3] || *end || value == 0 || value > INT32_MAX)
+			return -EINVAL;
+		cfg.fixed = true;
+		cfg.baseline_mm = value;
+		ret = receptec_uwb_cycle_configure(&cfg);
+	} else
+		return -EINVAL;
+	if (ret)
+		shell_error(shell, "cycle command failed: %d", ret);
+	else
+		shell_print(shell,
+			    "cycle command saved/applied (configuration changes at next round)");
+	return ret;
+}
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
-	sub_schedule,
-	SHELL_CMD(show, NULL, "Show per-peer actions (default: SYNC)",
-		  cmd_uwb_schedule_show),
-	SHELL_CMD_ARG(set, NULL, "Set action: set <slot> sync|data_req",
-		      cmd_uwb_schedule_set, 3, 0),
-	SHELL_CMD_ARG(start, NULL, "Start per-peer schedule: start [period_ms]",
-		      cmd_uwb_schedule_start, 1, 1),
-	SHELL_CMD(stop, NULL, "Stop per-peer schedule", cmd_uwb_schedule_stop),
-	SHELL_CMD(stats, NULL, "Show per-peer link counters", cmd_uwb_poll_stats),
-	SHELL_SUBCMD_SET_END);
+    sub_range,
+    SHELL_CMD_ARG(cycle, NULL,
+		  "cycle configure <tag_slot> <base_a_slot>|baseline measured|baseline "
+		  "fixed <mm>|autostart on|off|start|stop|status",
+		  cmd_cycle, 2, 2),
+    SHELL_CMD_ARG(start, NULL,
+		  "Start periodic DS-TWR round: start <slot> [period_ms] "
+		  "[pair_index 0|1|2]",
+		  cmd_uwb_range_start, 2, 2),
+    SHELL_CMD(stop, NULL, "Stop the range round", cmd_uwb_range_stop),
+    SHELL_CMD(status, NULL, "Show round counters and last result", cmd_uwb_range_status),
+    SHELL_CMD_ARG(auto, NULL, "Answer rounds in background without arming respond: auto on|off",
+		  cmd_uwb_range_auto, 2, 0),
+    SHELL_CMD_ARG(autostart, NULL,
+		  "Start this round at boot: autostart <slot> [period_ms] "
+		  "[pair_index] (or: autostart off)",
+		  cmd_uwb_range_autostart, 2, 2),
+    SHELL_CMD_ARG(follow, NULL, "Live one-line distance readout: follow [seconds 1..3600]",
+		  cmd_uwb_range_follow, 1, 1),
+    SHELL_CMD_ARG(respond, NULL,
+		  "One-shot DS-TWR responder: respond <master_slot> "
+		  "<pair_index 0|1|2> [timeout_ms]",
+		  cmd_uwb_range_respond, 3, 1),
+    SHELL_CMD_ARG(listen, NULL,
+		  "Passively wait for another node's RANGE_RESULT: listen "
+		  "<peer_slot> <pair_index 0|1|2> [timeout_ms]",
+		  cmd_uwb_range_listen, 3, 1),
+    SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
-	sub_sync,
-	SHELL_CMD_ARG(start, NULL, "Start periodic SYNC: start <slot> [period_ms]",
-		      cmd_uwb_sync_start, 2, 1),
-	SHELL_CMD(stop, NULL, "Stop periodic SYNC", cmd_uwb_sync_stop),
-	SHELL_CMD_ARG(once, NULL, "Send one SYNC and validate ACK: once <slot>",
-		      cmd_uwb_sync_once, 2, 0),
-	SHELL_SUBCMD_SET_END);
+    sub_schedule,
+    SHELL_CMD(show, NULL, "Show per-peer actions (default: SYNC)", cmd_uwb_schedule_show),
+    SHELL_CMD_ARG(set, NULL, "Set action: set <slot> sync|data_req", cmd_uwb_schedule_set, 3, 0),
+    SHELL_CMD_ARG(start, NULL, "Start per-peer schedule: start [period_ms]", cmd_uwb_schedule_start,
+		  1, 1),
+    SHELL_CMD(stop, NULL, "Stop per-peer schedule", cmd_uwb_schedule_stop),
+    SHELL_CMD(stats, NULL, "Show per-peer link counters", cmd_uwb_poll_stats),
+    SHELL_SUBCMD_SET_END);
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_sync,
+			       SHELL_CMD_ARG(start, NULL,
+					     "Start periodic SYNC: start <slot> [period_ms]",
+					     cmd_uwb_sync_start, 2, 1),
+			       SHELL_CMD(stop, NULL, "Stop periodic SYNC", cmd_uwb_sync_stop),
+			       SHELL_CMD_ARG(once, NULL,
+					     "Send one SYNC and validate ACK: once <slot>",
+					     cmd_uwb_sync_once, 2, 0),
+			       SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
-	sub_poll,
-	SHELL_CMD_ARG(start, NULL,
-		      "Poll all registered peers with DATA_REQ: start [period_ms]",
-		      cmd_uwb_poll_start, 1, 1),
-	SHELL_CMD(stop, NULL, "Stop polling", cmd_uwb_poll_stop),
-	SHELL_CMD(stats, NULL, "Show polling counters", cmd_uwb_poll_stats),
-	SHELL_CMD_ARG(stream, NULL, "Print each received DATA payload: stream on|off",
-		      cmd_uwb_poll_stream, 2, 0),
-	SHELL_CMD_ARG(last, NULL, "Hexdump the latest DATA payload: last <slot>",
-		      cmd_uwb_poll_last, 2, 0),
-	SHELL_SUBCMD_SET_END);
+    sub_poll,
+    SHELL_CMD_ARG(start, NULL, "Poll all registered peers with DATA_REQ: start [period_ms]",
+		  cmd_uwb_poll_start, 1, 1),
+    SHELL_CMD(stop, NULL, "Stop polling", cmd_uwb_poll_stop),
+    SHELL_CMD(stats, NULL, "Show polling counters", cmd_uwb_poll_stats),
+    SHELL_CMD_ARG(stream, NULL, "Print each received DATA payload: stream on|off",
+		  cmd_uwb_poll_stream, 2, 0),
+    SHELL_CMD_ARG(last, NULL, "Hexdump the latest DATA payload: last <slot>", cmd_uwb_poll_last, 2,
+		  0),
+    SHELL_SUBCMD_SET_END);
 
-/* uwb test <name> [1|2 for retry] <slot>: arms one runtime test; the result is one UWB_TEST line. */
+/* uwb test <name> [1|2 for retry] <slot>: arms one runtime test; the result is
+ * one UWB_TEST line. */
 static int cmd_uwb_test_run(const struct shell *shell, size_t argc, char **argv)
 {
 	const char *name = argv[0];
@@ -1169,55 +1220,54 @@ static int cmd_uwb_test_list(const struct shell *shell, size_t argc, char **argv
 	ARG_UNUSED(argc);
 	ARG_UNUSED(argv);
 	shell_print(shell, "implemented: data_payload, retry <1|2>, duplicate, sequence_wrap,");
-	shell_print(shell, "             wrong_source, bad_type, bad_reserved, bad_length, bad_dt,");
+	shell_print(shell,
+		    "             wrong_source, bad_type, bad_reserved, bad_length, bad_dt,");
 	shell_print(shell, "             discovery");
-	shell_print(shell, "not implemented: rx_boundary (the contract does not define its PASS/FAIL)");
-	shell_print(shell, "usage: uwb test <name> <slot>   (needs a registered peer, no poll running)");
+	shell_print(shell, "not implemented: rx_boundary (the contract does not "
+			   "define its PASS/FAIL)");
+	shell_print(shell, "usage: uwb test <name> <slot>   (needs a registered "
+			   "peer, no poll running)");
 	return 0;
 }
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
-	sub_test,
-	SHELL_CMD(list, NULL, "List the runtime tests", cmd_uwb_test_list),
-	SHELL_CMD(abort, NULL, "End the running test at its next cycle boundary",
-		  cmd_uwb_test_abort),
-	SHELL_CMD_ARG(data_payload, NULL, "DATA payload v1 layout and duplicate freeze: <slot>",
-		      cmd_uwb_test_run, 2, 0),
-	SHELL_CMD_ARG(retry, NULL, "Ignore 1 or 2 valid responses, then accept: <1|2> <slot>",
-		      cmd_uwb_test_run, 3, 0),
-	SHELL_CMD_ARG(duplicate, NULL, "Repeat a request, require the same response: <slot>",
-		      cmd_uwb_test_run, 2, 0),
-	SHELL_CMD_ARG(sequence_wrap, NULL, "Sequences 254, 255, 0: <slot>", cmd_uwb_test_run, 2, 0),
-	SHELL_CMD_ARG(wrong_source, NULL, "Unknown source, expect no response: <slot>",
-		      cmd_uwb_test_run, 2, 0),
-	SHELL_CMD_ARG(bad_type, NULL, "Reserved packet type, expect no response: <slot>",
-		      cmd_uwb_test_run, 2, 0),
-	SHELL_CMD_ARG(bad_reserved, NULL, "Reserved type bit, expect no response: <slot>",
-		      cmd_uwb_test_run, 2, 0),
-	SHELL_CMD_ARG(bad_length, NULL, "Truncated DT_sampling, expect no response: <slot>",
-		      cmd_uwb_test_run, 2, 0),
-	SHELL_CMD_ARG(bad_dt, NULL, "DT_sampling outside the slot, expect no response: <slot>",
-		      cmd_uwb_test_run, 2, 0),
-	SHELL_CMD_ARG(rx_boundary, NULL, "Not implemented yet: <slot>", cmd_uwb_test_run, 2, 0),
-	SHELL_CMD_ARG(discovery, NULL, "Silence until the COLETEC enters discovery, then reenter: <slot>",
-		      cmd_uwb_test_run, 2, 0),
-	SHELL_SUBCMD_SET_END);
+    sub_test, SHELL_CMD(list, NULL, "List the runtime tests", cmd_uwb_test_list),
+    SHELL_CMD(abort, NULL, "End the running test at its next cycle boundary", cmd_uwb_test_abort),
+    SHELL_CMD_ARG(data_payload, NULL, "DATA payload v1 layout and duplicate freeze: <slot>",
+		  cmd_uwb_test_run, 2, 0),
+    SHELL_CMD_ARG(retry, NULL, "Ignore 1 or 2 valid responses, then accept: <1|2> <slot>",
+		  cmd_uwb_test_run, 3, 0),
+    SHELL_CMD_ARG(duplicate, NULL, "Repeat a request, require the same response: <slot>",
+		  cmd_uwb_test_run, 2, 0),
+    SHELL_CMD_ARG(sequence_wrap, NULL, "Sequences 254, 255, 0: <slot>", cmd_uwb_test_run, 2, 0),
+    SHELL_CMD_ARG(wrong_source, NULL, "Unknown source, expect no response: <slot>",
+		  cmd_uwb_test_run, 2, 0),
+    SHELL_CMD_ARG(bad_type, NULL, "Reserved packet type, expect no response: <slot>",
+		  cmd_uwb_test_run, 2, 0),
+    SHELL_CMD_ARG(bad_reserved, NULL, "Reserved type bit, expect no response: <slot>",
+		  cmd_uwb_test_run, 2, 0),
+    SHELL_CMD_ARG(bad_length, NULL, "Truncated DT_sampling, expect no response: <slot>",
+		  cmd_uwb_test_run, 2, 0),
+    SHELL_CMD_ARG(bad_dt, NULL, "DT_sampling outside the slot, expect no response: <slot>",
+		  cmd_uwb_test_run, 2, 0),
+    SHELL_CMD_ARG(rx_boundary, NULL, "Not implemented yet: <slot>", cmd_uwb_test_run, 2, 0),
+    SHELL_CMD_ARG(discovery, NULL,
+		  "Silence until the COLETEC enters discovery, then reenter: <slot>",
+		  cmd_uwb_test_run, 2, 0),
+    SHELL_SUBCMD_SET_END);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
-	sub_uwb,
-	SHELL_CMD(status, NULL, "Show RECEPTEC radio state", cmd_uwb_status),
-	SHELL_CMD(identity, &sub_identity, "Show or configure local UWB identity", NULL),
-	SHELL_CMD_ARG(sync, &sub_sync, "Periodic SYNC; `sync <slot>` uses 1000 ms",
-		     cmd_uwb_sync, 2, 1),
-	SHELL_CMD(peer, &sub_peer, "Manage registered COLETEC peers", NULL),
-	SHELL_CMD(schedule, &sub_schedule, "Configure per-peer UWB schedule", NULL),
-	SHELL_CMD(range, &sub_range, "A-T DS-TWR round (proof of concept)", NULL),
-	SHELL_CMD_ARG(stop, NULL, "Send STOP (requires timeout config): stop <slot>",
-		      cmd_uwb_stop, 2, 0),
-	SHELL_CMD(poll, &sub_poll, "Periodic DATA_REQ polling", NULL),
-	SHELL_CMD(test, &sub_test, "Runtime UWB tests against the COLETEC", NULL),
-	SHELL_CMD_ARG(lna, NULL, "External receive LNA (bench A/B): lna on|off",
-		      cmd_uwb_lna, 2, 0),
-	SHELL_SUBCMD_SET_END);
+    sub_uwb, SHELL_CMD(status, NULL, "Show RECEPTEC radio state", cmd_uwb_status),
+    SHELL_CMD(identity, &sub_identity, "Show or configure local UWB identity", NULL),
+    SHELL_CMD_ARG(sync, &sub_sync, "Periodic SYNC; `sync <slot>` uses 1000 ms", cmd_uwb_sync, 2, 1),
+    SHELL_CMD(peer, &sub_peer, "Manage registered COLETEC peers", NULL),
+    SHELL_CMD(schedule, &sub_schedule, "Configure per-peer UWB schedule", NULL),
+    SHELL_CMD(range, &sub_range, "A-T DS-TWR round (proof of concept)", NULL),
+    SHELL_CMD_ARG(stop, NULL, "Send STOP (requires timeout config): stop <slot>", cmd_uwb_stop, 2,
+		  0),
+    SHELL_CMD(poll, &sub_poll, "Periodic DATA_REQ polling", NULL),
+    SHELL_CMD(test, &sub_test, "Runtime UWB tests against the COLETEC", NULL),
+    SHELL_CMD_ARG(lna, NULL, "External receive LNA (bench A/B): lna on|off", cmd_uwb_lna, 2, 0),
+    SHELL_SUBCMD_SET_END);
 
 SHELL_CMD_REGISTER(uwb, &sub_uwb, "RECEPTEC UWB controls", NULL);

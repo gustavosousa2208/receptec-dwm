@@ -11,15 +11,11 @@
 #include "uwb_peer_storage.h"
 
 int receptec_uwb_radio_init(void);
-int receptec_uwb_local_eui_get(
-	uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
-int receptec_uwb_local_eui_set(
-	const uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
-int receptec_uwb_peer_register(uint8_t slot,
-			       const uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
+int receptec_uwb_local_eui_get(uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
+int receptec_uwb_local_eui_set(const uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
+int receptec_uwb_peer_register(uint8_t slot, const uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
 int receptec_uwb_peer_unregister(uint8_t slot);
-int receptec_uwb_peer_get(uint8_t slot,
-			  uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
+int receptec_uwb_peer_get(uint8_t slot, uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
 int receptec_uwb_peer_enabled_get(uint8_t slot, bool *enabled);
 int receptec_uwb_peer_enabled_set(uint8_t slot, bool enabled);
 /*
@@ -28,8 +24,7 @@ int receptec_uwb_peer_enabled_set(uint8_t slot, bool enabled);
  * label and returns -ENOENT when the slot has none; set() validates the
  * charset ([A-Za-z0-9_.-], 1..31 chars) and persists; clear() removes it.
  */
-int receptec_uwb_peer_nickname_get(uint8_t slot, char *nickname,
-				   size_t capacity);
+int receptec_uwb_peer_nickname_get(uint8_t slot, char *nickname, size_t capacity);
 int receptec_uwb_peer_nickname_set(uint8_t slot, const char *nickname);
 int receptec_uwb_peer_nickname_clear(uint8_t slot);
 /*
@@ -47,11 +42,9 @@ int receptec_uwb_range_auto_get(bool *enable);
  * receptec_uwb_range_autostart_clear(). A manual `range stop` stays stopped
  * until the next boot or `range start`.
  */
-int receptec_uwb_range_autostart_set(uint8_t peer_slot, uint32_t period_ms,
-				     uint8_t pair_index);
+int receptec_uwb_range_autostart_set(uint8_t peer_slot, uint32_t period_ms, uint8_t pair_index);
 int receptec_uwb_range_autostart_clear(void);
-int receptec_uwb_range_autostart_get(
-	struct receptec_uwb_range_autostart *out);
+int receptec_uwb_range_autostart_get(struct receptec_uwb_range_autostart *out);
 int receptec_uwb_radio_send_sync(uint8_t peer_slot);
 /* Send one STOP when Ttimeout is configured; otherwise return -ENOTSUP. */
 int receptec_uwb_radio_send_stop(uint8_t peer_slot);
@@ -95,13 +88,12 @@ struct receptec_uwb_poll_status {
 
 /* Poll every registered peer with DATA_REQ once per period_ms. */
 int receptec_uwb_poll_start(uint32_t period_ms);
-/* Send one SYNC per period to a single registered peer; retry in later epochs. */
+/* Send one SYNC per period to a single registered peer; retry in later epochs.
+ */
 int receptec_uwb_sync_start(uint8_t peer_slot, uint32_t period_ms);
 /* Configure a volatile per-peer action; unconfigured slots default to SYNC. */
-int receptec_uwb_schedule_set(uint8_t peer_slot,
-			      enum receptec_uwb_peer_action action);
-int receptec_uwb_schedule_get(uint8_t peer_slot,
-			      enum receptec_uwb_peer_action *action);
+int receptec_uwb_schedule_set(uint8_t peer_slot, enum receptec_uwb_peer_action action);
+int receptec_uwb_schedule_get(uint8_t peer_slot, enum receptec_uwb_peer_action *action);
 int receptec_uwb_schedule_period_set(uint32_t period_ms);
 int receptec_uwb_schedule_period_get(uint32_t *period_ms);
 /* Run each registered peer's configured action at the persisted period. */
@@ -112,18 +104,20 @@ void receptec_uwb_poll_get(struct receptec_uwb_poll_status *out);
 /* Print every received DATA payload as one `DATA slot=..` line. */
 void receptec_uwb_poll_stream(bool enable);
 /* Latest DATA payload of a peer; -ENODATA until one has arrived. */
-int receptec_uwb_poll_last(uint8_t slot, uint8_t *payload, size_t capacity,
-			   size_t *length, uint32_t *count, uint32_t *age_ms);
+int receptec_uwb_poll_last(uint8_t slot, uint8_t *payload, size_t capacity, size_t *length,
+			   uint32_t *count, uint32_t *age_ms);
 
 /*
- * Runtime UWB test (see docs/uwb-runtime-tests.md): arm `name` on a registered peer's slot
- * and start a 1 s poll that runs it between ordinary transactions. Returns at once; the
- * outcome is one `UWB_TEST ...` line on the console. -EBUSY while a poll or a test runs,
- * -ENOENT for an unregistered slot, -ENOTSUP for a name that is not implemented,
- * -EINVAL for a bad argument (retry takes 1 or 2 ignored responses).
+ * Runtime UWB test (see docs/uwb-runtime-tests.md): arm `name` on a registered
+ * peer's slot and start a 1 s poll that runs it between ordinary transactions.
+ * Returns at once; the outcome is one `UWB_TEST ...` line on the console.
+ * -EBUSY while a poll or a test runs, -ENOENT for an unregistered slot,
+ * -ENOTSUP for a name that is not implemented, -EINVAL for a bad argument
+ * (retry takes 1 or 2 ignored responses).
  */
 int receptec_uwb_test_start(const char *name, uint8_t arg, uint8_t slot);
-/* Ask the running test to end at its next cycle boundary (result: FAIL reason=aborted). */
+/* Ask the running test to end at its next cycle boundary (result: FAIL
+ * reason=aborted). */
 int receptec_uwb_test_abort(void);
 
 struct receptec_uwb_range_round_status {
@@ -160,8 +154,13 @@ struct receptec_uwb_range_round_status {
  * Shares the single radio-owner thread with poll/sync/schedule: -EBUSY
  * while any of those run, and vice versa.
  */
-int receptec_uwb_range_start(uint8_t peer_slot, uint32_t period_ms,
-			     uint8_t pair_index);
+struct receptec_uwb_cycle_config;
+int receptec_uwb_cycle_configure(const struct receptec_uwb_cycle_config *cfg);
+int receptec_uwb_cycle_start(void);
+int receptec_uwb_cycle_get(struct receptec_uwb_cycle_config *out, bool *running,
+			   uint32_t success[3], uint32_t failure[3], uint32_t max_ms[3],
+			   uint32_t *overruns);
+int receptec_uwb_range_start(uint8_t peer_slot, uint32_t period_ms, uint8_t pair_index);
 int receptec_uwb_range_stop(void);
 void receptec_uwb_range_get(struct receptec_uwb_range_round_status *out);
 /*
@@ -182,8 +181,7 @@ void receptec_uwb_range_set_quiet(bool quiet);
  * Blocks the calling thread for up to timeout_ms; call it from the shell,
  * not from range_thread.
  */
-int receptec_uwb_range_respond(uint8_t master_slot, uint8_t pair_index,
-			       uint32_t timeout_ms,
+int receptec_uwb_range_respond(uint8_t master_slot, uint8_t pair_index, uint32_t timeout_ms,
 			       enum receptec_uwb_range_status *out_status,
 			       uint32_t *out_distance_mm);
 
@@ -199,9 +197,8 @@ int receptec_uwb_range_respond(uint8_t master_slot, uint8_t pair_index,
  * whichever round the result named. Same busy/-EBUSY rules as the other
  * range_* entry points; blocks the calling thread, call from the shell.
  */
-int receptec_uwb_range_listen(uint8_t peer_slot, uint8_t pair_index,
-			      uint32_t timeout_ms,
-			      enum receptec_uwb_range_status *out_status,
-			      uint32_t *out_distance_mm, uint64_t *out_round_id);
+int receptec_uwb_range_listen(uint8_t peer_slot, uint8_t pair_index, uint32_t timeout_ms,
+			      enum receptec_uwb_range_status *out_status, uint32_t *out_distance_mm,
+			      uint64_t *out_round_id);
 
 #endif /* RECEPTEC_UWB_RADIO_H_ */

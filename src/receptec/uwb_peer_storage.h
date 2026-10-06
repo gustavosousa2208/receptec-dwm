@@ -62,4 +62,18 @@ int receptec_uwb_identity_storage_load(
 int receptec_uwb_identity_storage_save(
 	const uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
 
+/* A single versioned settings record; malformed records fail closed. */
+struct receptec_uwb_cycle_config {
+	uint8_t tag_slot;
+	uint8_t base_slot;
+	bool autostart;
+	bool fixed;
+	uint32_t baseline_mm;
+};
+int receptec_uwb_cycle_load(struct receptec_uwb_cycle_config *out);
+int receptec_uwb_cycle_save(const struct receptec_uwb_cycle_config *cfg);
+
+/* Persist a 1024-ID reservation before returning [first, limit). */
+int receptec_uwb_round_reserve(uint64_t *first, uint64_t *limit);
+
 #endif

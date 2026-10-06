@@ -71,9 +71,9 @@ body {
 <div class="card">
   <h3>UWB range (master)</h3>
   <div class="metric-grid">
-    <div class="metric"><div class="label">A–T</div><div class="value stale" id="d0">—</div><div class="age" id="a0"></div></div>
-    <div class="metric"><div class="label">B–T</div><div class="value stale" id="d1">—</div><div class="age" id="a1"></div></div>
-    <div class="metric"><div class="label">A–B</div><div class="value stale" id="d2">—</div><div class="age" id="a2"></div></div>
+    <div class="metric"><div class="label">M–T</div><div class="value stale" id="d0">—</div><div class="age" id="a0"></div></div>
+    <div class="metric"><div class="label">A–T</div><div class="value stale" id="d1">—</div><div class="age" id="a1"></div></div>
+    <div class="metric"><div class="label">M–A</div><div class="value stale" id="d2">—</div><div class="age" id="a2"></div></div>
   </div>
 </div>
 <div class="card">
@@ -87,11 +87,13 @@ body {
 const UUID_BASE = '-4550-5453-4154-4c4554454300';
 const uuid = (short) => '0000' + short.toString(16).padStart(4, '0') + UUID_BASE;
 const SVC_RANGE = uuid(0x3100);
+const CHR_METADATA = uuid(0x3104);
 const CHR_RANGE = [uuid(0x3101), uuid(0x3102), uuid(0x3103)];
 
 let device = null;
 let server = null;
-const last = [0, 0, 0];
+const records = [null, null, null];
+let metadataMode = false;
 
 (async () => {
   const ua = navigator.userAgent || '';
@@ -118,24 +120,55 @@ function gattOp(fn) {
   return run;
 }
 
-setInterval(() => {
-  const now = Date.now();
-  for (let i = 0; i < 3; i++) {
-    if (!last[i]) continue;
-    document.getElementById('a' + i).textContent =
-      ((now - last[i]) / 1000).toFixed(0) + 's ago';
-  }
-}, 1000);
-
-function show(i, status, mm) {
+function render(i) {
+  const record = records[i];
   const el = document.getElementById('d' + i);
-  if (status === 0 && mm !== 0xFFFFFFFF) {
-    el.innerHTML = (mm / 1000).toFixed(3) + '<span class="unit"> m</span>';
-    el.classList.remove('stale');
-    last[i] = Date.now();
-  } else {
+  const detail = document.getElementById('a' + i);
+  if (!record) {
     el.textContent = '—';
     el.classList.add('stale');
+    detail.textContent = i === 1 ? 'Not scheduled' : 'No sample';
+    return;
+  }
+  const age = record.age === null ? null : record.age + Math.max(0, performance.now() - record.received);
+  const valid = record.status === 0 && record.mm !== 0xFFFFFFFF && record.source !== 2;
+  const stale = age === null || age > 3000;
+  if (valid) el.innerHTML = (record.mm / 1000).toFixed(3) + '<span class="unit"> m</span>';
+  else el.textContent = '—';
+  el.classList.toggle('stale', !valid || stale);
+  if (record.source === 2) {
+    detail.textContent = i === 1 ? 'Not scheduled / no sample' : 'No sample';
+    return;
+  }
+  const source = record.source === 1 ? 'Constant' : record.source === 0 ? 'Measured' : 'Legacy: source unknown';
+  const round = record.round === null ? 'round unavailable' : 'round ' + record.round;
+  const timing = age === null ? 'age unknown' : (age / 1000).toFixed(1) + 's old' + (stale ? ' · expired' : '');
+  detail.textContent = source + ' · ' + round + ' · ' + timing +
+    (valid ? '' : ' · failed (status ' + record.status + ')');
+}
+
+setInterval(() => { for (let i = 0; i < 3; i++) render(i); }, 250);
+
+function showLegacy(i, value, initial) {
+  if (value.byteLength !== 5) return;
+  records[i] = {status: value.getUint8(0), mm: value.getUint32(1, true),
+    source: null, round: null, age: initial ? null : 0, received: performance.now()};
+  render(i);
+}
+
+function showMetadata(value) {
+  if (value.byteLength !== 20 && value.byteLength !== 60) return;
+  for (let offset = 0; offset < value.byteLength; offset += 20) {
+    const i = value.getUint8(offset + 1);
+    if (value.getUint8(offset) !== 1 || i >= 3 || value.getUint8(offset + 2) > 2) continue;
+    const rawAge = value.getUint32(offset + 16, true);
+    // Preserve the full 64-bit round as decimal text, without Number rounding.
+    const round = (BigInt(value.getUint32(offset + 8, true)) << 32n) |
+                  BigInt(value.getUint32(offset + 4, true));
+    records[i] = {source: value.getUint8(offset + 2), status: value.getUint8(offset + 3),
+      round: round.toString(), mm: value.getUint32(offset + 12, true),
+      age: rawAge === 0xFFFFFFFF ? null : rawAge, received: performance.now()};
+    render(i);
   }
 }
 
@@ -174,18 +207,28 @@ async function toggleConnection() {
     document.getElementById('btnConnect').classList.add('disconnect');
     await gattOp(async () => {
       const svc = await server.getPrimaryService(SVC_RANGE);
-      for (let i = 0; i < 3; i++) {
-        const chr = await svc.getCharacteristic(CHR_RANGE[i]);
-        const v0 = await chr.readValue();
-        show(i, v0.getUint8(0), v0.getUint32(1, true));
-        await chr.startNotifications();
-        chr.addEventListener('characteristicvaluechanged', ((idx) => (e) => {
-          const v = e.target.value;
-          show(idx, v.getUint8(0), v.getUint32(1, true));
-        })(i));
+      let metadata = null;
+      try { metadata = await svc.getCharacteristic(CHR_METADATA); }
+      catch (error) {
+        if (error.name !== 'NotFoundError') throw error;
+      }
+      metadataMode = metadata !== null;
+      records.fill(null);
+      for (let i = 0; i < 3; i++) render(i);
+      if (metadata) {
+        metadata.addEventListener('characteristicvaluechanged', e => showMetadata(e.target.value));
+        await metadata.startNotifications();
+        showMetadata(await metadata.readValue());
+      } else {
+        for (let i = 0; i < 3; i++) {
+          const chr = await svc.getCharacteristic(CHR_RANGE[i]);
+          showLegacy(i, await chr.readValue(), true);
+          chr.addEventListener('characteristicvaluechanged', e => showLegacy(i, e.target.value, false));
+          await chr.startNotifications();
+        }
       }
     });
-    setStatus('Live — ' + (device.name || 'connected'), true);
+    setStatus((metadataMode ? 'Live — ' : 'Legacy: no round/source metadata — ') + (device.name || 'connected'), true);
   } catch (e) {
     console.error(e);
     setStatus('Error: ' + e.message);

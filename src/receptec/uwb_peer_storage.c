@@ -500,3 +500,125 @@ int receptec_uwb_identity_storage_save(
 	return settings_save_one("uwb/identity", eui64,
 				 RECEPTEC_UWB_EUI64_SIZE);
 }
+
+/* CRC protects settings records independently of backend integrity checks. */
+static uint32_t record_crc(const uint8_t *data, size_t len)
+{
+	uint32_t crc = UINT32_MAX;
+
+	for (size_t i = 0; i < len; i++) {
+		crc ^= data[i];
+		for (unsigned int bit = 0; bit < 8; bit++) {
+			crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+		}
+	}
+	return ~crc;
+}
+
+static int record_load(const char *key, uint8_t *data, size_t size)
+{
+	ssize_t len = settings_get_val_len(key);
+
+	if (len < 0) { return (int)len; }
+	if (len == 0) { return -ENOENT; }
+	if ((size_t)len != size) { return -EINVAL; }
+	len = settings_load_one(key, data, size);
+	if (len < 0) { return (int)len; }
+	if ((size_t)len != size) { return -EIO; }
+	if (data[0] != 1U || sys_get_le32(data + size - 4U) !=
+	    record_crc(data, size - 4U)) { return -EINVAL; }
+	return 0;
+}
+
+static int record_save(const char *key, uint8_t *data, size_t size)
+{
+	uint8_t readback[16];
+	int ret;
+
+	if (size > sizeof(readback)) { return -EINVAL; }
+	sys_put_le32(record_crc(data, size - 4U), data + size - 4U);
+	ret = settings_save_one(key, data, size);
+	if (ret < 0) { return ret; }
+	ret = record_load(key, readback, size);
+	if (ret < 0) { return ret; }
+	return memcmp(data, readback, size) == 0 ? 0 : -EIO;
+}
+
+static bool cycle_valid(const struct receptec_uwb_cycle_config *cfg)
+{
+	return cfg != NULL && cfg->tag_slot < RECEPTEC_UWB_MAX_PEERS &&
+		cfg->base_slot < RECEPTEC_UWB_MAX_PEERS &&
+		cfg->tag_slot != cfg->base_slot &&
+		cfg->baseline_mm <= INT32_MAX &&
+		(!cfg->fixed || cfg->baseline_mm != 0U);
+}
+
+int receptec_uwb_cycle_load(struct receptec_uwb_cycle_config *out)
+{
+	uint8_t data[12];
+	struct receptec_uwb_cycle_config cfg;
+	int ret;
+
+	if (out == NULL) { return -EINVAL; }
+	ret = record_load("uwb/cycle", data, sizeof(data));
+	if (ret < 0) { return ret; }
+	if ((data[3] & ~3U) != 0U) { return -EINVAL; }
+	cfg.tag_slot = data[1];
+	cfg.base_slot = data[2];
+	cfg.autostart = (data[3] & 1U) != 0U;
+	cfg.fixed = (data[3] & 2U) != 0U;
+	cfg.baseline_mm = sys_get_le32(data + 4);
+	if (!cycle_valid(&cfg)) { return -EINVAL; }
+	*out = cfg;
+	return 0;
+}
+
+int receptec_uwb_cycle_save(const struct receptec_uwb_cycle_config *cfg)
+{
+	uint8_t data[12] = {1U};
+
+	if (!cycle_valid(cfg)) { return -EINVAL; }
+	data[1] = cfg->tag_slot;
+	data[2] = cfg->base_slot;
+	data[3] = (cfg->autostart ? 1U : 0U) | (cfg->fixed ? 2U : 0U);
+	sys_put_le32(cfg->baseline_mm, data + 4);
+	return record_save("uwb/cycle", data, sizeof(data));
+}
+
+#ifdef __ZEPHYR__
+#include <zephyr/kernel.h>
+K_MUTEX_DEFINE(round_reservation_lock);
+#endif
+
+int receptec_uwb_round_reserve(uint64_t *first, uint64_t *limit)
+{
+	uint8_t data[13] = {1U};
+	uint64_t start = 1ULL << 32;
+	uint64_t end;
+	int ret;
+
+	if (first == NULL || limit == NULL || first == limit) { return -EINVAL; }
+#ifdef __ZEPHYR__
+	k_mutex_lock(&round_reservation_lock, K_FOREVER);
+#endif
+	ret = record_load("uwb/round_limit", data, sizeof(data));
+	if (ret == 0) {
+		start = (uint64_t)sys_get_le32(data + 1) |
+			((uint64_t)sys_get_le32(data + 5) << 32);
+		if (start < (1ULL << 32) || (start & 1023U) != 0U) {
+			ret = -EINVAL;
+			goto done;
+		}
+	} else if (ret != -ENOENT) { goto done; }
+	if (start > UINT64_MAX - 1024U) { ret = -EOVERFLOW; goto done; }
+	end = start + 1024U;
+	sys_put_le32((uint32_t)end, data + 1);
+	sys_put_le32((uint32_t)(end >> 32), data + 5);
+	ret = record_save("uwb/round_limit", data, sizeof(data));
+	if (ret == 0) { *first = start; *limit = end; }
+done:
+#ifdef __ZEPHYR__
+	k_mutex_unlock(&round_reservation_lock);
+#endif
+	return ret;
+}
