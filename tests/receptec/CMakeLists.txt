@@ -10,6 +10,12 @@ target_compile_features(receptec_uwb_protocol_tests PRIVATE c_std_11)
 target_compile_options(receptec_uwb_protocol_tests PRIVATE
     -Wall -Wextra -Werror -Wpedantic)
 enable_testing()
+add_executable(receptec_uwb_round_guard_tests round_guard_test.c)
+target_include_directories(receptec_uwb_round_guard_tests PRIVATE ../../src/receptec)
+target_compile_features(receptec_uwb_round_guard_tests PRIVATE c_std_11)
+target_compile_options(receptec_uwb_round_guard_tests PRIVATE
+    -Wall -Wextra -Werror -Wpedantic)
+add_test(NAME receptec_uwb_round_guard_tests COMMAND receptec_uwb_round_guard_tests)
 add_test(NAME receptec_uwb_protocol_tests COMMAND receptec_uwb_protocol_tests)
 
 add_executable(receptec_uwb_peer_registry_tests

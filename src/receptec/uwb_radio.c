@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
 #include "uwb_radio.h"
+#include "uwb_round_guard.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -2646,6 +2647,7 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index,
 	uint64_t round_id = 0U;
 	bool have_round = false;
 	bool armed = false;
+	int64_t arm_ms = 0;
 	uint64_t poll_rx_ts = 0U, response_actual_ts = 0U;
 	struct receptec_uwb_twr_response response_msg = { 0 };
 	int64_t deadline;
@@ -2683,7 +2685,21 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index,
 		if (remaining_ms <= 0) {
 			break;
 		}
+		if (receptec_round_arm_expired(armed, arm_ms, k_uptime_get())) {
+			armed = false;
+		}
+		if (armed) {
+			/* Wake to expire an abandoned exchange even on quiet air. */
+			remaining_ms = MIN(remaining_ms,
+				arm_ms + RECEPTEC_UWB_ARM_WINDOW_MS + 1 - k_uptime_get());
+			if (remaining_ms <= 0) {
+				continue;
+			}
+		}
 		(void)receptec_radio_wait_event(K_MSEC(remaining_ms));
+		if (receptec_round_arm_expired(armed, arm_ms, k_uptime_get())) {
+			armed = false;
+		}
 		radio_status = dwt_readsysstatuslo();
 		if ((radio_status & SYS_STATUS_ALL_RX_TO) != 0U ||
 		    (radio_status & UWB_RX_REARM_ERROR_MASK) != 0U) {
@@ -2744,9 +2760,19 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index,
 				}
 				if (memcmp(plan.initiator, master_eui64,
 					   RECEPTEC_UWB_EUI64_SIZE) == 0) {
-					round_id = plan.round_id;
-					have_round = true;
-					armed = false;
+					enum receptec_round_arm_action action =
+						receptec_round_arm_action(have_round, armed,
+								  round_id, plan.round_id);
+
+					if (action == RECEPTEC_ROUND_IGNORE_BUSY) {
+						(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+						continue;
+					}
+					if (action == RECEPTEC_ROUND_ADOPT) {
+						round_id = plan.round_id;
+						have_round = true;
+						armed = false;
+					}
 				}
 				/*
 				 * response_expected=true: DWT_RESPONSE_EXPECTED arms
@@ -2773,7 +2799,10 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index,
 				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 				continue;
 			}
-			armed = true;
+			if (!armed) {
+				arm_ms = k_uptime_get();
+				armed = true;
+			}
 			if (range_send_ack(master_eui64, frame.sequence, rx_ts, true) <
 			    0) {
 				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
