@@ -94,7 +94,7 @@ Options:
   --allow-dirty    accept uncommitted changes outside the image sources
   --force-dirty    STM32 only: allow built dirty sources when their fingerprint
                    still matches the current worktree
-  --mculink        flash receptec-qorvo-anchor through MCU-Link (pyOCD);
+  --mculink        flash receptec-qorvo or receptec-qorvo-anchor through MCU-Link (pyOCD);
                    --probe accepts its serial or lstty mculink nickname
   --stlink         flash over SWD through an ST-Link V3 (pyOCD, target nrf52833)
                    instead of a J-Link. Only for prod-coletec-qorvo. The probe
@@ -278,8 +278,8 @@ if [ "$role" = prod-coletec-stm32 ] || [ "$role" = prod-coletec-stm32-prov ]; th
 	exit 0
 fi
 
-if [ "$mculink" = true ] && { [ "$role" != receptec-qorvo-anchor ] || [ "$stlink" = true ]; }; then
-	echo "--mculink applies only to receptec-qorvo-anchor and cannot combine with --stlink." >&2
+if [ "$mculink" = true ] && { { [ "$role" != receptec-qorvo-anchor ] && [ "$role" != receptec-qorvo ]; } || [ "$stlink" = true ]; }; then
+	echo "--mculink applies only to receptec-qorvo/receptec-qorvo-anchor and cannot combine with --stlink." >&2
 	exit 2
 fi
 if [ "$stlink" = true ] && [ "$role" != prod-coletec-qorvo ]; then
@@ -308,9 +308,9 @@ fake-coletec-1) build_dir=$coletec_1_build; nick=fake-coletec-1;
 	env_sn=${JLINK_SN_FAKE_COLETEC_1:-}; want=nRF52833_xxAA ;;
 receptec) build_dir=$receptec_build; nick=receptec;
 	env_sn=${JLINK_SN_RECEPTEC:-}; want=nRF52840_xxAA ;;
-receptec-qorvo) build_dir=$receptec_qorvo_build; nick=receptec;
+receptec-qorvo) build_dir=$receptec_qorvo_build; nick=coletec-qorvo-0;
 	env_sn=${JLINK_SN_RECEPTEC:-}; want=nRF52833_xxAA ;;
-receptec-qorvo-anchor) build_dir=${RECEPTEC_QORVO_ANCHOR_BUILD_DIR:-${build_root:-$app_dir/build}/build-receptec-qorvo-anchor}; nick=receptec-qorvo-anchor;
+receptec-qorvo-anchor) build_dir=${RECEPTEC_QORVO_ANCHOR_BUILD_DIR:-${build_root:-$app_dir/build}/build-coletec-qorvo-1}; nick=coletec-qorvo-1;
 	env_sn=${JLINK_SN_RECEPTEC_QORVO_ANCHOR:-}; want=nRF52833_xxAA ;;
 prod-coletec-qorvo) build_dir=$prod_coletec_qorvo_build; nick=prod-coletec-qorvo;
 	env_sn=${JLINK_SN_PROD_COLETEC_QORVO:-}; want=nRF52833_xxAA ;;

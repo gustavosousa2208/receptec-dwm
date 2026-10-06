@@ -58,7 +58,7 @@ COLETEC images. fake-coletec-0-anchor reconfigures the same
 build-fake-coletec-0 directory used by fake-coletec-0, building the RECEPTEC
 application on that board as fixed UWB anchor 1.
 receptec-qorvo-anchor is a separate RECEPTEC-Qorvo physical board running
-as BASE B, with RTT and its own build-receptec-qorvo-anchor directory.
+as an anchor, with RTT and its own build-coletec-qorvo-1 directory.
 $RECEPTEC_QORVO_ANCHOR_BUILD_DIR overrides that directory.
 --source-dir DIR builds prod-coletec-qorvo from that nrf52-bringup-fw
 checkout (for example a codex/* worktree) instead of the sibling one.
@@ -162,7 +162,7 @@ case "$role" in
 		;;
 	receptec-qorvo-anchor)
 		board=receptec_qorvo/nrf52833
-		build_dir=${RECEPTEC_QORVO_ANCHOR_BUILD_DIR:-$build_root/build-receptec-qorvo-anchor}
+		build_dir=${RECEPTEC_QORVO_ANCHOR_BUILD_DIR:-$build_root/build-coletec-qorvo-1}
 		identity=1
 		metadata_role=RECEPTEC-QORVO-ANCHOR
 		;;
