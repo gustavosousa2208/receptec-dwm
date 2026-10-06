@@ -40,4 +40,41 @@ static inline int32_t receptec_uwb_cycle_wait_ms(int64_t target, int64_t now)
 	return remaining <= 0 ? 0 : (remaining > 20 ? 20 : (int32_t)remaining);
 }
 
+/* Distinct actions make timer installation and ACK-only duplicates explicit.
+ * phase values match the established RANGE_PLAN encoding: ARM=0, START=1. */
+enum receptec_uwb_delegate_action {
+	RECEPTEC_UWB_DELEGATE_IGNORE,
+	RECEPTEC_UWB_DELEGATE_ARM,
+	RECEPTEC_UWB_DELEGATE_ACK,
+	RECEPTEC_UWB_DELEGATE_RUN,
+};
+
+static inline enum receptec_uwb_delegate_action receptec_uwb_delegate_decide(
+	bool identity_match, bool have_round, uint8_t pair, uint8_t phase,
+	uint64_t current_round, uint64_t incoming_round, bool armed,
+	bool completed, int64_t arm_ms, int64_t now_ms)
+{
+	if (!identity_match || !have_round || pair != 1U ||
+	    current_round != incoming_round || phase > 1U) {
+		return RECEPTEC_UWB_DELEGATE_IGNORE;
+	}
+	if (!armed) {
+		/* A late repeated ARM must not reopen an already executed exchange. */
+		return phase == 0U && !completed ? RECEPTEC_UWB_DELEGATE_ARM :
+			RECEPTEC_UWB_DELEGATE_IGNORE;
+	}
+	if (now_ms < arm_ms) {
+		return RECEPTEC_UWB_DELEGATE_IGNORE;
+	}
+	int64_t elapsed = now_ms - arm_ms;
+	if (phase == 0U) {
+		return elapsed <= 200 ? RECEPTEC_UWB_DELEGATE_ACK :
+			RECEPTEC_UWB_DELEGATE_IGNORE;
+	}
+	if (elapsed > 150) {
+		return RECEPTEC_UWB_DELEGATE_IGNORE;
+	}
+	return completed ? RECEPTEC_UWB_DELEGATE_ACK : RECEPTEC_UWB_DELEGATE_RUN;
+}
+
 #endif

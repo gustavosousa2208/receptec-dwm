@@ -46,8 +46,41 @@ static void test_stall_never_queues_catchup_rounds(void)
 	assert(receptec_uwb_cycle_next_epoch(10000, 50000, &overrun) == 51000 && overrun);
 }
 
+static void test_delegation_authorization_and_duplicates(void)
+{
+	const uint64_t round = (1ULL << 32) + 1024;
+	#define DECIDE(phase, armed, done, now) receptec_uwb_delegate_decide( \
+		true, true, 1, phase, round, round, armed, done, 1000, now)
+	assert(DECIDE(0, false, false, 1000) == RECEPTEC_UWB_DELEGATE_ARM);
+	assert(DECIDE(1, false, false, 1000) == RECEPTEC_UWB_DELEGATE_IGNORE);
+	assert(DECIDE(0, true, false, 1199) == RECEPTEC_UWB_DELEGATE_ACK);
+	assert(DECIDE(0, true, false, 1200) == RECEPTEC_UWB_DELEGATE_ACK);
+	assert(DECIDE(0, true, false, 1201) == RECEPTEC_UWB_DELEGATE_IGNORE);
+	assert(DECIDE(1, true, false, 1150) == RECEPTEC_UWB_DELEGATE_RUN);
+	assert(DECIDE(1, true, false, 1151) == RECEPTEC_UWB_DELEGATE_IGNORE);
+	assert(DECIDE(1, true, true, 1150) == RECEPTEC_UWB_DELEGATE_ACK);
+	assert(DECIDE(1, true, true, 1151) == RECEPTEC_UWB_DELEGATE_IGNORE);
+	assert(DECIDE(0, true, true, 1200) == RECEPTEC_UWB_DELEGATE_ACK);
+	assert(DECIDE(0, false, true, 1100) == RECEPTEC_UWB_DELEGATE_IGNORE);
+	assert(DECIDE(1, true, false, 999) == RECEPTEC_UWB_DELEGATE_IGNORE);
+	#undef DECIDE
+	assert(receptec_uwb_delegate_decide(false, true, 1, 0, round, round,
+		false, false, 1000, 1000) == RECEPTEC_UWB_DELEGATE_IGNORE);
+	assert(receptec_uwb_delegate_decide(true, false, 1, 0, round, round,
+		false, false, 1000, 1000) == RECEPTEC_UWB_DELEGATE_IGNORE);
+	assert(receptec_uwb_delegate_decide(true, true, 2, 0, round, round,
+		false, false, 1000, 1000) == RECEPTEC_UWB_DELEGATE_IGNORE);
+	assert(receptec_uwb_delegate_decide(true, true, 1, 2, round, round,
+		false, false, 1000, 1000) == RECEPTEC_UWB_DELEGATE_IGNORE);
+	assert(receptec_uwb_delegate_decide(true, true, 1, 0, round, round + 1,
+		false, false, 1000, 1000) == RECEPTEC_UWB_DELEGATE_IGNORE);
+	assert(receptec_uwb_delegate_decide(true, true, 1, 1, round, round - 1,
+		true, false, 1000, 1100) == RECEPTEC_UWB_DELEGATE_IGNORE);
+}
+
 int main(void)
 {
+	test_delegation_authorization_and_duplicates();
 	test_profile_slots_are_disjoint();
 	test_missing_tag_does_not_shift_base_slot();
 	test_stall_never_queues_catchup_rounds();

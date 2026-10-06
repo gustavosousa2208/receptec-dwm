@@ -2803,22 +2803,29 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 				}
 				k_mutex_unlock(&uwb_peer_mutex);
 				if (tag_slot < RECEPTEC_UWB_MAX_PEERS) {
-					if (plan.phase == RECEPTEC_UWB_PLAN_ARM) {
-						if (!delegate_armed) {
-							delegate_armed = true;
-							delegate_arm_ms = k_uptime_get();
-							memcpy(delegate_peer, plan.responder, 8);
-						}
-						if (memcmp(delegate_peer, plan.responder, 8) == 0 &&
-						    k_uptime_get() <= delegate_arm_ms + 200)
-							(void)range_send_ack(master_eui64, frame.sequence, rx_ts, true);
-					} else if (delegate_armed && memcmp(delegate_peer, plan.responder, 8) == 0 &&
-						   k_uptime_get() <= delegate_arm_ms + 150) {
-						if (range_send_ack(master_eui64, frame.sequence, rx_ts, true) == 0 && !delegated) {
+					bool identity_match = !delegate_armed || memcmp(delegate_peer, plan.responder, 8) == 0;
+					enum receptec_uwb_delegate_action action = receptec_uwb_delegate_decide(
+						identity_match, have_round, plan.pair_index, plan.phase,
+						round_id, plan.round_id, delegate_armed, delegated,
+						delegate_arm_ms, k_uptime_get());
+					if (action == RECEPTEC_UWB_DELEGATE_ARM) {
+						delegate_armed = true;
+						delegate_arm_ms = k_uptime_get();
+						memcpy(delegate_peer, plan.responder, 8);
+					}
+					if (action != RECEPTEC_UWB_DELEGATE_IGNORE) {
+						int ret = range_send_ack(master_eui64, frame.sequence, rx_ts, true);
+						if (action == RECEPTEC_UWB_DELEGATE_RUN && ret == 0) {
 							delegated = true;
 							cycle_deadline = delegate_arm_ms + 200;
-							(void)range_run_dstwr_initiator(tag_slot, delegate_peer, round_id, 1);
+							ret = range_run_dstwr_initiator(tag_slot, delegate_peer, round_id, 1);
 							cycle_deadline = 0;
+							k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+							cycle_last_error[1] = ret;
+							cycle_last_phase[1] = 2;
+							if (ret == 0) cycle_success[1]++;
+							else cycle_failure[1]++;
+							k_mutex_unlock(&uwb_peer_mutex);
 						}
 					}
 					(void)receptec_radio_irq_enable(true);
