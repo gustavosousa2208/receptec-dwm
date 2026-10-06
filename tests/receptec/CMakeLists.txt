@@ -66,3 +66,9 @@ target_include_directories(receptec_uwb_cycle_policy_tests PRIVATE ../../src/rec
 target_compile_features(receptec_uwb_cycle_policy_tests PRIVATE c_std_11)
 target_compile_options(receptec_uwb_cycle_policy_tests PRIVATE -Wall -Wextra -Werror -Wpedantic)
 add_test(NAME receptec_uwb_cycle_policy_tests COMMAND receptec_uwb_cycle_policy_tests)
+
+add_executable(receptec_ble_range_tests ble_range_test.c)
+target_include_directories(receptec_ble_range_tests PRIVATE ble_mocks ../../include ../../src/receptec)
+target_compile_features(receptec_ble_range_tests PRIVATE c_std_11)
+target_compile_options(receptec_ble_range_tests PRIVATE -Wall -Wextra -Werror -Wpedantic)
+add_test(NAME receptec_ble_range_tests COMMAND receptec_ble_range_tests)

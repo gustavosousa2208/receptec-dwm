@@ -3,6 +3,7 @@
 #include "ble_range.h"
 #include <receptec/uwb_protocol.h>
 
+#include <errno.h>
 #include <string.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
@@ -39,6 +40,15 @@ static uint8_t range_metadata[BLE_RANGE_PAIR_COUNT][BLE_RANGE_METADATA_LEN] = {
     {1, 2, RECEPTEC_BLE_RANGE_UNAVAILABLE, RECEPTEC_UWB_RANGE_NO_RESULT},
 };
 static int64_t range_updated_ms[BLE_RANGE_PAIR_COUNT];
+struct range_notification {
+  uint8_t value[BLE_RANGE_VALUE_LEN];
+  uint8_t metadata[BLE_RANGE_METADATA_LEN];
+  bool pending;
+};
+static struct range_notification range_pending[BLE_RANGE_PAIR_COUNT];
+static struct receptec_ble_range_stats range_stats;
+static bool ble_ready;
+
 
 static void metadata_snapshot(uint8_t pair, uint8_t *out, int64_t now) {
   memcpy(out, range_metadata[pair], BLE_RANGE_METADATA_LEN);
@@ -105,6 +115,42 @@ BT_GATT_SERVICE_DEFINE(
 #define RANGE_VALUE_ATTR_INDEX(pair) ((uint16_t)(2U + (pair) * 3U))
 #define RANGE_METADATA_ATTR_INDEX 11U
 
+/* Zephyr's ATT allocator uses K_NO_WAIT specifically in the SYSTEM workqueue.
+ * A private worker would still use K_FOREVER and can stall on BLE buffers.
+ * Process at most one snapshot per pair, never retry failed notifications. */
+static void notify_work_handler(struct k_work *work) {
+  ARG_UNUSED(work);
+  struct range_notification batch[BLE_RANGE_PAIR_COUNT];
+  k_spinlock_key_t key = k_spin_lock(&range_lock);
+  for (uint8_t pair = 0; pair < BLE_RANGE_PAIR_COUNT; pair++) {
+    batch[pair] = range_pending[pair];
+    range_pending[pair].pending = false;
+  }
+  k_spin_unlock(&range_lock, key);
+  for (uint8_t pair = 0; pair < BLE_RANGE_PAIR_COUNT; pair++) {
+    if (!batch[pair].pending) continue;
+    /* Preserve contract notification age: zero at publication, not RF age. */
+    int legacy_ret = bt_gatt_notify(NULL, &range_svc.attrs[RANGE_VALUE_ATTR_INDEX(pair)],
+                                   batch[pair].value, BLE_RANGE_VALUE_LEN);
+    int ret = bt_gatt_notify(NULL, &range_svc.attrs[RANGE_METADATA_ATTR_INDEX],
+                             batch[pair].metadata, BLE_RANGE_METADATA_LEN);
+    key = k_spin_lock(&range_lock);
+    if (legacy_ret < 0 && legacy_ret != -ENOTCONN) range_stats.legacy_errors[pair]++;
+    range_stats.last_notify_error[pair] = ret;
+    if (ret == 0) range_stats.notify_accepted[pair]++;
+    else if (ret == -ENOTCONN) range_stats.no_subscriber[pair]++;
+    else range_stats.notify_errors[pair]++;
+    k_spin_unlock(&range_lock, key);
+  }
+}
+static K_WORK_DEFINE(notify_work, notify_work_handler);
+
+void receptec_ble_range_stats_get(struct receptec_ble_range_stats *out) {
+  k_spinlock_key_t key = k_spin_lock(&range_lock);
+  *out = range_stats;
+  k_spin_unlock(&range_lock, key);
+}
+
 void receptec_ble_range_publish_extended(uint8_t pair_index, uint8_t source,
                                          uint8_t status, uint64_t round_id,
                                          uint32_t distance_mm) {
@@ -130,12 +176,23 @@ void receptec_ble_range_publish_extended(uint8_t pair_index, uint8_t source,
   k_spinlock_key_t key = k_spin_lock(&range_lock);
   memcpy(range_values[pair_index], encoded, sizeof(encoded));
   memcpy(range_metadata[pair_index], metadata, sizeof(metadata));
-  range_updated_ms[pair_index] = k_uptime_get();
+  int64_t now = k_uptime_get();
+  range_updated_ms[pair_index] = now;
+  range_stats.published[pair_index]++;
+  bool submit = ble_ready;
+  if (submit) {
+    struct range_notification *pending = &range_pending[pair_index];
+    if (pending->pending) range_stats.coalesced[pair_index]++;
+    memcpy(pending->value, encoded, sizeof(encoded));
+    memcpy(pending->metadata, metadata, sizeof(metadata));
+    pending->pending = true;
+  } else range_stats.not_ready[pair_index]++;
   k_spin_unlock(&range_lock, key);
-  bt_gatt_notify(NULL, &range_svc.attrs[RANGE_VALUE_ATTR_INDEX(pair_index)],
-                 encoded, sizeof(encoded));
-  bt_gatt_notify(NULL, &range_svc.attrs[RANGE_METADATA_ATTR_INDEX], metadata,
-                 sizeof(metadata));
+  if (submit && k_work_submit(&notify_work) < 0) {
+    key = k_spin_lock(&range_lock);
+    range_stats.submit_errors++;
+    k_spin_unlock(&range_lock, key);
+  }
 }
 
 void receptec_ble_range_publish(uint8_t pair_index, uint8_t status,
@@ -215,6 +272,9 @@ static void ble_thread_entry(void *unused_a, void *unused_b, void *unused_c) {
     printk("BLE range: not available (%d); UWB unaffected\n", ret);
     return;
   }
+  k_spinlock_key_t key = k_spin_lock(&range_lock);
+  ble_ready = true;
+  k_spin_unlock(&range_lock, key);
   printk("BLE range: advertising as '%s'\n", bt_get_name());
   ret = ble_range_adv_start();
   if (ret < 0) {

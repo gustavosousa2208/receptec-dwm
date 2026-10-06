@@ -11,6 +11,9 @@
 
 #include "uwb_peer_storage.h"
 #include "uwb_radio.h"
+#if defined(CONFIG_BT)
+#include "ble_range.h"
+#endif
 
 #define UWB_DEFAULT_T_SAMPLING_MS 1000U
 
@@ -1033,6 +1036,24 @@ static int cmd_uwb_range_autostart(const struct shell *shell, size_t argc, char 
 	return 0;
 }
 
+static int cmd_range_ble(const struct shell *shell, size_t argc, char **argv)
+{
+ ARG_UNUSED(argc); ARG_UNUSED(argv);
+#if defined(CONFIG_BT)
+ struct receptec_ble_range_stats stats;
+ receptec_ble_range_stats_get(&stats);
+ shell_print(shell, "BLE best-effort submit_errors=%u (accepted means queued, not delivered)", stats.submit_errors);
+ for (int i = 0; i < 3; i++)
+  shell_print(shell, "pair=%d published=%u coalesced=%u accepted=%u errors=%u legacy_errors=%u no_subscriber=%u not_ready=%u last_error=%d",
+    i, stats.published[i], stats.coalesced[i], stats.notify_accepted[i], stats.notify_errors[i],
+    stats.legacy_errors[i], stats.no_subscriber[i], stats.not_ready[i], stats.last_notify_error[i]);
+ return 0;
+#else
+ shell_error(shell, "BLE is disabled in this image");
+ return -ENOTSUP;
+#endif
+}
+
 static int cmd_cycle(const struct shell *shell, size_t argc, char **argv)
 {
  if (!strcmp(argv[1], "timing") && argc == 2) {
@@ -1117,6 +1138,7 @@ static int cmd_cycle(const struct shell *shell, size_t argc, char **argv)
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
     sub_range,
+    SHELL_CMD(ble, NULL, "Best-effort BLE transport counters", cmd_range_ble),
     SHELL_CMD_ARG(cycle, NULL,
 		  "cycle timing|configure <tag_slot> <base_a_slot>|baseline measured|baseline "
 		  "fixed <mm>|period <250..1000 ms> (stopped)|autostart on|off|start|stop|status",
