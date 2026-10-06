@@ -2122,6 +2122,7 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 	}
 	/* Retry the identical frame/sequence once, within the caller's absolute
 	 * deadline. Duplicate ROUND_ARM/ARM ACKs do not renew authorization. */
+	status = -ETIMEDOUT;
 	for (unsigned int attempt = 0; attempt < 2; attempt++) {
 	if (cycle_deadline && k_uptime_get() >= cycle_deadline) break;
 	dwt_forcetrxoff();
