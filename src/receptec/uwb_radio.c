@@ -2816,9 +2816,13 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 					}
 					if (action != RECEPTEC_UWB_DELEGATE_IGNORE) {
 						int ret = range_send_ack(master_eui64, frame.sequence, rx_ts, true);
+						k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 						cycle_last_error[1] = ret;
 						cycle_last_phase[1] = plan.phase + 10;
-						if (action == RECEPTEC_UWB_DELEGATE_RUN && ret == 0) {
+						k_mutex_unlock(&uwb_peer_mutex);
+						/* A valid START authorizes execution even if its ACK TX
+						 * misses the delayed margin; M keeps the result window open. */
+						if (action == RECEPTEC_UWB_DELEGATE_RUN) {
 							delegated = true;
 							cycle_deadline = delegate_arm_ms + 200;
 							ret = range_run_dstwr_initiator(tag_slot, delegate_peer, round_id, 1);
