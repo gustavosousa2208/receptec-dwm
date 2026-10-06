@@ -17,6 +17,10 @@ Capture with the HIL Python interpreter and `tools/cycle-benchmark.py`:
 --minimum-seconds 60 --minimum-success 90 --output <new-evidence-directory>`.
 The tool counts missing rounds and silent boundary intervals as losses.
 The default 1 Hz reference keeps its 30-minute/99% acceptance gate.
+START uses a single 5 ms ACK wait (within the 20 ms maximum), then M listens
+for T directly even if that ACK was lost. This avoids discarding the first
+report while waiting for a control ACK. Endpoint authorization still bounds
+all retries and transmissions.
 
 ## Position and filters
 

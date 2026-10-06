@@ -2119,7 +2119,11 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 	uint8_t sequence;
 	uint16_t authorization_ms;
 	int status;
-	uint32_t ack_wait_us = phase == RECEPTEC_UWB_PLAN_ARM ? UWB_RANGE_PLAN_ACK_TIMEOUT_US : 20000U;
+	/* START is sent once. A valid START executes even if its ACK is lost;
+	 * switch to listening promptly so T's first report is not discarded by
+	 * the control-ACK matcher while waiting the full legacy 20 ms. */
+	uint32_t ack_wait_us = phase == RECEPTEC_UWB_PLAN_ARM ? UWB_RANGE_PLAN_ACK_TIMEOUT_US :
+		phase == RECEPTEC_UWB_PLAN_START ? 5000U : 20000U;
 	unsigned int attempts = phase == RECEPTEC_UWB_PLAN_START ? 1 : 2;
 
 	status = receptec_uwb_peer_registry_next_sequence(&peer_registry,
