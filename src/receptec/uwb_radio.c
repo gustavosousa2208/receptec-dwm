@@ -3159,6 +3159,7 @@ static void range_auto_window(void)
 		enum receptec_uwb_range_status out_status;
 		uint32_t out_distance_mm;
 		bool usable;
+		int64_t window_ms;
 		int ret;
 
 		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
@@ -3180,15 +3181,18 @@ static void range_auto_window(void)
 			k_msleep(200);
 			continue;
 		}
+		window_ms = k_uptime_get();
 		ret = range_respond_once(slot, RANGE_AUTO_PAIR_INDEX,
 					 RANGE_AUTO_SLOT_WINDOW_MS,
 					 &out_status, &out_distance_mm);
+		window_ms = k_uptime_get() - window_ms;
 		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 		poll_running = false;
 		k_mutex_unlock(&uwb_peer_mutex);
 		if (ret != -ETIMEDOUT) {
-			printk("UWB range auto: answered slot %u status=%u distance_mm=%u\n",
-			       slot, (unsigned int)out_status, out_distance_mm);
+			printk("UWB range auto: answered slot %u status=%u distance_mm=%u dt=%lld ms\n",
+			       slot, (unsigned int)out_status, out_distance_mm,
+			       window_ms);
 		}
 		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 		if (!range_auto_enabled) {
