@@ -2488,7 +2488,7 @@ static int range_listen_once(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 {
 	struct receptec_uwb_frame frame;
 	struct receptec_uwb_result result;
-	int64_t deadline = k_uptime_get() + timeout_ms;
+	int64_t deadline = bounded_deadline(k_uptime_get() + timeout_ms);
 	int status;
 
 	dwt_forcetrxoff();
@@ -2514,6 +2514,7 @@ static int range_listen_once(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 			break;
 		}
 		(void)receptec_radio_wait_event(K_MSEC(remaining_ms));
+		if (k_uptime_get() >= deadline) break;
 		radio_status = dwt_readsysstatuslo();
 		if ((radio_status & SYS_STATUS_ALL_RX_TO) != 0U ||
 		    (radio_status & UWB_RX_REARM_ERROR_MASK) != 0U) {
@@ -2543,6 +2544,7 @@ static int range_listen_once(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 		    result.record_count != 1U ||
 		    result.records[0].pair_index != pair_index ||
 		    (expected_round && (result.round_id != expected_round ||
+		     result.records[0].master_rx_time_ms != 0 ||
 		     memcmp(result.records[0].responder, peer_eui64, 8) != 0 ||
 		     memcmp(result.records[0].initiator, expected_initiator, 8) != 0))) {
 			(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
