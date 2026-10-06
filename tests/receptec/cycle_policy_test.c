@@ -102,6 +102,13 @@ static void test_accelerated_slots(void)
 int main(void)
 {
 	test_accelerated_slots();
+	/* An encoded plan is rejected if CPU/SPI delay consumed its radio guard. */
+	assert(receptec_uwb_cycle_authorization_fits(1000, 1041, 31));
+	assert(receptec_uwb_cycle_authorization_fits(1007, 1041, 31));
+	assert(!receptec_uwb_cycle_authorization_fits(1008, 1041, 31));
+	assert(!receptec_uwb_cycle_authorization_fits(1041, 1041, 31));
+	assert(!receptec_uwb_cycle_authorization_fits(1042, 1041, 31));
+	assert(!receptec_uwb_cycle_authorization_fits(1000, 1041, 19));
 	test_delegation_authorization_and_duplicates();
 	test_profile_slots_are_disjoint();
 	test_missing_tag_does_not_shift_base_slot();

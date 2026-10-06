@@ -2060,7 +2060,7 @@ static int range_load_plan_frame(enum receptec_uwb_plan_phase phase,
 				 const uint8_t destination[RECEPTEC_UWB_EUI64_SIZE],
 				 const uint8_t initiator[RECEPTEC_UWB_EUI64_SIZE],
 				 const uint8_t responder[RECEPTEC_UWB_EUI64_SIZE],
-				 uint64_t round_id, uint8_t sequence)
+				 uint64_t round_id, uint8_t sequence, uint16_t *authorization_ms)
 {
 	uint8_t plan_bytes[RECEPTEC_UWB_PLAN_V2_SIZE];
 	struct receptec_uwb_plan plan = {
@@ -2084,6 +2084,7 @@ static int range_load_plan_frame(enum receptec_uwb_plan_phase phase,
 		plan.authorization_ms = (uint16_t)MIN(remaining, 200);
 	}
 	frame.payload_length = plan.authorization_ms ? RECEPTEC_UWB_PLAN_V2_SIZE : RECEPTEC_UWB_PLAN_SIZE;
+	*authorization_ms = plan.authorization_ms;
 	memcpy(plan.initiator, initiator, RECEPTEC_UWB_EUI64_SIZE);
 	memcpy(plan.responder, responder, RECEPTEC_UWB_EUI64_SIZE);
 	if (receptec_uwb_plan_encode(plan_bytes, sizeof(plan_bytes), &plan) != RECEPTEC_UWB_OK) {
@@ -2116,6 +2117,7 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 					 uint64_t round_id)
 {
 	uint8_t sequence;
+	uint16_t authorization_ms;
 	int status;
 	uint32_t ack_wait_us = phase == RECEPTEC_UWB_PLAN_ARM ? UWB_RANGE_PLAN_ACK_TIMEOUT_US : 20000U;
 	unsigned int attempts = phase == RECEPTEC_UWB_PLAN_START ? 1 : 2;
@@ -2131,7 +2133,7 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 	for (unsigned int attempt = 0; attempt < attempts; attempt++) {
 	if (cycle_deadline && k_uptime_get() >= cycle_deadline) break;
 	status = range_load_plan_frame(phase, pair_index, peer_eui64, initiator,
-				       responder, round_id, sequence);
+				       responder, round_id, sequence, &authorization_ms);
 	if (status < 0) break;
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
@@ -2143,6 +2145,12 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 	}
 	if (cycle_deadline && k_uptime_get() >= cycle_deadline) {
 		(void)receptec_radio_irq_enable(false); return -ETIMEDOUT;
+	}
+	/* Recheck after encoding and SPI work: a preemption must not grant a
+	 * remote lifetime beyond this slot. The duration was budgeted before TX. */
+	if (authorization_ms && !receptec_uwb_cycle_authorization_fits(k_uptime_get(), cycle_deadline, authorization_ms)) {
+		(void)receptec_radio_irq_enable(false);
+		return -ETIMEDOUT;
 	}
 	if (dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED) !=
 	    DWT_SUCCESS) {

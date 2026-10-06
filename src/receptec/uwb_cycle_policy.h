@@ -25,6 +25,13 @@ static inline int64_t receptec_uwb_cycle_offset_for(uint8_t pair, uint32_t perio
 	return pair < 3U && slot > 0 ? 100 + slot * pair : -1;
 }
 
+/* Check at actual TX, after SPI work, not only when the plan was encoded. */
+static inline bool receptec_uwb_cycle_authorization_fits(int64_t now, int64_t end,
+						       uint16_t duration)
+{
+	return duration >= 20U && duration <= 200U && end - now >= duration + 3;
+}
+
 /* The master serializes all pairs; the qualified default remains one Hz. */
 static inline int64_t receptec_uwb_cycle_offset(uint8_t pair)
 {
