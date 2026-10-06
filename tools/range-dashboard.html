@@ -99,6 +99,25 @@ body {
   <p>Offsets start at zero: physical calibration is pending. Failed or geometrically inconsistent ranges do not create a new position. Old positions remain visible and marked as stale.</p>
 </div>
 <div class="card">
+  <h3>Sampling rate — MASTER</h3>
+  <p>Changes apply at the next round boundary to all pairs. Temporary changes are not saved to flash.</p>
+  <fieldset id="rateControls" disabled>
+    <label>Preset <select id="ratePreset" onchange="document.getElementById('ratePeriod').value=this.value">
+      <option value="500">500 ms / 2 Hz — safe fallback</option>
+      <option value="300">300 ms / 3.33 Hz — qualified</option>
+      <option value="250">250 ms / 4 Hz — experimental</option>
+      <option value="1000">1000 ms / 1 Hz — slow</option>
+    </select></label>
+    <label>Period (ms) <input id="ratePeriod" type="number" value="500" min="250" max="1000" step="1"></label>
+    <button onclick="rateCommand(1)">Apply temporarily</button>
+    <button onclick="rateCommand(2)">Save active rate</button>
+    <button onclick="rateCommand(3)">Restore 500 ms temporarily</button>
+    <button onclick="refreshRate()">Read status</button>
+  </fieldset>
+  <p id="rateStatus" aria-live="polite">Connect to read sampling configuration.</p>
+  <p id="rateCounters"></p>
+</div>
+<div class="card">
   <h3>Browser check</h3>
   <div style="font-size:12px;color:var(--dim)" id="diag">…</div>
 </div>
@@ -112,6 +131,7 @@ const UUID_BASE = '-4550-5453-4154-4c4554454300';
 const uuid = (short) => '0000' + short.toString(16).padStart(4, '0') + UUID_BASE;
 const SVC_RANGE = uuid(0x3100);
 const CHR_METADATA = uuid(0x3104);
+const CHR_RATE = uuid(0x3105);
 const CHR_RANGE = [uuid(0x3101), uuid(0x3102), uuid(0x3103)];
 
 let device = null;
@@ -168,6 +188,68 @@ function gattOp(fn) {
   const run = gattChain.then(fn, fn);
   gattChain = run.catch(() => {});
   return run;
+}
+
+let rateCharacteristic = null;
+let rateRequestId = 0;
+let rateBusy = false;
+function rateControls() {
+  document.getElementById('rateControls').disabled = !rateCharacteristic || rateBusy;
+}
+function showRate(v) {
+  if (v.byteLength !== 48 || v.getUint8(0) !== 1) throw new Error('Unsupported sampling status format');
+  const active = v.getUint32(4, true), saved = v.getUint32(8, true);
+  const status = v.getInt16(14, true);
+  document.getElementById('rateStatus').textContent =
+    `Active: ${active} ms (${active ? (1000 / active).toFixed(2) : '—'} Hz); saved: ${saved} ms; ` +
+    `${v.getUint8(1) ? 'running' : 'stopped'}; ${v.getUint8(3) ? 'configured' : 'not configured'}; ` +
+    (v.getUint8(2) ? `pending ${v.getUint32(44, true)} ms; ` : '') +
+    `request ${v.getUint16(12, true)}: ${status === 1 ? 'pending' : status === 0 ? 'applied' : 'error ' + status}`;
+  document.getElementById('rateCounters').textContent = ['M–T', 'A–T', 'M–A'].map((name, i) => {
+    const success = v.getUint32(16 + i * 8, true), fail = v.getUint32(20 + i * 8, true);
+    return `${name}: ${success} successful / ${fail} failed (${success + fail ? (100 * success / (success + fail)).toFixed(1) : '—'}%)`;
+  }).join(' · ') + ` · overruns: ${v.getUint32(40, true)} (cumulative counters)`;
+  return { requestId: v.getUint16(12, true), status };
+}
+async function refreshRate() {
+  if (!rateCharacteristic || rateBusy) return;
+  const chr = rateCharacteristic;
+  rateBusy = true; rateControls();
+  try { await gattOp(async () => { showRate(await chr.readValue()); }); }
+  catch (error) { document.getElementById('rateStatus').textContent = error.message; }
+  finally { rateBusy = false; rateControls(); }
+}
+async function rateCommand(op) {
+  if (!rateCharacteristic || rateBusy) return;
+  const period = op === 1 ? Number(document.getElementById('ratePeriod').value) : 0;
+  if (op === 1 && (!Number.isInteger(period) || period < 250 || period > 1000)) {
+    document.getElementById('rateStatus').textContent = 'Enter an integer period from 250 to 1000 ms.'; return;
+  }
+  const chr = rateCharacteristic;
+  const request = new DataView(new ArrayBuffer(8));
+  rateRequestId = (rateRequestId + 1) & 0xffff;
+  request.setUint8(0, 1); request.setUint8(1, op);
+  request.setUint16(2, rateRequestId, true); request.setUint32(4, period, true);
+  const requestId = rateRequestId;
+  rateBusy = true; rateControls();
+  document.getElementById('rateStatus').textContent = 'Sending sampling request…';
+  try {
+    await gattOp(async () => {
+      await chr.writeValueWithResponse(request);
+      const deadline = Date.now() + 6000;
+      while (Date.now() < deadline) {
+        if (chr !== rateCharacteristic) throw new Error('Disconnected before confirmation; read status after reconnecting.');
+        const reply = showRate(await chr.readValue());
+        if (reply.requestId === requestId && reply.status !== 1) {
+          if (reply.status < 0) throw new Error(`Sampling request rejected (${reply.status}); read active status.`);
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+      throw new Error('Confirmation timed out; outcome unknown. Read status before retrying.');
+    });
+  } catch (error) { document.getElementById('rateStatus').textContent = error.message; }
+  finally { rateBusy = false; rateControls(); }
 }
 
 function render(i) {
@@ -319,6 +401,18 @@ async function toggleConnection() {
     let noLiveData = false;
     await gattOp(async () => {
       const svc = await server.getPrimaryService(SVC_RANGE);
+      rateCharacteristic = null;
+      try {
+        rateCharacteristic = await svc.getCharacteristic(CHR_RATE);
+        const status = showRate(await rateCharacteristic.readValue());
+        rateRequestId = status.requestId;
+      } catch (error) {
+        rateCharacteristic = null;
+        document.getElementById('rateStatus').textContent = error.name === 'NotFoundError'
+          ? 'Sampling control unavailable on this firmware; ranging remains available.'
+          : 'Sampling control unavailable: ' + error.message;
+      }
+      rateControls();
       let metadata = null;
       try { metadata = await svc.getCharacteristic(CHR_METADATA); }
       catch (error) {
@@ -352,6 +446,8 @@ async function toggleConnection() {
 }
 
 function onDisconnected() {
+  rateCharacteristic = null; rateControls();
+  document.getElementById('rateStatus').textContent = 'Disconnected. Reconnect and read active status before retrying changes.';
   setStatus('Disconnected');
   document.getElementById('btnConnect').textContent = 'Connect';
   document.getElementById('btnConnect').classList.remove('disconnect');

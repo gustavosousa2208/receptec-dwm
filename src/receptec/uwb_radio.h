@@ -231,4 +231,10 @@ int receptec_uwb_range_listen(uint8_t peer_slot, uint8_t pair_index, uint32_t ti
 			      enum receptec_uwb_range_status *out_status, uint32_t *out_distance_mm,
 			      uint64_t *out_round_id);
 
+
+/* BLE rate control: 1=temporary, 2=save active, 3=restore 500 ms. */
+int receptec_uwb_cycle_rate_request(uint8_t op, uint16_t request, uint32_t period);
+void receptec_uwb_cycle_rate_idle(void);
+void receptec_uwb_cycle_rate_status(uint8_t out[48]);
+
 #endif /* RECEPTEC_UWB_RADIO_H_ */

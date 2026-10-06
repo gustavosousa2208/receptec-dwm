@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
 #include "ble_range.h"
+#include "uwb_radio.h"
 #include <receptec/uwb_protocol.h>
 
 #include <errno.h>
@@ -89,6 +90,36 @@ static void ccc_changed(const struct bt_gatt_attr *attr, uint16_t value) {
   ARG_UNUSED(value);
 }
 
+/* Rate control is deliberately bounded, not a remote shell. */
+static struct k_work_q rate_queue;
+static K_THREAD_STACK_DEFINE(rate_stack, 1536);
+static struct k_work_delayable rate_work;
+static void rate_worker(struct k_work *work)
+{
+ ARG_UNUSED(work);
+ receptec_uwb_cycle_rate_idle();
+ uint8_t state[48]; receptec_uwb_cycle_rate_status(state);
+ if (state[2]) k_work_reschedule_for_queue(&rate_queue, &rate_work, K_MSEC(20));
+}
+static ssize_t read_rate(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                         void *buf, uint16_t len, uint16_t offset)
+{
+ uint8_t state[48]; receptec_uwb_cycle_rate_status(state);
+ return bt_gatt_attr_read(conn, attr, buf, len, offset, state, sizeof(state));
+}
+static ssize_t write_rate(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                          const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+ ARG_UNUSED(conn); ARG_UNUSED(attr);
+ const uint8_t *p = buf;
+ if (offset || (flags & BT_GATT_WRITE_FLAG_PREPARE)) return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+ if (len != 8 || p[0] != 1) return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+ int ret = receptec_uwb_cycle_rate_request(p[1], sys_get_le16(p + 2), sys_get_le32(p + 4));
+ if (ret) return BT_GATT_ERR(ret == -EBUSY ? BT_ATT_ERR_INSUFFICIENT_RESOURCES : BT_ATT_ERR_VALUE_NOT_ALLOWED);
+ k_work_reschedule_for_queue(&rate_queue, &rate_work, K_NO_WAIT);
+ return len;
+}
+
 BT_GATT_SERVICE_DEFINE(
     range_svc, BT_GATT_PRIMARY_SERVICE(BLE_RANGE_SVC_UUID),
     BT_GATT_CHARACTERISTIC(BLE_RANGE_CHR_UUID(0),
@@ -109,7 +140,11 @@ BT_GATT_SERVICE_DEFINE(
     BT_GATT_CHARACTERISTIC(BLE_RANGE_METADATA_UUID,
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY,
                            BT_GATT_PERM_READ, read_metadata, NULL, NULL),
-    BT_GATT_CCC(ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE), );
+    BT_GATT_CCC(ccc_changed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE),
+    BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(BLE_RANGE_CHR_VAL(0x3105)),
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_WRITE,
+                           BT_GATT_PERM_READ | BT_GATT_PERM_WRITE,
+                           read_rate, write_rate, NULL), );
 
 /* Each characteristic contributes declaration, value and CCC attributes. */
 #define RANGE_VALUE_ATTR_INDEX(pair) ((uint16_t)(2U + (pair) * 3U))
@@ -267,6 +302,9 @@ static void ble_thread_entry(void *unused_a, void *unused_b, void *unused_c) {
   ARG_UNUSED(unused_b);
   ARG_UNUSED(unused_c);
 
+  k_work_queue_start(&rate_queue, rate_stack, K_THREAD_STACK_SIZEOF(rate_stack),
+                     K_PRIO_PREEMPT(10), NULL);
+  k_work_init_delayable(&rate_work, rate_worker);
   ret = bt_enable(NULL);
   if (ret < 0) {
     printk("BLE range: not available (%d); UWB unaffected\n", ret);

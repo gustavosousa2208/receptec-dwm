@@ -85,6 +85,12 @@ static int64_t bounded_deadline(int64_t requested)
 }
 static struct receptec_uwb_cycle_config cycle_config;
 static bool cycle_config_valid, cycle_running;
+static bool rate_pending;
+static uint8_t rate_op;
+static uint16_t rate_request;
+static uint32_t rate_period, rate_saved_period;
+static int16_t rate_result;
+static void cycle_rate_apply_locked(void);
 static uint64_t cycle_next_round, cycle_round_limit;
 static uint32_t cycle_success[3], cycle_failure[3], cycle_max_ms[3], cycle_overruns;
 static int cycle_last_error[3];
@@ -450,6 +456,7 @@ int receptec_uwb_radio_init(void)
 	}
 	int cycle_load_ret = receptec_uwb_cycle_load(&cycle_config);
 	cycle_config_valid = cycle_load_ret == 0;
+	rate_saved_period = cycle_config_valid ? cycle_config.period_ms : 0;
 	range_autostart_set = receptec_uwb_range_autostart_load(&range_autostart) == 0;
 
 	if (cycle_load_ret != 0 && cycle_load_ret != -ENOENT) {
@@ -3739,6 +3746,7 @@ static void cycle_execute(void)
 		bool enabled[2];
 		uint64_t round;
 		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+		cycle_rate_apply_locked();
 		cfg = cycle_config;
 		uint8_t slots[2] = {cfg.tag_slot, cfg.base_slot};
 		for (int i = 0; i < 2; i++) {
@@ -4688,13 +4696,14 @@ int receptec_uwb_cycle_configure(const struct receptec_uwb_cycle_config *cfg)
 		ret = -EINVAL;
 		goto out;
 	}
-	if (cycle_running && cfg->period_ms != cycle_config.period_ms) {
+	if (rate_pending || (cycle_running && cfg->period_ms != cycle_config.period_ms)) {
 		ret = -EBUSY;
 		goto out;
 	}
 	ret = receptec_uwb_cycle_save(cfg);
 	if (!ret) {
 		cycle_config = *cfg;
+		rate_saved_period = cfg->period_ms;
 		cycle_config_valid = true;
 	}
 out:
@@ -4754,5 +4763,67 @@ void receptec_uwb_cycle_timing_get(struct receptec_uwb_cycle_timing out[RECEPTEC
 {
  k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
  memcpy(out, cycle_timing, sizeof(cycle_timing));
+ k_mutex_unlock(&uwb_peer_mutex);
+}
+
+/* Only the owner calls this between rounds; idle BLE worker holds the same lock.
+ * Explicit SAVE may write flash here, never in a DS-TWR exchange or GATT RX. */
+static void cycle_rate_apply_locked(void)
+{
+ if (!rate_pending) return;
+ int ret = 0;
+ if (rate_op == 2) {
+  ret = receptec_uwb_cycle_save(&cycle_config);
+  if (!ret) {
+   struct receptec_uwb_cycle_config check;
+   ret = receptec_uwb_cycle_load(&check);
+   if (!ret && check.period_ms != cycle_config.period_ms) ret = -EIO;
+   if (!ret) rate_saved_period = check.period_ms;
+  }
+ } else cycle_config.period_ms = rate_period;
+ rate_result = ret;
+ rate_pending = false;
+}
+int receptec_uwb_cycle_rate_request(uint8_t op, uint16_t request, uint32_t period)
+{
+#if defined(RECEPTEC_FIXED_ANCHOR)
+ ARG_UNUSED(op); ARG_UNUSED(request); ARG_UNUSED(period);
+ return -ENOTSUP;
+#else
+ if (op < 1 || op > 3 || (op == 1 && !receptec_uwb_cycle_period_valid(period)) ||
+     (op != 1 && period)) return -EINVAL;
+ if (k_mutex_lock(&uwb_peer_mutex, K_NO_WAIT)) return -EBUSY;
+ int ret = 0;
+ if (!cycle_config_valid) ret = -ENOENT;
+ else if (rate_pending || (!cycle_running && atomic_get(&poll_running))) ret = -EBUSY;
+ else {
+  rate_op = op; rate_request = request;
+  rate_period = op == 3 ? 500 : period;
+  rate_pending = true; rate_result = 1;
+ }
+ k_mutex_unlock(&uwb_peer_mutex);
+ return ret;
+#endif
+}
+void receptec_uwb_cycle_rate_idle(void)
+{
+ k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+ if (!cycle_running && !atomic_get(&poll_running)) cycle_rate_apply_locked();
+ k_mutex_unlock(&uwb_peer_mutex);
+}
+void receptec_uwb_cycle_rate_status(uint8_t out[48])
+{
+ memset(out, 0, 48);
+ k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+ out[0] = 1; out[1] = cycle_running; out[2] = rate_pending; out[3] = cycle_config_valid;
+ sys_put_le32(cycle_config_valid ? cycle_config.period_ms : 0, out + 4);
+ sys_put_le32(rate_saved_period, out + 8);
+ sys_put_le16(rate_request, out + 12); sys_put_le16((uint16_t)rate_result, out + 14);
+ for (int i = 0; i < 3; i++) {
+  sys_put_le32(cycle_success[i], out + 16 + i * 8);
+  sys_put_le32(cycle_failure[i], out + 20 + i * 8);
+ }
+ sys_put_le32(cycle_overruns, out + 40);
+ sys_put_le32(rate_pending && rate_op != 2 ? rate_period : 0, out + 44);
  k_mutex_unlock(&uwb_peer_mutex);
 }
