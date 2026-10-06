@@ -1,9 +1,10 @@
 import importlib.util
 import io
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, AsyncMock
 
 spec = importlib.util.spec_from_file_location("cycle_benchmark", Path(__file__).parents[2] / "tools/cycle-benchmark.py")
 module = importlib.util.module_from_spec(spec)
@@ -16,6 +17,22 @@ class BenchmarkTests(unittest.TestCase):
         capture = module.Capture(args, io.StringIO())
         capture.started = 0
         return capture
+
+    def test_fd_transport_requires_support_and_does_not_silently_fallback(self):
+        client = SimpleNamespace(services=SimpleNamespace(get_characteristic=lambda _: None),
+                                 start_notify=AsyncMock())
+        with patch.object(module.sys, "platform", "linux"):
+            with self.assertRaisesRegex(RuntimeError, "AcquireNotify"):
+                asyncio.run(module.subscribe(client, None, "bluez-fd"))
+        client.start_notify.assert_not_awaited()
+
+    def test_fd_transport_uses_notification_fd(self):
+        characteristic = SimpleNamespace(obj=("path", {"NotifyAcquired": False}))
+        client = SimpleNamespace(services=SimpleNamespace(get_characteristic=lambda _: characteristic),
+                                 start_notify=AsyncMock())
+        with patch.object(module.sys, "platform", "linux"):
+            asyncio.run(module.subscribe(client, None, "bluez-fd"))
+        client.start_notify.assert_awaited_once_with(characteristic, None, bluez={"use_start_notify": False})
 
     def test_silent_tail_is_loss(self):
         c = self.capture()

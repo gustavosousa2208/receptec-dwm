@@ -10,6 +10,7 @@ import argparse
 import asyncio
 import json
 import math
+import sys
 from pathlib import Path
 import struct
 import time
@@ -117,6 +118,7 @@ class Capture:
                             and not item["stale_events"] for item in stats.values()))
         return dict(mode=self.args.mode, baseline_mm=self.args.baseline_mm,
             address=self.args.address, requested_seconds=self.args.seconds,
+            notify_transport=getattr(self.args, "notify_transport", "default"),
             period_ms=self.args.period_ms, minimum_success_percent=self.args.minimum_success, minimum_seconds=self.args.minimum_seconds,
             elapsed_seconds=elapsed, complete=complete, accepted=accepted,
             expected_rounds=expected, aligned_rounds=aligned,
@@ -124,6 +126,18 @@ class Capture:
             pairs=stats, error=error,
             limitations="Host arrival cadence includes BLE latency. Shared rounds do not prove radio exclusion. "
                          "Constant mode cannot prove absence of UWB traffic; verify firmware counters separately.")
+
+
+async def subscribe(client, callback, transport):
+    if transport == "bluez-fd":
+        if sys.platform != "linux":
+            raise RuntimeError("bluez-fd requires Linux/BlueZ")
+        characteristic = client.services.get_characteristic(UUID)
+        if characteristic is None or "NotifyAcquired" not in characteristic.obj[1]:
+            raise RuntimeError("metadata characteristic does not support AcquireNotify")
+        await client.start_notify(characteristic, callback, bluez={"use_start_notify": False})
+    else:
+        await client.start_notify(UUID, callback)
 
 
 async def run(args):
@@ -141,7 +155,7 @@ async def run(args):
                 for row in decode(initial):
                     stream.write(json.dumps(dict(initial=True, **row)) + "\n")
                 capture.started = time.monotonic()
-                await client.start_notify(UUID, capture.receive)
+                await subscribe(client, capture.receive, getattr(args, "notify_transport", "default"))
                 next_report = 60
                 while time.monotonic() - capture.started < args.seconds:
                     await asyncio.sleep(min(0.25, args.seconds))
@@ -167,6 +181,8 @@ async def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--address", required=True, help="Explicit BLE address; no scan")
+    parser.add_argument("--notify-transport", choices=("default", "bluez-fd"), default="default",
+                        help="bluez-fd receives ATT notifications without D-Bus Value updates (Linux only)")
     parser.add_argument("--seconds", type=float, default=1800)
     parser.add_argument("--output", required=True, type=Path, help="New capture directory")
     parser.add_argument("--mode", choices=("measured", "fixed"), required=True)

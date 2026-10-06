@@ -15,6 +15,12 @@ legacy saved configuration loads at 1000 ms. All pairs use one shared round.
 Capture with the HIL Python interpreter and `tools/cycle-benchmark.py`:
 `--address CC:9B:2A:FA:A1:07 --mode measured --period-ms 500 --seconds 120
 --minimum-seconds 60 --minimum-success 90 --output <new-evidence-directory>`.
+On Linux/BlueZ, `--notify-transport bluez-fd` uses AcquireNotify to isolate
+actual notification delivery from D-Bus characteristic Value updates. It fails
+if unsupported instead of silently falling back. Duplicate notifications remain
+an acceptance failure; this option does not deduplicate the capture. The summary
+records the selected transport. Keep the default path for cross-platform comparison.
+
 The tool counts missing rounds and silent boundary intervals as losses.
 The default 1 Hz reference keeps its 30-minute/99% acceptance gate.
 START uses a single 5 ms ACK wait (within the 20 ms maximum), then M listens
