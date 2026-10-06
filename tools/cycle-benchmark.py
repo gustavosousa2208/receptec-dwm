@@ -98,17 +98,22 @@ class Capture:
         expected = max(span, max(0, math.floor(min(elapsed, self.args.seconds) * 1000 / self.args.period_ms) - 1))
         aligned = len(set.intersection(*(set(rows) for rows in self.rows.values())))
         stats = {}
+        successful_rounds = {}
         for pair, rows in self.rows.items():
             source = 1 if pair == 2 and self.args.mode == "fixed" else 0
-            success = sum(row["status"] == 0 and row["distance_mm"] != 0xFFFFFFFF
-                          and row["source"] == source
-                          and (source != 1 or row["distance_mm"] == self.args.baseline_mm)
-                          for row in rows.values())
+            successful_rounds[pair] = {
+                round_id for round_id, row in rows.items()
+                if row["status"] == 0 and row["distance_mm"] != 0xFFFFFFFF
+                and row["source"] == source
+                and (source != 1 or row["distance_mm"] == self.args.baseline_mm)
+            }
+            success = len(successful_rounds[pair])
             stats[PAIRS[pair]] = dict(received=len(rows), successes=success,
                 failures=len(rows) - success, missing=max(0, expected - len(rows)),
                 success_percent=100 * success / expected if expected else 0,
                 duplicates=self.duplicates[pair], cadence_errors=self.cadence_errors[pair],
                 deadline_errors=self.deadline_errors[pair], stale_events=self.stale_events[pair])
+        successful_triplets = len(set.intersection(*successful_rounds.values()))
         enough_rounds = expected >= math.floor(self.args.seconds * 1000 / self.args.period_ms) - 3
         accepted = (complete and elapsed >= self.args.minimum_seconds and enough_rounds and expected > 0
                     and not error and not self.sequence_errors and not self.invalid_payloads
@@ -122,6 +127,8 @@ class Capture:
             period_ms=self.args.period_ms, minimum_success_percent=self.args.minimum_success, minimum_seconds=self.args.minimum_seconds,
             elapsed_seconds=elapsed, complete=complete, accepted=accepted,
             expected_rounds=expected, aligned_rounds=aligned,
+            successful_triplets=successful_triplets,
+            successful_triplets_percent=100 * successful_triplets / expected if expected else 0,
             sequence_errors=self.sequence_errors, invalid_payloads=self.invalid_payloads,
             pairs=stats, error=error,
             limitations="Host arrival cadence includes BLE latency. Shared rounds do not prove radio exclusion. "

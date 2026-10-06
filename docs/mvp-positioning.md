@@ -96,3 +96,11 @@ without JSON parse source context require string-encoded large round IDs.
 Compare the accepted round sets before comparing smoothing: the mean and
 motion filter should not introduce rejected ranges into the output. Reduced
 spread is not evidence of physical accuracy or acceptable movement latency.
+
+The BLE capture summary also reports `successful_triplets` and
+`successful_triplets_percent`: rounds in which all three published records
+pass the existing per-pair status/source/distance criteria, divided by expected
+rounds (including missing rounds). This is separate from `aligned_rounds`,
+which also includes complete failed rounds. Per-pair acceptance is unchanged.
+Triplet success is input availability, not position validity: geometry, range
+bounds, sample skew and velocity can still reject a triplet in the processor.

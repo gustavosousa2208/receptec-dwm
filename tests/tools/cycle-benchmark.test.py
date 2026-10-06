@@ -34,6 +34,31 @@ class BenchmarkTests(unittest.TestCase):
             asyncio.run(module.subscribe(client, None, "bluez-fd"))
         client.start_notify.assert_awaited_once_with(characteristic, None, bluez={"use_start_notify": False})
 
+    def test_individual_success_does_not_imply_equal_triplet_availability(self):
+        c = self.capture()
+        for round_id in range(1, 121):
+            for pair in range(3):
+                failed = pair * 12 < round_id <= (pair + 1) * 12
+                c.rows[pair][round_id] = dict(status=int(failed), distance_mm=1000, source=0)
+        with patch.object(module.time, "monotonic", return_value=60):
+            result = c.summary(complete=True)
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["aligned_rounds"], 120)
+        self.assertEqual(result["successful_triplets"], 84)
+        self.assertEqual(result["successful_triplets_percent"], 70)
+        self.assertTrue(all(pair["success_percent"] == 90 for pair in result["pairs"].values()))
+
+    def test_fixed_triplets_require_the_expected_constant_baseline(self):
+        c = self.capture()
+        c.args.mode, c.args.baseline_mm = "fixed", 700
+        for pair in range(3):
+            c.rows[pair][1] = dict(status=0, distance_mm=700 if pair == 2 else 1000,
+                                  source=1 if pair == 2 else 0)
+        with patch.object(module.time, "monotonic", return_value=0.5):
+            self.assertEqual(c.summary()["successful_triplets"], 1)
+            c.rows[2][1]["distance_mm"] = 701
+            self.assertEqual(c.summary()["successful_triplets"], 0)
+
     def test_silent_tail_is_loss(self):
         c = self.capture()
         for round_id in range(1, 61):
