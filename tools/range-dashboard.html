@@ -201,7 +201,7 @@ function render(i) {
 // the expensive part of this page (full SVG relayout), so only touch the DOM
 // when the round, mode, or plot extent actually changes. The age line still
 // refreshes on its own cadence below.
-const plotCache = { round: null, mode: null, extent: 0, valid: null, x: null, y: null, ageBucket: -1 };
+const plotCache = { round: null, mode: null, extent: 0, valid: null, x: null, y: null, ageBucket: -1, base: null };
 function renderPosition() {
   const state = positionProcessor.state(performance.now());
   const posText = state.position ?
@@ -218,7 +218,7 @@ function renderPosition() {
   const extent = Math.max(1000, base || 0, Math.abs(state.position.xMm), Math.abs(state.position.yMm)) * 1.2;
   const extentChanged = Math.abs(extent - plotCache.extent) / extent > 0.1;
   if (state.round === plotCache.round && state.mode === plotCache.mode && !extentChanged &&
-      state.valid === plotCache.valid && ageBucket === plotCache.ageBucket) {
+      state.valid === plotCache.valid && ageBucket === plotCache.ageBucket && base === plotCache.base) {
     return;
   }
   plotCache.round = state.round;
@@ -228,9 +228,12 @@ function renderPosition() {
   if (extentChanged || plotCache.extent === 0) {
     plotCache.extent = extent;
     el.plot.setAttribute('viewBox', `${-extent} ${-extent} ${2 * extent} ${2 * extent}`);
+    dot.setAttribute('r', extent / 45);
+  }
+  if (base !== plotCache.base) {
     el.anchor.setAttribute('cx', base);
     el.baseline.setAttribute('x2', base);
-    dot.setAttribute('r', extent / 45);
+    plotCache.base = base;
   }
   dot.setAttribute('cx', state.position.xMm);
   dot.setAttribute('cy', -state.position.yMm);
@@ -313,6 +316,7 @@ async function toggleConnection() {
     setStatus('Connected', true);
     document.getElementById('btnConnect').textContent = 'Disconnect';
     document.getElementById('btnConnect').classList.add('disconnect');
+    let noLiveData = false;
     await gattOp(async () => {
       const svc = await server.getPrimaryService(SVC_RANGE);
       let metadata = null;
@@ -337,12 +341,10 @@ async function toggleConnection() {
           chr.addEventListener('characteristicvaluechanged', e => showLegacy(i, e.target.value, false));
           await chr.startNotifications();
         }
-        if (stale === 3) {
-          setStatus('No live data — this looks like the ANCHOR, not the master. Reconnect to the other ATL-RANGE.', true);
-        }
+        noLiveData = stale === 3;
       }
     });
-    setStatus((metadataMode ? 'Live — ' : 'Legacy: no round/source metadata — ') + (device.name || 'connected') + ' (' + device.id + ')', true);
+    setStatus((noLiveData ? 'No live data — verify that this is the MASTER — ' : metadataMode ? 'Live — ' : 'Legacy: no round/source metadata — ') + (device.name || 'connected') + ' (' + device.id + ')', true);
   } catch (e) {
     console.error(e);
     setStatus('Error: ' + e.message);

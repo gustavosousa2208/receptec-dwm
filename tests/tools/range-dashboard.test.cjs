@@ -38,3 +38,30 @@ now=6000;vm.runInContext('renderPosition()',context);
 assert.match(nodes.get('positionValue').textContent,/stale/);
 assert.equal(nodes.get('tagDot').visibility,'visible');
 console.log('Dashboard BLE metadata -> position, rejection and stale integration PASS');
+
+// Changing the baseline must redraw it even when the viewBox stays unchanged.
+now=7000;
+vm.runInContext('positionProcessor.configure({windowSize:1,motionTauMs:0,maxSpeedMmS:100000})',context);
+context.payload=packet('4294967299',[5000,5000,6000]);
+vm.runInContext('showMetadata(payload)',context);
+const viewBox=nodes.get('positionPlot').viewBox;
+now=8000;context.payload=packet('4294967300',[5000,5000,5900]);
+vm.runInContext('showMetadata(payload)',context);
+assert.equal(nodes.get('positionPlot').viewBox,viewBox);
+assert.equal(nodes.get('anchorDot').cx,5900);
+assert.equal(nodes.get('baselineLine').x2,5900);
+
+// A legacy endpoint with no measurements must retain its warning after connect.
+(async()=> {
+  const legacy=new DataView(new ArrayBuffer(5));legacy.setUint8(0,1);
+  const chr={readValue:async()=>legacy,startNotifications:async()=>{},addEventListener(){}};
+  const svc={getCharacteristic:async id=>{
+    if(id.includes('3104')) throw Object.assign(new Error('missing'),{name:'NotFoundError'});
+    return chr;
+  }};
+  context.navigator.bluetooth={requestDevice:async()=>({name:'ATL-RANGE',id:'anchor-id',
+    removeEventListener(){},addEventListener(){},gatt:{connect:async()=>({getPrimaryService:async()=>svc})}})};
+  await vm.runInContext('toggleConnection()',context);
+  assert.match(nodes.get('deviceInfo').textContent,/No live data.*MASTER.*anchor-id/);
+  console.log('Dashboard baseline and connection warning regression PASS');
+})().catch(error=>{console.error(error);process.exitCode=1;});
