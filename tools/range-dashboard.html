@@ -119,6 +119,32 @@ let server = null;
 const records = [null, null, null];
 let metadataMode = false;
 
+// Cached DOM handles: getElementById on every tick is cheap alone, but the
+// ranged redraw below runs 4x/s plus once per notification, so resolve once.
+const el = {
+  d: [0, 1, 2].map(i => document.getElementById('d' + i)),
+  a: [0, 1, 2].map(i => document.getElementById('a' + i)),
+  pos: document.getElementById('positionValue'),
+  reason: document.getElementById('positionReason'),
+  dot: document.getElementById('tagDot'),
+  plot: document.getElementById('positionPlot'),
+  anchor: document.getElementById('anchorDot'),
+  baseline: document.getElementById('baselineLine'),
+};
+const lastText = { d: ['', '', ''], a: ['', '', ''], pos: '', reason: '\u0000' };
+function setTextCached(slot, index, node, text) {
+  if (lastText[slot][index] !== text) {
+    lastText[slot][index] = text;
+    node.textContent = text;
+  }
+}
+function setHtmlCached(slot, index, node, html) {
+  if (lastText[slot][index] !== html) {
+    lastText[slot][index] = html;
+    node.innerHTML = html;
+  }
+}
+
 (async () => {
   const ua = navigator.userAgent || '';
   const chrome = /Chrome\//.test(ua) && !/Edg\//.test(ua);
@@ -146,52 +172,72 @@ function gattOp(fn) {
 
 function render(i) {
   const record = records[i];
-  const el = document.getElementById('d' + i);
-  const detail = document.getElementById('a' + i);
   if (!record) {
-    el.textContent = '—';
-    el.classList.add('stale');
-    detail.textContent = 'No sample';
+    setTextCached('d', i, el.d[i], '—');
+    el.d[i].classList.add('stale');
+    setTextCached('a', i, el.a[i], 'No sample');
     return;
   }
   const age = record.age === null ? null : record.age + Math.max(0, performance.now() - record.received);
   const valid = record.status === 0 && record.mm !== 0xFFFFFFFF && record.source !== 2;
   const stale = age === null || age > 3000;
-  if (valid) el.innerHTML = (record.mm / 1000).toFixed(3) + '<span class="unit"> m</span>';
-  else el.textContent = '—';
-  el.classList.toggle('stale', !valid || stale);
+  if (valid) setHtmlCached('d', i, el.d[i], (record.mm / 1000).toFixed(3) + '<span class="unit"> m</span>');
+  else setTextCached('d', i, el.d[i], '—');
+  el.d[i].classList.toggle('stale', !valid || stale);
   if (record.source === 2) {
-    detail.textContent = record.round !== '0' ?
+    setTextCached('a', i, el.a[i], record.round !== '0' ?
       'Unavailable · round ' + record.round + ' · failed (status ' + record.status + ')' :
-      'No sample';
+      'No sample');
     return;
   }
   const source = record.source === 1 ? 'Constant' : record.source === 0 ? 'Measured' : 'Legacy: source unknown';
   const round = record.round === null ? 'round unavailable' : 'round ' + record.round;
-  const timing = age === null ? 'age unknown' : (age / 1000).toFixed(1) + 's old' + (stale ? ' · expired' : '');
-  detail.textContent = source + ' · ' + round + ' · ' + timing +
-    (valid ? '' : ' · failed (status ' + record.status + ')');
+  const timing = age === null ? 'age unknown' : (age / 1000).toFixed(0) + 's old' + (stale ? ' · expired' : '');
+  setTextCached('a', i, el.a[i], source + ' · ' + round + ' · ' + timing +
+    (valid ? '' : ' · failed (status ' + record.status + ')'));
 }
 
+// Plot state from the last rendered position: viewBox/attribute writes are
+// the expensive part of this page (full SVG relayout), so only touch the DOM
+// when the round, mode, or plot extent actually changes. The age line still
+// refreshes on its own cadence below.
+const plotCache = { round: null, mode: null, extent: 0, valid: null, x: null, y: null, ageBucket: -1 };
 function renderPosition() {
   const state = positionProcessor.state(performance.now());
-  const label = document.getElementById('positionValue');
-  label.textContent = state.position ?
-    `x=${(state.position.xMm / 1000).toFixed(3)} m · y=${(state.position.yMm / 1000).toFixed(3)} m · ${state.mode} · age ${(state.ageMs / 1000).toFixed(1)} s` : 'No valid position';
-  document.getElementById('positionReason').textContent = state.diagnostic ? state.diagnostic.reason : '';
-  const dot = document.getElementById('tagDot');
-  dot.setAttribute('visibility', state.position ? 'visible' : 'hidden');
-  if (state.position) {
-    const base = state.distances ? state.distances.maMm : 1000;
-    const extent = Math.max(1000, base || 0, Math.abs(state.position.xMm), Math.abs(state.position.yMm)) * 1.2;
-    document.getElementById('positionPlot').setAttribute('viewBox', `${-extent} ${-extent} ${2 * extent} ${2 * extent}`);
-    document.getElementById('anchorDot').setAttribute('cx', base);
-    document.getElementById('baselineLine').setAttribute('x2', base);
-    dot.setAttribute('cx', state.position.xMm);
-    dot.setAttribute('cy', -state.position.yMm);
-    dot.setAttribute('fill', state.valid ? '#3d9' : '#e9a33b');
+  const posText = state.position ?
+    `x=${(state.position.xMm / 1000).toFixed(3)} m · y=${(state.position.yMm / 1000).toFixed(3)} m · ${state.mode} · age ${(state.ageMs / 1000).toFixed(0)} s` : 'No valid position';
+  const reasonText = state.diagnostic ? state.diagnostic.reason : '';
+  setTextCachedSingle('pos', el.pos, posText);
+  setTextCachedSingle('reason', el.reason, reasonText);
+  const dot = el.dot;
+  const visible = !!state.position;
+  dot.setAttribute('visibility', visible ? 'visible' : 'hidden');
+  if (!visible) { plotCache.round = null; return; }
+  const ageBucket = Math.floor(state.ageMs / 1000);
+  const base = state.distances ? state.distances.maMm : 1000;
+  const extent = Math.max(1000, base || 0, Math.abs(state.position.xMm), Math.abs(state.position.yMm)) * 1.2;
+  const extentChanged = Math.abs(extent - plotCache.extent) / extent > 0.1;
+  if (state.round === plotCache.round && state.mode === plotCache.mode && !extentChanged &&
+      state.valid === plotCache.valid && ageBucket === plotCache.ageBucket) {
+    return;
+  }
+  plotCache.round = state.round;
+  plotCache.mode = state.mode;
+  plotCache.valid = state.valid;
+  plotCache.ageBucket = ageBucket;
+  if (extentChanged || plotCache.extent === 0) {
+    plotCache.extent = extent;
+    el.plot.setAttribute('viewBox', `${-extent} ${-extent} ${2 * extent} ${2 * extent}`);
+    el.anchor.setAttribute('cx', base);
+    el.baseline.setAttribute('x2', base);
     dot.setAttribute('r', extent / 45);
   }
+  dot.setAttribute('cx', state.position.xMm);
+  dot.setAttribute('cy', -state.position.yMm);
+  dot.setAttribute('fill', state.valid ? '#3d9' : '#e9a33b');
+}
+function setTextCachedSingle(key, node, text) {
+  if (lastText[key] !== text) { lastText[key] = text; node.textContent = text; }
 }
 
 document.getElementById('positionSettings').addEventListener('submit', event => {
