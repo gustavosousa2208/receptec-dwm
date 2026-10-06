@@ -256,7 +256,9 @@ async function toggleConnection() {
   try {
     device = await navigator.bluetooth.requestDevice({
       filters: [{ namePrefix: 'ATL' }],
-      optionalServices: [SVC_RANGE],
+      // 16-bit alias 0x3100 is what the master advertises; the full
+      // 128-bit service/characteristic UUIDs below are resolved on connect.
+      optionalServices: [0x3100, SVC_RANGE],
     });
     device.removeEventListener('gattserverdisconnected', onDisconnected);
     device.addEventListener('gattserverdisconnected', onDisconnected);

@@ -178,21 +178,24 @@ BT_CONN_CB_DEFINE(ble_range_conn_cb) = {
 static const uint8_t adv_flags[] = {
     BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR,
 };
-/* 00003100-4550-5453-4154-4c4554454300, air order (LSB first). */
+/*
+ * 16-bit alias of the range service plus the complete name: 3+4+11 = 18
+ * bytes, so the human-readable name the browser picker shows fits the
+ * 31-byte legacy advertisement together with the service hint. The full
+ * 128-bit UUIDs are used for service/characteristic lookup after connect.
+ */
 static const uint8_t adv_uuid[] = {
-    0x00, 0x43, 0x45, 0x54, 0x45, 0x4C, 0x54, 0x41,
-    0x53, 0x54, 0x50, 0x45, 0x00, 0x31, 0x00, 0x00,
+    0x00, 0x31,
 };
 static const struct bt_data adv_data[] = {
     BT_DATA(BT_DATA_FLAGS, adv_flags, sizeof(adv_flags)),
-    BT_DATA(BT_DATA_UUID128_ALL, adv_uuid, sizeof(adv_uuid)),
-};
-/* Device name rides in the scan response: flags + UUID128 + name do not fit
- * the 31-byte legacy advertisement together (3+18+11=32).
- */
-static const struct bt_data scan_rsp[] = {
+    BT_DATA(BT_DATA_UUID16_ALL, adv_uuid, sizeof(adv_uuid)),
     BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME,
             sizeof(CONFIG_BT_DEVICE_NAME) - 1U),
+};
+/* Scan response intentionally carries only flags. */
+static const struct bt_data scan_rsp[] = {
+    BT_DATA(BT_DATA_FLAGS, adv_flags, sizeof(adv_flags)),
 };
 
 static int ble_range_adv_start(void) {
