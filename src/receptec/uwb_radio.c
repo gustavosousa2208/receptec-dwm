@@ -2120,6 +2120,10 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 	if (status < 0) {
 		return status;
 	}
+	/* Retry the identical frame/sequence once, within the caller's absolute
+	 * deadline. Duplicate ROUND_ARM/ARM ACKs do not renew authorization. */
+	for (unsigned int attempt = 0; attempt < 2; attempt++) {
+	if (cycle_deadline && k_uptime_get() >= cycle_deadline) break;
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 	dwt_setrxaftertxdelay(0U);
@@ -2142,6 +2146,8 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 	(void)receptec_radio_irq_enable(false);
+	if (status == 0 || status != -ETIMEDOUT) break;
+	}
 	return status;
 }
 
