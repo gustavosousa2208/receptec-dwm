@@ -3,6 +3,9 @@
 #include "uwb_radio.h"
 #include "uwb_round_guard.h"
 #include "uwb_cycle_policy.h"
+#include <receptec/uwb_remote_config.h>
+#include <zephyr/sys/byteorder.h>
+#include <zephyr/sys/reboot.h>
 
 #include <errno.h>
 #include <stdbool.h>
@@ -2760,6 +2763,306 @@ static int range_send_ack(const uint8_t destination[RECEPTEC_UWB_EUI64_SIZE],
  * initiator side: one round, no retry, software deadline instead of the
  * contract's exact per-phase windows.
  */
+/* Remote commissioning is serialized with the radio owner. Settings are staged
+ * and read back before acknowledging; a confirmed reboot applies them. */
+static bool config_eui_valid(const uint8_t eui[8])
+{
+ uint8_t any = 0, all = 0xff;
+ for (int i = 0; i < 8; i++) { any |= eui[i]; all &= eui[i]; }
+ return any != 0 && all != 0xff;
+}
+
+static int config_saved_value(uint8_t key, uint8_t index, uint8_t *data, uint8_t *length)
+{
+ int ret = 0; bool enabled;
+ struct receptec_uwb_cycle_config cfg;
+ *length = 0;
+ if (key != UWB_REMOTE_CONFIG_PEER && key != UWB_REMOTE_CONFIG_ENABLED && index != 0) return -EINVAL;
+ switch (key) {
+ case UWB_REMOTE_CONFIG_IDENTITY:
+  ret = receptec_uwb_identity_storage_load(data);
+  if (ret == -ENOENT) { memcpy(data, receptec_eui, 8); ret = 0; }
+  if (!ret) *length = 8;
+  break;
+ case UWB_REMOTE_CONFIG_PEER:
+  ret = receptec_uwb_peer_storage_load(index, data);
+  if (ret == -ENOENT) ret = 0; else if (!ret) *length = 8;
+  break;
+ case UWB_REMOTE_CONFIG_ENABLED:
+  if (index >= RECEPTEC_UWB_MAX_PEERS) return -EINVAL;
+  ret = receptec_uwb_peer_enabled_load(index, &enabled);
+  if (ret == -ENOENT) { enabled = true; ret = 0; }
+  if (!ret) { data[0] = enabled; *length = 1; }
+  break;
+ case UWB_REMOTE_CONFIG_AUTO_RESPONDER:
+  ret = receptec_uwb_range_auto_load(&enabled);
+  if (ret == -ENOENT) { enabled = false; ret = 0; }
+  if (!ret) { data[0] = enabled; *length = 1; }
+  break;
+ case UWB_REMOTE_CONFIG_CYCLE:
+  ret = receptec_uwb_cycle_load(&cfg);
+  if (!ret) {
+   data[0] = cfg.tag_slot; data[1] = cfg.base_slot;
+   data[2] = (cfg.autostart ? 1 : 0) | (cfg.fixed ? 2 : 0); data[3] = 0;
+   sys_put_le32(cfg.period_ms, data + 4); sys_put_le32(cfg.baseline_mm, data + 8);
+   memset(data + 12, 0, 4); *length = 16;
+  }
+  break;
+ case UWB_REMOTE_CONFIG_ROLE:
+#if defined(RECEPTEC_FIXED_ANCHOR)
+  data[0] = 1;
+#else
+  data[0] = 0;
+#endif
+  *length = 1;
+  break;
+ default: ret = -ENOTSUP;
+ }
+ return ret;
+}
+
+static int config_stage_value(uint8_t key, uint8_t index, const uint8_t *data, uint8_t length)
+{
+ uint8_t old[16], old_length;
+ int ret;
+ if (key == UWB_REMOTE_CONFIG_ROLE) return -ENOTSUP;
+ if (key == UWB_REMOTE_CONFIG_PEER && length == 0) {
+  if (index == 0) return -EACCES; /* Keep a recovery controller. */
+  if (index >= RECEPTEC_UWB_MAX_PEERS) return -EINVAL;
+  int deleted = receptec_uwb_peer_storage_delete(index);
+  if (deleted && deleted != -ENOENT) return deleted;
+  uint8_t check[8];
+  return receptec_uwb_peer_storage_load(index, check) == -ENOENT ? 1 : -EIO;
+ }
+ if (key != UWB_REMOTE_CONFIG_PEER && key != UWB_REMOTE_CONFIG_ENABLED && index != 0) return -EINVAL;
+ if ((key == UWB_REMOTE_CONFIG_IDENTITY || key == UWB_REMOTE_CONFIG_PEER) &&
+     (length != 8 || !config_eui_valid(data))) return -EINVAL;
+ if (key == UWB_REMOTE_CONFIG_IDENTITY || key == UWB_REMOTE_CONFIG_PEER) {
+  uint8_t local[8], peer[8]; uint8_t local_length;
+  ret = config_saved_value(UWB_REMOTE_CONFIG_IDENTITY, 0, local, &local_length);
+  if (ret || local_length != 8) return ret ? ret : -EIO;
+  if (key == UWB_REMOTE_CONFIG_PEER && memcmp(data, local, 8) == 0) return -EINVAL;
+  for (uint8_t i = 0; i < RECEPTEC_UWB_MAX_PEERS; i++) {
+   if (key == UWB_REMOTE_CONFIG_PEER && i == index) continue;
+   if (receptec_uwb_peer_storage_load(i, peer) == 0 && memcmp(data, peer, 8) == 0) return -EEXIST;
+  }
+ }
+ if ((key == UWB_REMOTE_CONFIG_ENABLED || key == UWB_REMOTE_CONFIG_AUTO_RESPONDER) &&
+     (length != 1 || data[0] > 1)) return -EINVAL;
+ if (key == UWB_REMOTE_CONFIG_ENABLED && index >= RECEPTEC_UWB_MAX_PEERS) return -EINVAL;
+ /* This image uses auto responder + controller slot 0 for management RX.
+  * Keep that recovery path; exclude a node through the MASTER schedule. */
+ if ((key == UWB_REMOTE_CONFIG_AUTO_RESPONDER ||
+      (key == UWB_REMOTE_CONFIG_ENABLED && index == 0)) && data[0] == 0) return -EACCES;
+ ret = config_saved_value(key, index, old, &old_length);
+ if (!ret && old_length == length && memcmp(old, data, length) == 0) return 1;
+ switch (key) {
+ case UWB_REMOTE_CONFIG_IDENTITY: ret = receptec_uwb_identity_storage_save(data); break;
+ case UWB_REMOTE_CONFIG_PEER: ret = receptec_uwb_peer_storage_save(index, data); break;
+ case UWB_REMOTE_CONFIG_ENABLED: ret = receptec_uwb_peer_enabled_save(index, data[0]); break;
+ case UWB_REMOTE_CONFIG_AUTO_RESPONDER: ret = receptec_uwb_range_auto_save(data[0]); break;
+ case UWB_REMOTE_CONFIG_CYCLE: {
+  if (length != 16 || data[2] > 3 || data[3] || sys_get_le32(data + 12)) return -EINVAL;
+#if defined(RECEPTEC_FIXED_ANCHOR)
+  /* A BASE cannot become a second MASTER through a schedule write. */
+  if (data[2] & 1) return -ENOTSUP;
+#endif
+  struct receptec_uwb_cycle_config cfg = {
+   .tag_slot = data[0], .base_slot = data[1], .autostart = data[2] & 1,
+   .fixed = data[2] & 2, .period_ms = sys_get_le32(data + 4),
+   .baseline_mm = sys_get_le32(data + 8)
+  };
+  ret = receptec_uwb_cycle_save(&cfg); break;
+ }
+ default: return -ENOTSUP;
+ }
+ if (ret) return ret;
+ ret = config_saved_value(key, index, old, &old_length);
+ if (ret) return ret;
+ return old_length == length && memcmp(old, data, length) == 0 ? 1 : -EIO;
+}
+
+static int config_send_frame(enum receptec_uwb_packet_type type, const uint8_t target[8],
+ uint8_t sequence, const uint8_t *payload, uint8_t length, bool expect_reply)
+{
+ uint8_t bytes[RECEPTEC_UWB_MAX_LOGICAL_SIZE]; size_t encoded;
+ struct receptec_uwb_frame f = {.type = type, .sequence = sequence,
+                              .payload = payload, .payload_length = length};
+ memcpy(f.source, receptec_eui, 8); memcpy(f.destination, target, 8);
+ int ret = receptec_uwb_encode(bytes, sizeof(bytes), &f, &encoded);
+ if (ret) return -EINVAL;
+ dwt_forcetrxoff(); clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+ (void)receptec_radio_irq_enable(true);
+ dwt_setrxaftertxdelay(0); dwt_setrxtimeout(0);
+ dwt_writetxdata(encoded, bytes, 0); dwt_writetxfctrl(encoded + RECEPTEC_UWB_FCS_SIZE, 0, 0);
+ if (dwt_starttx(DWT_START_TX_IMMEDIATE | (expect_reply ? DWT_RESPONSE_EXPECTED : 0)) != DWT_SUCCESS) return -EIO;
+ ret = range_wait_tx_done();
+ clear_radio_events(DWT_INT_TXFRS_BIT_MASK);
+ return ret;
+}
+
+static void config_reboot_handler(struct k_work *work)
+{
+ ARG_UNUSED(work); sys_reboot(SYS_REBOOT_COLD);
+}
+static K_WORK_DELAYABLE_DEFINE(config_reboot_work, config_reboot_handler);
+
+static bool config_receive_request(const struct receptec_uwb_frame *f, bool busy)
+{
+ const uint8_t *p = f->payload;
+ if (f->type != RECEPTEC_UWB_CONFIG_REQUEST || f->payload_length < 11 ||
+     p[0] != 1 || p[1] > 2 || p[8] || p[9] || p[10] > 16 ||
+     f->payload_length != 11U + p[10] || (p[1] == 0 && p[10])) return false;
+ uint8_t out[27]; memcpy(out, p, 11); uint8_t length = 0;
+ int ret;
+ if (busy) ret = -EBUSY;
+ else if (p[1] == UWB_REMOTE_CONFIG_REBOOT)
+  ret = p[2] || p[3] || p[10] ? -EINVAL : 0;
+ else if (p[1] == UWB_REMOTE_CONFIG_GET) ret = config_saved_value(p[2], p[3], out + 11, &length);
+ else ret = config_stage_value(p[2], p[3], p + 11, p[10]);
+ sys_put_le16((uint16_t)ret, out + 8); out[10] = length;
+ int tx = config_send_frame(RECEPTEC_UWB_CONFIG_RESPONSE, f->source, f->sequence, out, 11 + length, false);
+ if (!tx && !ret && p[1] == UWB_REMOTE_CONFIG_REBOOT)
+  (void)k_work_reschedule(&config_reboot_work, K_MSEC(200));
+ (void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+ return true;
+}
+
+int receptec_uwb_remote_config(uint8_t slot, uint8_t op, uint8_t key, uint8_t index,
+ const uint8_t *data, uint8_t length, struct receptec_uwb_config_reply *reply)
+{
+ if (!reply || length > 16 || (length && !data) || op > 2) return -EINVAL;
+ uint8_t target[8], sequence, request[27] = {1, op, key, index};
+ int ret; bool resume;
+ k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+ resume = cycle_running;
+ k_mutex_unlock(&uwb_peer_mutex);
+ if (resume) (void)receptec_uwb_range_stop();
+ int64_t idle_deadline = k_uptime_get() + 1500;
+ while (true) {
+  k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+  bool busy = poll_running;
+  k_mutex_unlock(&uwb_peer_mutex);
+  if (!busy) break;
+  if (k_uptime_get() >= idle_deadline) { ret = -EBUSY; goto restore; }
+  k_msleep(5);
+ }
+ k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+ if (!radio_ready || poll_running || range_auto_enabled) ret = -EBUSY;
+ else if (slot >= RECEPTEC_UWB_MAX_PEERS) ret = -EINVAL;
+ else ret = receptec_uwb_peer_registry_get(&peer_registry, slot, target);
+ if (!ret) {
+  ret = receptec_uwb_peer_registry_next_sequence(&peer_registry, slot, &sequence);
+  if (!ret) poll_running = true;
+ }
+ k_mutex_unlock(&uwb_peer_mutex);
+ if (ret) goto restore;
+ /* Allow a previous remote ROUND_ARM lifetime to expire before flash writes. */
+ k_msleep(1100);
+ uint32_t transaction = sys_rand32_get();
+ if (!transaction) transaction = 1;
+ sys_put_le32(transaction, request + 4); request[10] = length;
+ if (length) memcpy(request + 11, data, length);
+ ret = -ETIMEDOUT;
+ for (int attempt = 0; attempt < 3; attempt++) {
+  ret = config_send_frame(RECEPTEC_UWB_CONFIG_REQUEST, target, sequence, request, 11 + length, true);
+  if (ret) continue;
+  ret = -ETIMEDOUT;
+  int64_t deadline = k_uptime_get() + 250;
+  while (k_uptime_get() < deadline) {
+   uint32_t status = dwt_readsysstatuslo();
+   if (status & DWT_INT_RXFCG_BIT_MASK) {
+    uint8_t bytes[RECEPTEC_UWB_MAX_LOGICAL_SIZE], ranging;
+    uint16_t n = dwt_getframelength(&ranging);
+    clear_radio_events(DWT_INT_RXFCG_BIT_MASK);
+    if (n >= RECEPTEC_UWB_HEADER_SIZE + 2 && n <= RECEPTEC_UWB_MAX_PSDU_SIZE) {
+     struct receptec_uwb_frame f;
+     dwt_readrxdata(bytes, n - 2, 0);
+     if (receptec_uwb_decode(bytes, n - 2, &f) == 0 &&
+         f.type == RECEPTEC_UWB_CONFIG_RESPONSE && f.sequence == sequence &&
+         memcmp(f.source, target, 8) == 0 && memcmp(f.destination, receptec_eui, 8) == 0 &&
+         memcmp(f.payload, request, 8) == 0) {
+      reply->status = (int16_t)sys_get_le16(f.payload + 8);
+      reply->transaction = transaction; reply->length = f.payload[10];
+      memcpy(reply->data, f.payload + 11, reply->length);
+      ret = 0; break;
+     }
+    }
+    (void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+   } else if (status & (SYS_STATUS_ALL_RX_TO | UWB_RX_REARM_ERROR_MASK)) {
+    clear_radio_events(status & (SYS_STATUS_ALL_RX_TO | UWB_RX_REARM_ERROR_MASK));
+    (void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+   } else (void)receptec_radio_wait_event(K_MSEC(5));
+  }
+  if (!ret) break;
+ }
+ dwt_forcetrxoff(); clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+ (void)receptec_radio_irq_enable(false);
+ k_mutex_lock(&uwb_peer_mutex, K_FOREVER); poll_running = false;
+ k_mutex_unlock(&uwb_peer_mutex);
+restore:
+ if (resume) {
+  int restored = receptec_uwb_cycle_start();
+  if (restored && !ret) ret = restored;
+ }
+ return ret;
+}
+
+int receptec_uwb_remote_reboot(uint8_t slot, struct receptec_uwb_config_reply *reply)
+{
+ bool resume;
+ k_mutex_lock(&uwb_peer_mutex, K_FOREVER); resume = cycle_running;
+ k_mutex_unlock(&uwb_peer_mutex);
+ if (resume) (void)receptec_uwb_range_stop();
+ int ret = 0; int64_t deadline = k_uptime_get() + 1500;
+ while (true) {
+  k_mutex_lock(&uwb_peer_mutex, K_FOREVER); bool busy = poll_running;
+  k_mutex_unlock(&uwb_peer_mutex);
+  if (!busy) break;
+  if (k_uptime_get() >= deadline) { ret = -EBUSY; goto restore_reboot; }
+  k_msleep(5);
+ }
+ /* A stopped MASTER allows the previous ROUND_ARM lifetime to expire. */
+ k_msleep(1100);
+ struct receptec_uwb_config_reply saved;
+ ret = receptec_uwb_remote_config(slot, UWB_REMOTE_CONFIG_GET, UWB_REMOTE_CONFIG_IDENTITY, 0, NULL, 0, &saved);
+ if (ret) goto restore_reboot;
+ if (saved.status || saved.length != 8 || !config_eui_valid(saved.data)) {
+  ret = saved.status < 0 ? saved.status : -EBADMSG; goto restore_reboot;
+ }
+ /* Validate remapping before asking the endpoint to leave its old identity. */
+ k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+ if (slot >= RECEPTEC_UWB_MAX_PEERS || !peer_registry.slots[slot].registered) ret = -ENOENT;
+ else if (memcmp(saved.data, receptec_eui, 8) == 0) ret = -EADDRINUSE;
+ for (uint8_t i = 0; !ret && i < RECEPTEC_UWB_MAX_PEERS; i++)
+  if (i != slot && peer_registry.slots[i].registered && memcmp(peer_registry.slots[i].eui64, saved.data, 8) == 0) ret = -EADDRINUSE;
+ bool available = false;
+ for (int i = 0; i < RECEPTEC_UWB_PEER_HISTORY_CAPACITY; i++)
+  if (!peer_registry.history[i].used || memcmp(peer_registry.history[i].eui64, saved.data, 8) == 0) available = true;
+ if (!ret && !available) ret = -ENOSPC;
+ k_mutex_unlock(&uwb_peer_mutex);
+ if (ret) goto restore_reboot;
+ ret = receptec_uwb_remote_config(slot, UWB_REMOTE_CONFIG_REBOOT, 0, 0, NULL, 0, reply);
+ if (ret) goto restore_reboot;
+ if (reply->status) { ret = reply->status; goto restore_reboot; }
+ k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+ if (memcmp(peer_registry.slots[slot].eui64, saved.data, 8) != 0) {
+  ret = receptec_uwb_peer_storage_save(slot, saved.data);
+  if (!ret) {
+   (void)receptec_uwb_peer_registry_unregister(&peer_registry, slot);
+   ret = receptec_uwb_peer_registry_register(&peer_registry, slot, saved.data);
+  }
+ }
+ k_mutex_unlock(&uwb_peer_mutex);
+ k_msleep(400);
+restore_reboot:
+ if (resume) {
+  int started = receptec_uwb_cycle_start();
+  if (!ret && started) ret = started;
+ }
+ return ret;
+}
+
 static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t timeout_ms,
 			      enum receptec_uwb_range_status *out_status, uint32_t *out_distance_mm)
 {
@@ -2885,6 +3188,13 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 				continue;
 			}
+		}
+
+		if (frame.type == RECEPTEC_UWB_CONFIG_REQUEST) {
+			/* Source and destination were checked against the commissioned controller above. */
+			if (armed || delegate_armed || !config_receive_request(&frame, false))
+				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+			continue;
 		}
 
 		if (frame.type == RECEPTEC_UWB_RANGE_PLAN) {

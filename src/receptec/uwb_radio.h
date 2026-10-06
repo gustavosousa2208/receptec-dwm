@@ -12,6 +12,18 @@
 
 int receptec_uwb_radio_init(void);
 int receptec_uwb_local_eui_get(uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
+/* Management pauses/restores the MASTER cycle, uses bounded retries and
+ * returns remote status separately from transport errors. */
+struct receptec_uwb_config_reply {
+	int16_t status;
+	uint32_t transaction;
+	uint8_t length;
+	uint8_t data[16];
+};
+int receptec_uwb_remote_reboot(uint8_t slot, struct receptec_uwb_config_reply *reply);
+int receptec_uwb_remote_config(uint8_t slot, uint8_t op, uint8_t key,
+	uint8_t index, const uint8_t *data, uint8_t length,
+	struct receptec_uwb_config_reply *reply);
 int receptec_uwb_local_eui_set(const uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
 int receptec_uwb_peer_register(uint8_t slot, const uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE]);
 int receptec_uwb_peer_unregister(uint8_t slot);

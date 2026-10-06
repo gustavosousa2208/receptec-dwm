@@ -40,6 +40,8 @@ enum receptec_uwb_packet_type {
 	RECEPTEC_UWB_RANGE_POLL = 0x8,
 	RECEPTEC_UWB_RANGE_RESPONSE = 0x9,
 	RECEPTEC_UWB_RANGE_FINAL = 0xA,
+	RECEPTEC_UWB_CONFIG_REQUEST = 0xB,
+	RECEPTEC_UWB_CONFIG_RESPONSE = 0xC,
 };
 
 enum receptec_uwb_plan_phase {

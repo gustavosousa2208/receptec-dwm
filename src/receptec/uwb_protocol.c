@@ -3,6 +3,7 @@
 #include <receptec/uwb_protocol.h>
 
 #include <string.h>
+#include <receptec/uwb_remote_config.h>
 
 #define DESTINATION_OFFSET 3U
 #define SOURCE_OFFSET 11U
@@ -29,6 +30,14 @@ static int validate_payload(enum receptec_uwb_packet_type type,
 	case RECEPTEC_UWB_STOP_ACK:
 		return payload_length == 0U ? RECEPTEC_UWB_OK :
 			RECEPTEC_UWB_ERR_LENGTH;
+	case RECEPTEC_UWB_CONFIG_REQUEST:
+	case RECEPTEC_UWB_CONFIG_RESPONSE:
+		return payload != NULL && payload_length >= UWB_REMOTE_CONFIG_HEADER_SIZE &&
+		       payload[0] == UWB_REMOTE_CONFIG_SCHEMA &&
+		       payload[1] <= UWB_REMOTE_CONFIG_REBOOT &&
+		       payload[10] <= UWB_REMOTE_CONFIG_MAX_DATA &&
+		       payload_length == UWB_REMOTE_CONFIG_HEADER_SIZE + payload[10] ?
+		       RECEPTEC_UWB_OK : RECEPTEC_UWB_ERR_LENGTH;
 	case RECEPTEC_UWB_RANGE_PLAN:
 		return receptec_uwb_plan_decode(payload, payload_length, &plan);
 	case RECEPTEC_UWB_RANGE_RESULT:

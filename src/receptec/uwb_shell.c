@@ -11,6 +11,8 @@
 
 #include "uwb_peer_storage.h"
 #include "uwb_radio.h"
+#include <receptec/uwb_remote_config.h>
+#include <zephyr/sys/byteorder.h>
 #if defined(CONFIG_BT)
 #include "ble_range.h"
 #endif
@@ -1306,8 +1308,84 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 		  cmd_uwb_test_run, 2, 0),
     SHELL_SUBCMD_SET_END);
 
+static int config_bool(const char *value, uint8_t *out)
+{
+ if (!strcmp(value, "on") || !strcmp(value, "1")) *out = 1;
+ else if (!strcmp(value, "off") || !strcmp(value, "0")) *out = 0;
+ else return -EINVAL;
+ return 0;
+}
+
+static int cmd_uwb_config(const struct shell *shell, size_t argc, char **argv)
+{
+ uint8_t slot, key = 0, index = 0, data[16] = {0}, length = 0;
+ struct receptec_uwb_config_reply reply;
+ if (argc < 3 || parse_slot(shell, argv[2], &slot)) return -EINVAL;
+ bool reboot = !strcmp(argv[1], "reboot"), clear = !strcmp(argv[1], "clear"),
+      set = !strcmp(argv[1], "set") || clear;
+ if (reboot) {
+  if (argc != 3) return -EINVAL;
+  int ret = receptec_uwb_remote_reboot(slot, &reply);
+  if (ret) { shell_error(shell, "reboot not confirmed or local remap failed: %d; query old/new EUI before retry", ret); return ret; }
+  shell_print(shell, "slot=%u txn=%u remote_status=%d reboot accepted; verify after restart", slot, reply.transaction, reply.status);
+  return reply.status < 0 ? reply.status : 0;
+ }
+ if ((!set && strcmp(argv[1], "get")) || argc < 4) return -EINVAL;
+ if (!strcmp(argv[3], "identity")) key = UWB_REMOTE_CONFIG_IDENTITY;
+ else if (!strcmp(argv[3], "peer")) key = UWB_REMOTE_CONFIG_PEER;
+ else if (!strcmp(argv[3], "enabled")) key = UWB_REMOTE_CONFIG_ENABLED;
+ else if (!strcmp(argv[3], "auto")) key = UWB_REMOTE_CONFIG_AUTO_RESPONDER;
+ else if (!strcmp(argv[3], "cycle")) key = UWB_REMOTE_CONFIG_CYCLE;
+ else if (!strcmp(argv[3], "role")) key = UWB_REMOTE_CONFIG_ROLE;
+ else return -EINVAL;
+ size_t value = 4;
+ if (key == UWB_REMOTE_CONFIG_PEER || key == UWB_REMOTE_CONFIG_ENABLED) {
+  if (argc <= value || parse_slot(shell, argv[value++], &index)) return -EINVAL;
+ }
+ if (!set && argc != value) return -EINVAL;
+ if (clear) {
+  if (key != UWB_REMOTE_CONFIG_PEER || argc != value) return -EINVAL;
+ } else if (set) {
+  if (key == UWB_REMOTE_CONFIG_IDENTITY || key == UWB_REMOTE_CONFIG_PEER) {
+   if (argc != value + 1 || parse_eui64(argv[value], data)) return -EINVAL;
+   length = 8;
+  } else if (key == UWB_REMOTE_CONFIG_ENABLED || key == UWB_REMOTE_CONFIG_AUTO_RESPONDER) {
+   if (argc != value + 1 || config_bool(argv[value], data)) return -EINVAL;
+   length = 1;
+  } else if (key == UWB_REMOTE_CONFIG_CYCLE) {
+   /* set <target> cycle <tag-slot> <base-slot> <period-ms> <autostart> <baseline-mm;0=measured> */
+   if (argc != value + 5 || parse_slot(shell, argv[value], &data[0]) ||
+       parse_slot(shell, argv[value+1], &data[1]) || config_bool(argv[value+3], &data[2])) return -EINVAL;
+   char *end; errno = 0;
+   unsigned long period = strtoul(argv[value+2], &end, 10);
+   if (errno || !*argv[value+2] || *end || period < 250 || period > 1000) return -EINVAL;
+   errno = 0; unsigned long baseline = strtoul(argv[value+4], &end, 10);
+   if (errno || !*argv[value+4] || *end || baseline > INT32_MAX) return -EINVAL;
+   if (baseline) data[2] |= 2;
+   sys_put_le32(period, data+4); sys_put_le32(baseline, data+8); length = 16;
+  } else { shell_error(shell, "role changes require another firmware build"); return -ENOTSUP; }
+ }
+ int ret = receptec_uwb_remote_config(slot, set ? 1 : 0, key, index, data, length, &reply);
+ if (ret) { shell_error(shell, "slot=%u configuration transport error=%d; outcome may be unknown", slot, ret); return ret; }
+ shell_print(shell, "slot=%u txn=%u remote_status=%d bytes=%u%s", slot,
+  reply.transaction, reply.status, reply.length, reply.status == 1 ? " saved; use uwb config reboot <slot> to apply" : "");
+ if (reply.status < 0) return reply.status;
+ if (reply.length == 8 && (key == 1 || key == 2)) {
+  char text[24]; format_eui64(reply.data, text); shell_print(shell, "EUI=%s", text);
+ } else if (key == 6 && reply.length == 1)
+  shell_print(shell, "role=%s", reply.data[0] == 0 ? "MASTER" : reply.data[0] == 1 ? "BASE" : "TAG");
+ else if (reply.length == 1) shell_print(shell, "value=%u", reply.data[0]);
+ else if (key == 5 && reply.length == 16)
+  shell_print(shell, "tag=%u base=%u period=%u autostart=%u baseline_mm=%u", reply.data[0], reply.data[1],
+   sys_get_le32(reply.data+4), reply.data[2]&1, sys_get_le32(reply.data+8));
+ else if (!reply.length && !set) shell_print(shell, "unset");
+ return 0;
+}
+
 SHELL_STATIC_SUBCMD_SET_CREATE(
-    sub_uwb, SHELL_CMD(status, NULL, "Show RECEPTEC radio state", cmd_uwb_status),
+    sub_uwb,
+    SHELL_CMD_ARG(config, NULL, "get|set <slot> identity|peer <index>|enabled <index>|auto|cycle|role; clear <slot> peer <index>; reboot <slot>", cmd_uwb_config, 3, SHELL_OPT_ARG_CHECK_SKIP),
+    SHELL_CMD(status, NULL, "Show RECEPTEC radio state", cmd_uwb_status),
     SHELL_CMD(identity, &sub_identity, "Show or configure local UWB identity", NULL),
     SHELL_CMD_ARG(sync, &sub_sync, "Periodic SYNC; `sync <slot>` uses 1000 ms", cmd_uwb_sync, 2, 1),
     SHELL_CMD(peer, &sub_peer, "Manage registered COLETEC peers", NULL),

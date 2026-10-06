@@ -72,3 +72,12 @@ target_include_directories(receptec_ble_range_tests PRIVATE ble_mocks ../../incl
 target_compile_features(receptec_ble_range_tests PRIVATE c_std_11)
 target_compile_options(receptec_ble_range_tests PRIVATE -Wall -Wextra -Werror -Wpedantic)
 add_test(NAME receptec_ble_range_tests COMMAND receptec_ble_range_tests)
+
+add_executable(receptec_uwb_remote_config_protocol_tests
+    remote_config_protocol_test.c
+    ../../src/receptec/uwb_protocol.c
+)
+target_include_directories(receptec_uwb_remote_config_protocol_tests PRIVATE ../../include)
+target_compile_features(receptec_uwb_remote_config_protocol_tests PRIVATE c_std_11)
+target_compile_options(receptec_uwb_remote_config_protocol_tests PRIVATE -Wall -Wextra -Werror -Wpedantic)
+add_test(NAME receptec_uwb_remote_config_protocol_tests COMMAND receptec_uwb_remote_config_protocol_tests)

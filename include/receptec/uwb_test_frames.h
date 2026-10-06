@@ -34,7 +34,7 @@ extern const uint8_t receptec_uwb_test_unknown_source[RECEPTEC_UWB_EUI64_SIZE];
  * Type byte with the high nibble zero that is not a defined packet type (bad_type).
  * 0x0-0xA are defined through RECEPTEC_UWB_RANGE_FINAL; 0xB-0xF remain reserved.
  */
-#define RECEPTEC_UWB_TEST_RESERVED_TYPE 0x0BU
+#define RECEPTEC_UWB_TEST_RESERVED_TYPE 0x0DU
 /* Reserved high-nibble bit set on an otherwise valid DATA_REQ type byte (bad_reserved). */
 #define RECEPTEC_UWB_TEST_RESERVED_BIT 0x10U
 /*
