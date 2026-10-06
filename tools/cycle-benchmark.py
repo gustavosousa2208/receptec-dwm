@@ -111,7 +111,7 @@ class Capture:
         enough_rounds = expected >= math.floor(self.args.seconds * 1000 / self.args.period_ms) - 3
         accepted = (complete and elapsed >= self.args.minimum_seconds and enough_rounds and expected > 0
                     and not error and not self.sequence_errors and not self.invalid_payloads
-                    and aligned / expected >= 0.99
+                    and aligned / expected >= self.args.minimum_success / 100
                     and all(item["success_percent"] >= self.args.minimum_success and not item["duplicates"]
                             and not item["cadence_errors"] and not item["deadline_errors"]
                             and not item["stale_events"] for item in stats.values()))

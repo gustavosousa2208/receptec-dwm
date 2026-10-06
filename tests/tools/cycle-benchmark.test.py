@@ -39,6 +39,16 @@ class BenchmarkTests(unittest.TestCase):
         self.assertFalse(result["accepted"])
         self.assertLess(result["pairs"]["A-T"]["success_percent"], 90)
 
+    def test_boundary_partial_round_does_not_require_99_percent_at_90_gate(self):
+        c = self.capture()
+        for round_id in range(1, 122):
+            for pair in range(3):
+                if (pair == 0 and round_id == 121) or (pair == 2 and round_id == 1):
+                    continue
+                c.rows[pair][round_id] = dict(status=0, distance_mm=1000, source=0)
+        with patch.object(module.time, "monotonic", return_value=60):
+            self.assertTrue(c.summary(complete=True)["accepted"])
+
     def test_accelerated_valid_capture_passes(self):
         c = self.capture()
         for round_id in range(1, 121):

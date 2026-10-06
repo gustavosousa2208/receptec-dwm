@@ -115,7 +115,7 @@ static void test_multibase_wire_and_distance(void)
 
 	memcpy(plan.initiator, master, 8U);
 	memcpy(plan.responder, base, 8U);
-	assert(receptec_uwb_plan_encode(payload, &plan) == RECEPTEC_UWB_OK);
+	assert(receptec_uwb_plan_encode(payload, sizeof(payload), &plan) == RECEPTEC_UWB_OK);
 	assert(payload[0] == 1U && payload[1] == 0U && payload[2] == 0x88U &&
 	       payload[9] == 0x11U && payload[10] == 2U && payload[11] == 1U);
 	assert(receptec_uwb_plan_decode(payload, 28U, &decoded_plan) ==
@@ -186,8 +186,9 @@ static void test_plan_v2_authorization(void)
 		.phase = RECEPTEC_UWB_PLAN_ARM, .pair_index = 1,
 		.round_id = (1ULL << 40), .report_mode = RECEPTEC_UWB_REPORT_AGGREGATE};
 	struct receptec_uwb_plan decoded;
-	assert(receptec_uwb_plan_encode(payload, &plan) == RECEPTEC_UWB_OK);
+	assert(receptec_uwb_plan_encode(payload, sizeof(payload), &plan) == RECEPTEC_UWB_OK);
 	assert(payload[0] == 2 && payload[28] == 50 && payload[29] == 0);
+	assert(receptec_uwb_plan_encode(payload, 28, &plan) == RECEPTEC_UWB_ERR_LENGTH);
 	assert(receptec_uwb_plan_decode(payload, sizeof(payload), &decoded) == RECEPTEC_UWB_OK);
 	assert(decoded.authorization_ms == 50 && decoded.round_id == plan.round_id);
 	assert(receptec_uwb_plan_decode(payload, 28, &decoded) != RECEPTEC_UWB_OK);
@@ -196,7 +197,7 @@ static void test_plan_v2_authorization(void)
 	payload[28] = 201;
 	assert(receptec_uwb_plan_decode(payload, 30, &decoded) != RECEPTEC_UWB_OK);
 	plan.authorization_ms = 0;
-	assert(receptec_uwb_plan_encode(payload, &plan) == RECEPTEC_UWB_OK);
+	assert(receptec_uwb_plan_encode(payload, sizeof(payload), &plan) == RECEPTEC_UWB_OK);
 	assert(receptec_uwb_plan_decode(payload, 28, &decoded) == RECEPTEC_UWB_OK);
 	assert(decoded.authorization_ms == 0);
 	assert(receptec_uwb_plan_decode(payload, 30, &decoded) != RECEPTEC_UWB_OK);

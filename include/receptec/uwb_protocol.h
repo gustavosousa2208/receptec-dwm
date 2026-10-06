@@ -150,7 +150,7 @@ void receptec_uwb_encode_dt_sampling(
 uint16_t receptec_uwb_decode_dt_sampling(
 	const uint8_t input[RECEPTEC_UWB_DT_SAMPLING_SIZE]);
 
-int receptec_uwb_plan_encode(uint8_t out[RECEPTEC_UWB_PLAN_SIZE],
+int receptec_uwb_plan_encode(uint8_t *out, size_t capacity,
 			     const struct receptec_uwb_plan *plan);
 int receptec_uwb_plan_decode(const uint8_t *data, size_t length,
 			     struct receptec_uwb_plan *plan);

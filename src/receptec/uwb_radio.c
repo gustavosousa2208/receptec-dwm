@@ -2086,7 +2086,7 @@ static int range_load_plan_frame(enum receptec_uwb_plan_phase phase,
 	frame.payload_length = plan.authorization_ms ? RECEPTEC_UWB_PLAN_V2_SIZE : RECEPTEC_UWB_PLAN_SIZE;
 	memcpy(plan.initiator, initiator, RECEPTEC_UWB_EUI64_SIZE);
 	memcpy(plan.responder, responder, RECEPTEC_UWB_EUI64_SIZE);
-	if (receptec_uwb_plan_encode(plan_bytes, &plan) != RECEPTEC_UWB_OK) {
+	if (receptec_uwb_plan_encode(plan_bytes, sizeof(plan_bytes), &plan) != RECEPTEC_UWB_OK) {
 		return -EINVAL;
 	}
 	memcpy(frame.destination, destination, RECEPTEC_UWB_EUI64_SIZE);
@@ -2675,7 +2675,7 @@ static int range_send_ack(const uint8_t destination[RECEPTEC_UWB_EUI64_SIZE],
 			  uint8_t sequence, uint64_t request_rx_ts,
 			  bool response_expected)
 {
-	uint64_t target = (request_rx_ts + range_us_to_dtu(2000U) + 511ULL) &
+	uint64_t target = (request_rx_ts + range_us_to_dtu(3000U) + 511ULL) &
 			  (RANGE_TIMESTAMP_MASK & ~511ULL);
 
 	return range_send_frame(RECEPTEC_UWB_ACK, destination, sequence, NULL,
@@ -2810,9 +2810,7 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 			continue;
 		}
 		rx_ts = range_read_rx_timestamp();
-		/* Backdate authorization to radio RX, conservatively rounding elapsed time up. */
-		uint64_t rx_age_dtu = (((uint64_t)dwt_readsystimestamphi32() << 8U) - rx_ts) & RANGE_TIMESTAMP_MASK;
-		frame_rx_ms = k_uptime_get() - (int64_t)((rx_age_dtu + 63897599ULL) / 63897600ULL);
+		frame_rx_ms = k_uptime_get();
 		dwt_readrxdata(rx_bytes, radio_len - RECEPTEC_UWB_FCS_SIZE, 0U);
 		{
 			int decode_rc = receptec_uwb_decode(
@@ -2833,6 +2831,11 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 				RECEPTEC_UWB_OK) {
 				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 				continue;
+			}
+			if (plan.phase != RECEPTEC_UWB_PLAN_ROUND_ARM) {
+				/* Backdate pair authorization to radio RX, rounding age up. */
+				uint64_t rx_age_dtu = (((uint64_t)dwt_readsystimestamphi32() << 8U) - rx_ts) & RANGE_TIMESTAMP_MASK;
+				frame_rx_ms = k_uptime_get() - (int64_t)((rx_age_dtu + 63897599ULL) / 63897600ULL);
 			}
 			/* M delegates A-T to this anchor. T reports the official distance
 			 * directly to M; the anchor never publishes a duplicate result. */

@@ -234,7 +234,7 @@ static bool valid_plan(const struct receptec_uwb_plan *plan)
 		plan->pair_index == 1U);
 }
 
-int receptec_uwb_plan_encode(uint8_t out[RECEPTEC_UWB_PLAN_SIZE],
+int receptec_uwb_plan_encode(uint8_t *out, size_t capacity,
 			     const struct receptec_uwb_plan *plan)
 {
 	if (out == NULL || plan == NULL) {
@@ -243,6 +243,8 @@ int receptec_uwb_plan_encode(uint8_t out[RECEPTEC_UWB_PLAN_SIZE],
 	if (!valid_plan(plan)) {
 		return RECEPTEC_UWB_ERR_RESERVED;
 	}
+	if (capacity < (plan->authorization_ms ? RECEPTEC_UWB_PLAN_V2_SIZE : RECEPTEC_UWB_PLAN_SIZE))
+		return RECEPTEC_UWB_ERR_LENGTH;
 	out[0] = plan->authorization_ms ? 2U : 1U;
 	if (plan->authorization_ms) put_le(&out[28], plan->authorization_ms, 2U);
 	out[1] = (uint8_t)plan->phase;
