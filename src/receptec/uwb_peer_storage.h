@@ -69,6 +69,7 @@ struct receptec_uwb_cycle_config {
 	bool autostart;
 	bool fixed;
 	uint32_t baseline_mm;
+	uint32_t period_ms;
 };
 int receptec_uwb_cycle_load(struct receptec_uwb_cycle_config *out);
 int receptec_uwb_cycle_save(const struct receptec_uwb_cycle_config *cfg);

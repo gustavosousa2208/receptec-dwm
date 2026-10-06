@@ -78,8 +78,30 @@ static void test_delegation_authorization_and_duplicates(void)
 		true, false, 1000, 1100) == RECEPTEC_UWB_DELEGATE_IGNORE);
 }
 
+static void test_accelerated_slots(void)
+{
+	for (uint32_t period = 300; period <= 1000; period++) {
+		int64_t slot = receptec_uwb_cycle_slot_ms(period);
+		assert(slot > 0);
+		assert(receptec_uwb_cycle_offset_for(0, period) >= RECEPTEC_UWB_CYCLE_ARM_MS);
+		for (uint8_t pair = 0; pair < 2; pair++)
+			assert(receptec_uwb_cycle_offset_for(pair, period) + slot ==
+			       receptec_uwb_cycle_offset_for(pair + 1, period));
+		assert(receptec_uwb_cycle_offset_for(2, period) + slot <= period - 75);
+		bool overrun;
+		assert(receptec_uwb_cycle_next_epoch_for(10000, 10000 + period - 1,
+			period, &overrun) == 10000 + period && !overrun);
+		assert(receptec_uwb_cycle_next_epoch_for(10000, 10000 + period + 1,
+			period, &overrun) == 10000 + 2 * period + 1 && overrun);
+	}
+	assert(receptec_uwb_cycle_slot_ms(1000) == 275);
+	assert(receptec_uwb_cycle_slot_ms(299) == -1);
+	assert(receptec_uwb_cycle_slot_ms(1001) == -1);
+}
+
 int main(void)
 {
+	test_accelerated_slots();
 	test_delegation_authorization_and_duplicates();
 	test_profile_slots_are_disjoint();
 	test_missing_tag_does_not_shift_base_slot();

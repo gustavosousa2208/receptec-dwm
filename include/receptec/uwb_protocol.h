@@ -19,6 +19,7 @@
 	(RECEPTEC_UWB_MAX_LOGICAL_SIZE - RECEPTEC_UWB_HEADER_SIZE)
 #define RECEPTEC_UWB_DT_SAMPLING_SIZE 2U
 #define RECEPTEC_UWB_PLAN_SIZE 28U
+#define RECEPTEC_UWB_PLAN_V2_SIZE 30U
 #define RECEPTEC_UWB_POLL_SIZE 9U
 #define RECEPTEC_UWB_RESPONSE_SIZE 19U
 #define RECEPTEC_UWB_FINAL_SIZE 24U
@@ -64,6 +65,8 @@ enum receptec_uwb_range_status {
 };
 
 struct receptec_uwb_plan {
+	/* Zero encodes legacy schema 1; schema 2 ARM/START carry 20..200 ms. */
+	uint16_t authorization_ms;
 	enum receptec_uwb_plan_phase phase;
 	uint64_t round_id;
 	uint8_t pair_index;

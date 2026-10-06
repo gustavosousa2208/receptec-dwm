@@ -77,11 +77,35 @@ body {
   </div>
 </div>
 <div class="card">
+  <h3>Tag position — MVP</h3>
+  <p>Coordinates relative to M=(0,0), A=(M–A,0). Calibration adds the entered offset to each raw range.</p>
+  <div id="positionValue">Waiting for a coherent round</div>
+  <div id="positionReason"></div>
+  <svg id="positionPlot" viewBox="-100 -100 1200 1200" style="width:100%;max-height:300px;background:#101827">
+    <line id="baselineLine" x1="0" y1="0" x2="1000" y2="0" stroke="#888"/>
+    <circle cx="0" cy="0" r="12" fill="#6af"/><circle id="anchorDot" cx="1000" cy="0" r="12" fill="#6af"/>
+    <circle id="tagDot" r="15" fill="#3d9" visibility="hidden"/>
+  </svg>
+  <form id="positionSettings">
+    <label>M–T offset (mm) <input id="offset0" type="number" value="0" step="1"></label>
+    <label>A–T offset (mm) <input id="offset1" type="number" value="0" step="1"></label>
+    <label>M–A offset (mm) <input id="offset2" type="number" value="0" step="1"></label><br>
+    <label>Mean window <input id="meanWindow" type="number" value="3" min="1" max="30" step="1"></label>
+    <label>Motion time constant (ms; 0=off) <input id="motionTau" type="number" value="1000" min="0" step="100"></label>
+    <label>Maximum speed (mm/s) <input id="maxSpeed" type="number" value="3000" min="1"></label>
+    <label>Half-plane <select id="halfPlane"><option value="1">Positive Y</option><option value="-1">Negative Y</option></select></label>
+    <button type="submit">Apply settings</button>
+  </form>
+  <p>Offsets start at zero: physical calibration is pending. Failed or geometrically inconsistent ranges do not create a new position. Old positions remain visible and marked as stale.</p>
+</div>
+<div class="card">
   <h3>Browser check</h3>
   <div style="font-size:12px;color:var(--dim)" id="diag">…</div>
 </div>
 
+<script src="uwb-position.js"></script>
 <script>
+const positionProcessor = UwbPosition.createProcessor();
 // Same 128-bit scheme as the COLETEC dashboard:
 // 0000xxxx-4550-5453-4154-4c4554454300.
 const UUID_BASE = '-4550-5453-4154-4c4554454300';
@@ -149,7 +173,39 @@ function render(i) {
     (valid ? '' : ' · failed (status ' + record.status + ')');
 }
 
-setInterval(() => { for (let i = 0; i < 3; i++) render(i); }, 250);
+function renderPosition() {
+  const state = positionProcessor.state(performance.now());
+  const label = document.getElementById('positionValue');
+  label.textContent = state.position ?
+    `x=${(state.position.xMm / 1000).toFixed(3)} m · y=${(state.position.yMm / 1000).toFixed(3)} m · ${state.mode} · age ${(state.ageMs / 1000).toFixed(1)} s` : 'No valid position';
+  document.getElementById('positionReason').textContent = state.diagnostic ? state.diagnostic.reason : '';
+  const dot = document.getElementById('tagDot');
+  dot.setAttribute('visibility', state.position ? 'visible' : 'hidden');
+  if (state.position) {
+    const base = state.distances ? state.distances.maMm : 1000;
+    const extent = Math.max(1000, base || 0, Math.abs(state.position.xMm), Math.abs(state.position.yMm)) * 1.2;
+    document.getElementById('positionPlot').setAttribute('viewBox', `${-extent} ${-extent} ${2 * extent} ${2 * extent}`);
+    document.getElementById('anchorDot').setAttribute('cx', base);
+    document.getElementById('baselineLine').setAttribute('x2', base);
+    dot.setAttribute('cx', state.position.xMm);
+    dot.setAttribute('cy', -state.position.yMm);
+    dot.setAttribute('fill', state.valid ? '#3d9' : '#e9a33b');
+    dot.setAttribute('r', extent / 45);
+  }
+}
+
+document.getElementById('positionSettings').addEventListener('submit', event => {
+  event.preventDefault();
+  try {
+    positionProcessor.configure({offsetsMm: [0,1,2].map(i => Number(document.getElementById('offset'+i).value)),
+      windowSize: Number(document.getElementById('meanWindow').value),
+      motionTauMs: Number(document.getElementById('motionTau').value),
+      maxSpeedMmS: Number(document.getElementById('maxSpeed').value),
+      halfPlane: Number(document.getElementById('halfPlane').value)});
+    renderPosition();
+  } catch (error) { document.getElementById('positionReason').textContent = error.message; }
+});
+setInterval(() => { for (let i = 0; i < 3; i++) render(i); renderPosition(); }, 250);
 
 function showLegacy(i, value, initial) {
   if (value.byteLength !== 5) return;
@@ -170,7 +226,9 @@ function showMetadata(value) {
     records[i] = {source: value.getUint8(offset + 2), status: value.getUint8(offset + 3),
       round: round.toString(), mm: value.getUint32(offset + 12, true),
       age: rawAge === 0xFFFFFFFF ? null : rawAge, received: performance.now()};
+    positionProcessor.ingest({pair: i, ...records[i]}, records[i].received);
     render(i);
+    renderPosition();
   }
 }
 

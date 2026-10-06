@@ -18,7 +18,7 @@ struct mock_settings {
 		      [RECEPTEC_UWB_PEER_NICKNAME_MAX_LEN - 1U];
 	size_t nick_lengths[RECEPTEC_UWB_MAX_PEERS];
 	bool nick_present[RECEPTEC_UWB_MAX_PEERS];
-	uint8_t cycle[12];
+	uint8_t cycle[16];
 	size_t cycle_len;
 	uint8_t round_limit[13];
 	size_t round_limit_len;
@@ -485,7 +485,7 @@ static void test_range_autostart_round_trip(void)
 
 static void test_cycle_integrity_and_validation(void)
 {
-	struct receptec_uwb_cycle_config cfg = {1U, 0U, true, false, 0U};
+	struct receptec_uwb_cycle_config cfg = {1U, 0U, true, false, 0U, 1000U};
 	struct receptec_uwb_cycle_config out = {0};
 
 	reset_mock();
@@ -493,6 +493,28 @@ static void test_cycle_integrity_and_validation(void)
 	assert(receptec_uwb_cycle_save(&cfg) == 0);
 	assert(receptec_uwb_cycle_load(&out) == 0);
 	assert(out.tag_slot == 1 && out.base_slot == 0 && out.autostart && !out.fixed);
+	assert(out.period_ms == 1000);
+	/* Legacy settings migrate in memory at 1 Hz without rewriting the record. */
+	uint32_t crc = UINT32_MAX;
+	for (size_t i = 0; i < 8; i++) {
+		crc ^= mock.cycle[i];
+		for (unsigned int bit = 0; bit < 8; bit++)
+			crc = (crc >> 1) ^ (0xedb88320U & (0U - (crc & 1U)));
+	}
+	crc = ~crc;
+	for (size_t i = 0; i < 4; i++) mock.cycle[8 + i] = (uint8_t)(crc >> (8 * i));
+	mock.cycle_len = 12;
+	assert(receptec_uwb_cycle_load(&out) == 0 && out.period_ms == 1000);
+	assert(mock.cycle_len == 12);
+	assert(receptec_uwb_cycle_save(&cfg) == 0);
+	cfg.period_ms = 299;
+	assert(receptec_uwb_cycle_save(&cfg) == -EINVAL);
+	cfg.period_ms = 500;
+	assert(receptec_uwb_cycle_save(&cfg) == 0);
+	assert(receptec_uwb_cycle_load(&out) == 0 && out.period_ms == 500);
+	cfg.period_ms = 1001;
+	assert(receptec_uwb_cycle_save(&cfg) == -EINVAL);
+	cfg.period_ms = 1000;
 	cfg.fixed = true;
 	assert(receptec_uwb_cycle_save(&cfg) == -EINVAL);
 	cfg.baseline_mm = 700;

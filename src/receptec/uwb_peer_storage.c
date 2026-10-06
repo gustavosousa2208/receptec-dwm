@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
 #include "uwb_peer_storage.h"
+#include "uwb_cycle_policy.h"
 
 #include <errno.h>
 #include <stddef.h>
@@ -550,17 +551,23 @@ static bool cycle_valid(const struct receptec_uwb_cycle_config *cfg)
 		cfg->base_slot < RECEPTEC_UWB_MAX_PEERS &&
 		cfg->tag_slot != cfg->base_slot &&
 		cfg->baseline_mm <= INT32_MAX &&
-		(!cfg->fixed || cfg->baseline_mm != 0U);
+		(!cfg->fixed || cfg->baseline_mm != 0U) &&
+		receptec_uwb_cycle_period_valid(cfg->period_ms);
 }
 
 int receptec_uwb_cycle_load(struct receptec_uwb_cycle_config *out)
 {
-	uint8_t data[12];
+	uint8_t data[16];
 	struct receptec_uwb_cycle_config cfg;
 	int ret;
 
 	if (out == NULL) { return -EINVAL; }
-	ret = record_load("uwb/cycle", data, sizeof(data));
+	/* Preserve the previous CRC-protected 12-byte record at the 1 Hz default. */
+	ssize_t len = settings_get_val_len("uwb/cycle");
+	if (len < 0) { return (int)len; }
+	if (len == 0) { return -ENOENT; }
+	if (len != 12 && len != 16) { return -EINVAL; }
+	ret = record_load("uwb/cycle", data, (size_t)len);
 	if (ret < 0) { return ret; }
 	if ((data[3] & ~3U) != 0U) { return -EINVAL; }
 	cfg.tag_slot = data[1];
@@ -568,6 +575,7 @@ int receptec_uwb_cycle_load(struct receptec_uwb_cycle_config *out)
 	cfg.autostart = (data[3] & 1U) != 0U;
 	cfg.fixed = (data[3] & 2U) != 0U;
 	cfg.baseline_mm = sys_get_le32(data + 4);
+	cfg.period_ms = len == 12 ? 1000U : sys_get_le32(data + 8);
 	if (!cycle_valid(&cfg)) { return -EINVAL; }
 	*out = cfg;
 	return 0;
@@ -575,13 +583,14 @@ int receptec_uwb_cycle_load(struct receptec_uwb_cycle_config *out)
 
 int receptec_uwb_cycle_save(const struct receptec_uwb_cycle_config *cfg)
 {
-	uint8_t data[12] = {1U};
+	uint8_t data[16] = {1U};
 
 	if (!cycle_valid(cfg)) { return -EINVAL; }
 	data[1] = cfg->tag_slot;
 	data[2] = cfg->base_slot;
 	data[3] = (cfg->autostart ? 1U : 0U) | (cfg->fixed ? 2U : 0U);
 	sys_put_le32(cfg->baseline_mm, data + 4);
+	sys_put_le32(cfg->period_ms, data + 8);
 	return record_save("uwb/cycle", data, sizeof(data));
 }
 

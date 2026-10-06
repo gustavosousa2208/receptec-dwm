@@ -2007,7 +2007,9 @@ static int range_wait_tx_done(void)
   if (remaining <= 0) break;
   (void)receptec_radio_wait_event(K_MSEC(remaining));
  }
- return dwt_readsysstatuslo() & DWT_INT_TXFRS_BIT_MASK ? 0 : -ETIMEDOUT;
+ if (dwt_readsysstatuslo() & DWT_INT_TXFRS_BIT_MASK) return 0;
+ dwt_forcetrxoff();
+ return -ETIMEDOUT;
 }
 
 static uint64_t range_timestamp_to_u64(const uint8_t timestamp[5])
@@ -2060,7 +2062,7 @@ static int range_load_plan_frame(enum receptec_uwb_plan_phase phase,
 				 const uint8_t responder[RECEPTEC_UWB_EUI64_SIZE],
 				 uint64_t round_id, uint8_t sequence)
 {
-	uint8_t plan_bytes[RECEPTEC_UWB_PLAN_SIZE];
+	uint8_t plan_bytes[RECEPTEC_UWB_PLAN_V2_SIZE];
 	struct receptec_uwb_plan plan = {
 		.phase = phase,
 		.round_id = round_id,
@@ -2076,6 +2078,12 @@ static int range_load_plan_frame(enum receptec_uwb_plan_phase phase,
 	size_t logical_length;
 	uint16_t radio_length;
 
+	if (cycle_deadline && phase != RECEPTEC_UWB_PLAN_ROUND_ARM) {
+		int64_t remaining = cycle_deadline - k_uptime_get() - 10;
+		if (remaining < 20) return -ETIMEDOUT;
+		plan.authorization_ms = (uint16_t)MIN(remaining, 200);
+	}
+	frame.payload_length = plan.authorization_ms ? RECEPTEC_UWB_PLAN_V2_SIZE : RECEPTEC_UWB_PLAN_SIZE;
 	memcpy(plan.initiator, initiator, RECEPTEC_UWB_EUI64_SIZE);
 	memcpy(plan.responder, responder, RECEPTEC_UWB_EUI64_SIZE);
 	if (receptec_uwb_plan_encode(plan_bytes, &plan) != RECEPTEC_UWB_OK) {
@@ -2117,16 +2125,14 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 	if (status < 0) {
 		return status;
 	}
-	status = range_load_plan_frame(phase, pair_index, peer_eui64, initiator,
-				       responder, round_id, sequence);
-	if (status < 0) {
-		return status;
-	}
 	/* Retry the identical frame/sequence once, within the caller's absolute
 	 * deadline. Duplicate ROUND_ARM/ARM ACKs do not renew authorization. */
 	status = -ETIMEDOUT;
 	for (unsigned int attempt = 0; attempt < attempts; attempt++) {
 	if (cycle_deadline && k_uptime_get() >= cycle_deadline) break;
+	status = range_load_plan_frame(phase, pair_index, peer_eui64, initiator,
+				       responder, round_id, sequence);
+	if (status < 0) break;
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 	dwt_setrxaftertxdelay(0U);
@@ -2341,7 +2347,6 @@ static int range_run_dstwr_initiator(uint8_t peer_slot,
 	}
 	dwt_setrxaftertxdelay(0U);
 	dwt_setrxtimeout(us_to_rx_timeout(UWB_RANGE_RESULT_TIMEOUT_US));
-	if (cycle_deadline && k_uptime_get() + 4 >= cycle_deadline) return -ETIMEDOUT;
 	if (cycle_deadline && k_uptime_get() + 4 >= cycle_deadline) {
 		(void)receptec_radio_irq_enable(false); return -ETIMEDOUT;
 	}
@@ -2624,6 +2629,16 @@ static int range_send_frame(enum receptec_uwb_packet_type type,
 
 		dwt_setdelayedtrxtime((uint32_t)(raw >> 8U));
 	}
+	if (cycle_deadline) {
+		int64_t remaining = cycle_deadline - k_uptime_get();
+		uint64_t now_dtu = (uint64_t)dwt_readsystimestamphi32() << 8U;
+		uint64_t delay_dtu = delayed ? (target_ts - now_dtu) & RANGE_TIMESTAMP_MASK : 0;
+		/* Reserve three ms for software/airtime; reject wrapped/past targets. */
+		if (remaining <= 3 || (delayed && delay_dtu > range_us_to_dtu((uint32_t)(remaining - 3) * 1000U))) {
+			dwt_forcetrxoff();
+			return -ETIMEDOUT;
+		}
+	}
 	if (dwt_starttx((delayed ? DWT_START_TX_DELAYED : DWT_START_TX_IMMEDIATE) |
 			(response_expected ? DWT_RESPONSE_EXPECTED : 0)) != DWT_SUCCESS) {
 		return -ETIME;
@@ -2693,8 +2708,11 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 	bool delegate_armed = false;
 	uint8_t delegate_peer[8] = {0};
 	int64_t delegate_arm_ms = 0;
+	int64_t delegate_deadline = 0;
 	bool armed = false;
+	bool arm_seen = false;
 	int64_t arm_ms = 0;
+	int64_t arm_deadline = 0;
 	uint64_t poll_rx_ts = 0U, response_actual_ts = 0U;
 	struct receptec_uwb_twr_response response_msg = {0};
 	int64_t deadline;
@@ -2727,25 +2745,51 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 		uint16_t radio_len;
 		uint8_t ranging;
 		uint64_t rx_ts;
+		int64_t frame_rx_ms;
 
 		if (remaining_ms <= 0) {
 			break;
 		}
+		if (armed && k_uptime_get() >= arm_deadline) {
+			armed = false;
+			cycle_deadline = 0;
+			dwt_forcetrxoff();
+			clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+			(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+		}
 		if (receptec_round_arm_expired(armed, arm_ms, k_uptime_get())) {
 			armed = false;
+			cycle_deadline = 0;
+			dwt_forcetrxoff();
+			clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+			(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 		}
 		if (armed) {
 			/* Wake to expire an abandoned exchange even on quiet air. */
 			remaining_ms = MIN(remaining_ms, arm_ms + RECEPTEC_UWB_ARM_WINDOW_MS + 1 -
 							     k_uptime_get());
+			remaining_ms = MIN(remaining_ms, arm_deadline - k_uptime_get());
 			if (remaining_ms <= 0) {
 				continue;
 			}
 		}
 		if (!(dwt_readsysstatuslo() & DWT_INT_RXFCG_BIT_MASK))
 			(void)receptec_radio_wait_event(K_MSEC(remaining_ms));
+		if (armed && k_uptime_get() >= arm_deadline) {
+			armed = false;
+			cycle_deadline = 0;
+			dwt_forcetrxoff();
+			clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+			(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+			continue;
+		}
 		if (receptec_round_arm_expired(armed, arm_ms, k_uptime_get())) {
 			armed = false;
+			cycle_deadline = 0;
+			dwt_forcetrxoff();
+			clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+			(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+			continue;
 		}
 		radio_status = dwt_readsysstatuslo();
 		if ((radio_status & SYS_STATUS_ALL_RX_TO) != 0U ||
@@ -2766,6 +2810,9 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 			continue;
 		}
 		rx_ts = range_read_rx_timestamp();
+		/* Backdate authorization to radio RX, conservatively rounding elapsed time up. */
+		uint64_t rx_age_dtu = (((uint64_t)dwt_readsystimestamphi32() << 8U) - rx_ts) & RANGE_TIMESTAMP_MASK;
+		frame_rx_ms = k_uptime_get() - (int64_t)((rx_age_dtu + 63897599ULL) / 63897600ULL);
 		dwt_readrxdata(rx_bytes, radio_len - RECEPTEC_UWB_FCS_SIZE, 0U);
 		{
 			int decode_rc = receptec_uwb_decode(
@@ -2811,11 +2858,20 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 						delegate_arm_ms, k_uptime_get());
 					if (action == RECEPTEC_UWB_DELEGATE_ARM) {
 						delegate_armed = true;
-						delegate_arm_ms = k_uptime_get();
+						delegate_arm_ms = frame_rx_ms;
+						delegate_deadline = frame_rx_ms +
+							(plan.authorization_ms ? plan.authorization_ms : 200);
 						memcpy(delegate_peer, plan.responder, 8);
+					}
+					if (action != RECEPTEC_UWB_DELEGATE_IGNORE && delegate_armed) {
+						delegate_deadline = MIN(delegate_deadline, frame_rx_ms +
+							(plan.authorization_ms ? plan.authorization_ms : 200));
+						if (k_uptime_get() >= delegate_deadline)
+							action = RECEPTEC_UWB_DELEGATE_IGNORE;
 					}
 					bool rearm = action == RECEPTEC_UWB_DELEGATE_RUN || action == RECEPTEC_UWB_DELEGATE_IGNORE;
 					if (action != RECEPTEC_UWB_DELEGATE_IGNORE) {
+						cycle_deadline = delegate_deadline;
 						int ret = range_send_ack(master_eui64, frame.sequence, rx_ts, true);
 						rearm = rearm || ret < 0;
 						k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
@@ -2826,7 +2882,7 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 						 * misses the delayed margin; M keeps the result window open. */
 						if (action == RECEPTEC_UWB_DELEGATE_RUN) {
 							delegated = true;
-							cycle_deadline = delegate_arm_ms + 200;
+							cycle_deadline = delegate_deadline;
 							ret = range_run_dstwr_initiator(tag_slot, delegate_peer, round_id, 1);
 							cycle_deadline = 0;
 							k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
@@ -2836,6 +2892,7 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 							else cycle_failure[1]++;
 							k_mutex_unlock(&uwb_peer_mutex);
 						}
+						cycle_deadline = 0;
 					}
 					(void)receptec_radio_irq_enable(true);
 					if (rearm)
@@ -2878,6 +2935,9 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 						delegated = false;
 						delegate_armed = false;
 						armed = false;
+						arm_seen = false;
+						response_actual_ts = 0;
+						cycle_deadline = 0;
 						deadline = k_uptime_get() + 1100;
 					}
 				}
@@ -2903,10 +2963,21 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 				continue;
 			}
-			if (!armed) {
-				arm_ms = k_uptime_get();
+			if (!arm_seen) {
+				arm_ms = frame_rx_ms;
+				arm_deadline = frame_rx_ms +
+					(plan.authorization_ms ? plan.authorization_ms : 200);
+				arm_seen = true;
 				armed = true;
+				response_actual_ts = 0;
 			}
+			arm_deadline = MIN(arm_deadline, frame_rx_ms +
+				(plan.authorization_ms ? plan.authorization_ms : 200));
+			if (!armed || k_uptime_get() >= arm_deadline) {
+				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+				continue;
+			}
+			cycle_deadline = arm_deadline;
 			if (range_send_ack(master_eui64, frame.sequence, rx_ts, true) < 0) {
 				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 			}
@@ -3018,7 +3089,7 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 							     false, 0U, NULL, true) < 0) {
 						break;
 					}
-					ack_deadline = k_uptime_get() + 20;
+					ack_deadline = MIN(k_uptime_get() + 20, arm_deadline);
 					while (k_uptime_get() < ack_deadline) {
 						uint32_t ack_radio_status;
 						int64_t ack_remaining_ms =
@@ -3084,6 +3155,7 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 		}
 		(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 	}
+	cycle_deadline = 0;
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 	(void)receptec_radio_irq_enable(false);
@@ -3306,10 +3378,10 @@ static void cycle_execute(void)
 		}
 		for (uint8_t pair = 0; pair < 3; pair++) {
 			int i = pair == 0 ? 0 : 1;
-			int64_t offset = receptec_uwb_cycle_offset(pair);
+			int64_t offset = receptec_uwb_cycle_offset_for(pair, cfg.period_ms);
 			if (!cycle_wait_until(start + offset))
 				goto stopped;
-			cycle_deadline = receptec_uwb_cycle_slot_end(start, pair);
+			cycle_deadline = start + offset + receptec_uwb_cycle_slot_ms(cfg.period_ms);
 			int64_t before = k_uptime_get();
 			if (pair == 2 && cfg.fixed) {
 #if defined(CONFIG_BT)
@@ -3371,7 +3443,7 @@ static void cycle_execute(void)
 		}
 		cycle_deadline = 0;
 		bool overrun;
-		start = receptec_uwb_cycle_next_epoch(start, k_uptime_get(), &overrun);
+		start = receptec_uwb_cycle_next_epoch_for(start, k_uptime_get(), cfg.period_ms, &overrun);
 		if (overrun) {
 			k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 			cycle_overruns++;
@@ -4218,6 +4290,10 @@ int receptec_uwb_cycle_configure(const struct receptec_uwb_cycle_config *cfg)
 	    !memcmp(tag, base, 8) || !memcmp(tag, receptec_eui, 8) ||
 	    !memcmp(base, receptec_eui, 8)) {
 		ret = -EINVAL;
+		goto out;
+	}
+	if (cycle_running && cfg->period_ms != cycle_config.period_ms) {
+		ret = -EBUSY;
 		goto out;
 	}
 	ret = receptec_uwb_cycle_save(cfg);

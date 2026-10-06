@@ -218,11 +218,12 @@ static bool valid_mode(enum receptec_uwb_report_mode mode)
 
 static bool valid_plan(const struct receptec_uwb_plan *plan)
 {
-	if (plan == NULL || !valid_mode(plan->report_mode)) {
+	if (plan == NULL || !valid_mode(plan->report_mode) ||
+	    (plan->authorization_ms && (plan->authorization_ms < 20U || plan->authorization_ms > 200U))) {
 		return false;
 	}
 	if (plan->phase == RECEPTEC_UWB_PLAN_ROUND_ARM) {
-		return plan->pair_index == 0xFFU;
+		return plan->pair_index == 0xFFU && plan->authorization_ms == 0U;
 	}
 	if (plan->phase != RECEPTEC_UWB_PLAN_ARM &&
 	    plan->phase != RECEPTEC_UWB_PLAN_START) {
@@ -242,7 +243,8 @@ int receptec_uwb_plan_encode(uint8_t out[RECEPTEC_UWB_PLAN_SIZE],
 	if (!valid_plan(plan)) {
 		return RECEPTEC_UWB_ERR_RESERVED;
 	}
-	out[0] = 1U;
+	out[0] = plan->authorization_ms ? 2U : 1U;
+	if (plan->authorization_ms) put_le(&out[28], plan->authorization_ms, 2U);
 	out[1] = (uint8_t)plan->phase;
 	put_le(&out[2], plan->round_id, 8U);
 	out[10] = plan->pair_index;
@@ -258,12 +260,16 @@ int receptec_uwb_plan_decode(const uint8_t *data, size_t length,
 	if (data == NULL || plan == NULL) {
 		return RECEPTEC_UWB_ERR_ARGUMENT;
 	}
-	if (length != RECEPTEC_UWB_PLAN_SIZE) {
+	if (length != RECEPTEC_UWB_PLAN_SIZE && length != RECEPTEC_UWB_PLAN_V2_SIZE) {
 		return RECEPTEC_UWB_ERR_LENGTH;
 	}
-	if (data[0] != 1U) {
+	if (!((data[0] == 1U && length == RECEPTEC_UWB_PLAN_SIZE) ||
+	      (data[0] == 2U && length == RECEPTEC_UWB_PLAN_V2_SIZE))) {
 		return RECEPTEC_UWB_ERR_RESERVED;
 	}
+	plan->authorization_ms = data[0] == 2U ? (uint16_t)get_le(&data[28], 2U) : 0U;
+	if (data[0] == 2U && data[1] != RECEPTEC_UWB_PLAN_ROUND_ARM && plan->authorization_ms == 0U)
+		return RECEPTEC_UWB_ERR_RESERVED;
 	plan->phase = (enum receptec_uwb_plan_phase)data[1];
 	plan->round_id = get_le(&data[2], 8U);
 	plan->pair_index = data[10];

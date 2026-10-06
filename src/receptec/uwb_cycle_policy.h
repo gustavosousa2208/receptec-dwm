@@ -9,10 +9,26 @@
 #define RECEPTEC_UWB_CYCLE_ARM_MS 80
 #define RECEPTEC_UWB_CYCLE_SLOT_MS 275
 
-/* The master serializes all three pairs within the same one-second round. */
+static inline bool receptec_uwb_cycle_period_valid(uint32_t period)
+{
+	return period >= 300U && period <= 1000U;
+}
+
+static inline int64_t receptec_uwb_cycle_slot_ms(uint32_t period)
+{
+	return receptec_uwb_cycle_period_valid(period) ? (int64_t)((period - 175U) / 3U) : -1;
+}
+
+static inline int64_t receptec_uwb_cycle_offset_for(uint8_t pair, uint32_t period)
+{
+	int64_t slot = receptec_uwb_cycle_slot_ms(period);
+	return pair < 3U && slot > 0 ? 100 + slot * pair : -1;
+}
+
+/* The master serializes all pairs; the qualified default remains one Hz. */
 static inline int64_t receptec_uwb_cycle_offset(uint8_t pair)
 {
-	return pair < 3U ? 100 + 275 * pair : -1;
+	return receptec_uwb_cycle_offset_for(pair, RECEPTEC_UWB_CYCLE_PERIOD_MS);
 }
 
 static inline int64_t receptec_uwb_cycle_slot_end(int64_t epoch, uint8_t pair)
@@ -20,6 +36,14 @@ static inline int64_t receptec_uwb_cycle_slot_end(int64_t epoch, uint8_t pair)
 	int64_t offset = receptec_uwb_cycle_offset(pair);
 
 	return offset < 0 ? -1 : epoch + offset + RECEPTEC_UWB_CYCLE_SLOT_MS;
+}
+
+static inline int64_t receptec_uwb_cycle_next_epoch_for(int64_t epoch, int64_t now,
+						 uint32_t period, bool *overrun)
+{
+	int64_t next = epoch + period;
+	*overrun = now > next;
+	return *overrun ? now + period : next;
 }
 
 /* No catch-up traffic: a missed next epoch starts a fresh period from now. */

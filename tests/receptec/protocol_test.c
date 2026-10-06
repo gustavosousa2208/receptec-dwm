@@ -179,8 +179,32 @@ static void test_multibase_wire_and_distance(void)
 					&millimeters) == RECEPTEC_UWB_ERR_RESERVED);
 }
 
+static void test_plan_v2_authorization(void)
+{
+	uint8_t payload[RECEPTEC_UWB_PLAN_V2_SIZE];
+	struct receptec_uwb_plan plan = {.authorization_ms = 50,
+		.phase = RECEPTEC_UWB_PLAN_ARM, .pair_index = 1,
+		.round_id = (1ULL << 40), .report_mode = RECEPTEC_UWB_REPORT_AGGREGATE};
+	struct receptec_uwb_plan decoded;
+	assert(receptec_uwb_plan_encode(payload, &plan) == RECEPTEC_UWB_OK);
+	assert(payload[0] == 2 && payload[28] == 50 && payload[29] == 0);
+	assert(receptec_uwb_plan_decode(payload, sizeof(payload), &decoded) == RECEPTEC_UWB_OK);
+	assert(decoded.authorization_ms == 50 && decoded.round_id == plan.round_id);
+	assert(receptec_uwb_plan_decode(payload, 28, &decoded) != RECEPTEC_UWB_OK);
+	payload[28] = 19;
+	assert(receptec_uwb_plan_decode(payload, 30, &decoded) != RECEPTEC_UWB_OK);
+	payload[28] = 201;
+	assert(receptec_uwb_plan_decode(payload, 30, &decoded) != RECEPTEC_UWB_OK);
+	plan.authorization_ms = 0;
+	assert(receptec_uwb_plan_encode(payload, &plan) == RECEPTEC_UWB_OK);
+	assert(receptec_uwb_plan_decode(payload, 28, &decoded) == RECEPTEC_UWB_OK);
+	assert(decoded.authorization_ms == 0);
+	assert(receptec_uwb_plan_decode(payload, 30, &decoded) != RECEPTEC_UWB_OK);
+}
+
 int main(void)
 {
+	test_plan_v2_authorization();
 	test_sync_vector();
 	test_response_and_rejection();
 	test_ack_matching_rejects_stale_sequence();

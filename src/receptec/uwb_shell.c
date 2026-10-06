@@ -1035,7 +1035,7 @@ static int cmd_uwb_range_autostart(const struct shell *shell, size_t argc, char 
 
 static int cmd_cycle(const struct shell *shell, size_t argc, char **argv)
 {
-	struct receptec_uwb_cycle_config cfg = {0};
+	struct receptec_uwb_cycle_config cfg = {.period_ms = 1000U};
 	bool running;
 	uint32_t success[3], failure[3], max_ms[3], overruns;
 	int error[3]; uint8_t phase[3];
@@ -1043,9 +1043,9 @@ static int cmd_cycle(const struct shell *shell, size_t argc, char **argv)
 	int ret = receptec_uwb_cycle_get(&cfg, &running, success, failure, max_ms, &overruns);
 	if (!strcmp(argv[1], "status")) {
 		shell_print(shell,
-			    "cycle configured=%d running=%d period=1000 tag=%u base_a=%u "
+			    "cycle configured=%d running=%d period=%u tag=%u base_a=%u "
 			    "autostart=%d baseline=%s baseline_mm=%u overruns=%u",
-			    ret == 0, running, cfg.tag_slot, cfg.base_slot, cfg.autostart,
+			    ret == 0, running, cfg.period_ms, cfg.tag_slot, cfg.base_slot, cfg.autostart,
 			    cfg.fixed ? "fixed" : "measured", cfg.baseline_mm, overruns);
 		for (int i = 0; i < 3; i++)
 			shell_print(shell, "pair=%d successes=%u failures=%u max_ms=%u last_error=%d phase=%u", i,
@@ -1060,6 +1060,14 @@ static int cmd_cycle(const struct shell *shell, size_t argc, char **argv)
 		if (parse_slot(shell, argv[2], &cfg.tag_slot) ||
 		    parse_slot(shell, argv[3], &cfg.base_slot))
 			return -EINVAL;
+		ret = receptec_uwb_cycle_configure(&cfg);
+	} else if (ret == 0 && !strcmp(argv[1], "period") && argc == 3) {
+		char *end;
+		errno = 0;
+		unsigned long value = strtoul(argv[2], &end, 10);
+		if (errno || end == argv[2] || *end || value < 300 || value > 1000)
+			return -EINVAL;
+		cfg.period_ms = (uint32_t)value;
 		ret = receptec_uwb_cycle_configure(&cfg);
 	} else if (ret == 0 && !strcmp(argv[1], "autostart") && argc == 3 &&
 		   (!strcmp(argv[2], "on") || !strcmp(argv[2], "off"))) {
@@ -1093,7 +1101,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
     sub_range,
     SHELL_CMD_ARG(cycle, NULL,
 		  "cycle configure <tag_slot> <base_a_slot>|baseline measured|baseline "
-		  "fixed <mm>|autostart on|off|start|stop|status",
+		  "fixed <mm>|period <300..1000 ms> (stopped)|autostart on|off|start|stop|status",
 		  cmd_cycle, 2, 2),
     SHELL_CMD_ARG(start, NULL,
 		  "Start periodic DS-TWR round: start <slot> [period_ms] "
