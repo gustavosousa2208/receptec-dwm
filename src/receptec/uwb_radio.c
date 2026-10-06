@@ -3182,6 +3182,7 @@ static void range_round(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 static void range_auto_window(void)
 {
 	uint8_t slot;
+	bool listened = false;
 
 	for (slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
 		uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
@@ -3192,9 +3193,14 @@ static void range_auto_window(void)
 		int ret;
 
 		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
-		usable = range_auto_enabled && radio_ready &&
-			peer_registry_ready && !poll_running &&
-			receptec_uwb_peer_registry_get(&peer_registry, slot,
+		if (!range_auto_enabled || !radio_ready ||
+		    !peer_registry_ready || poll_running) {
+			k_mutex_unlock(&uwb_peer_mutex);
+			/* Back off only for unavailable hardware or another radio owner. */
+			k_msleep(200);
+			return;
+		}
+		usable = receptec_uwb_peer_registry_get(&peer_registry, slot,
 						       eui64) == 0 &&
 			peer_enabled[slot];
 		if (usable) {
@@ -3202,14 +3208,10 @@ static void range_auto_window(void)
 		}
 		k_mutex_unlock(&uwb_peer_mutex);
 		if (!usable) {
-			/*
-			 * Radio not up yet (early boot) or responder busy:
-			 * back off instead of touching the DW chip or
-			 * spinning the window.
-			 */
-			k_msleep(200);
+			/* Empty/disabled slots must not create gaps in radio listening. */
 			continue;
 		}
+		listened = true;
 		window_ms = k_uptime_get();
 		ret = range_respond_once(slot, RANGE_AUTO_PAIR_INDEX,
 					 RANGE_AUTO_SLOT_WINDOW_MS,
@@ -3229,6 +3231,10 @@ static void range_auto_window(void)
 			break;
 		}
 		k_mutex_unlock(&uwb_peer_mutex);
+	}
+	if (!listened) {
+		/* No commissioned enabled peers: avoid a busy loop. */
+		k_msleep(200);
 	}
 }
 
@@ -3253,7 +3259,7 @@ static void range_thread_entry(void *unused_a, void *unused_b, void *unused_c)
 			range_auto_window();
 		}
 		if (k_sem_take(&range_start_sem,
-			       auto_on ? K_MSEC(200) : K_FOREVER) != 0) {
+			       auto_on ? K_NO_WAIT : K_FOREVER) != 0) {
 			continue;
 		}
 		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
