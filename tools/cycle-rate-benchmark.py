@@ -43,6 +43,7 @@ def set_period(nick, period):
     current = state(console(nick, f'uwb range cycle period {period}', 'uwb range cycle start', 'uwb range cycle status'))
     if current['running'] != '1' or current['period'] != str(period):
         raise RuntimeError('Requested period/start not confirmed')
+    return current
 
 
 async def advertiser_present(address):
@@ -90,8 +91,7 @@ def run(args):
             '--output', str(args.output / 'capture')], timeout=args.seconds + 120)
         return result
     finally:
-        set_period(args.nick, int(initial['period']))
-        restored = state(console(args.nick, 'uwb range cycle status'))
+        restored = set_period(args.nick, int(initial['period']))
         if any(restored[key] != initial[key] for key in ('configured', 'running', 'period', 'tag', 'base', 'autostart', 'baseline', 'baseline_mm')):
             raise RuntimeError('Restoration differs from initial configuration')
         (args.output / 'restored-state.json').write_text(json.dumps(restored, indent=2) + '\n')
