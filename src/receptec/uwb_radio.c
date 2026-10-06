@@ -47,14 +47,14 @@
 #include "deca_private.h"
 
 /*
- * DW3110 antenna delay, calibrated 2026-10-02 against two known A-B
+ * DW3110 antenna delay, calibrated 2026-10-02 against two known M-A
  * distances (receptec-qorvo <-> fake-coletec-0, both DW3110): 0.54m and
  * 1.5m. Previous value (16385) was Qorvo's generic, uncalibrated default,
  * shared uncritically across every radio in this project regardless of
  * chip generation (also used as-is for the DW3720 tag, which this
  * calibration does not touch -- no independent ground-truth distance was
- * available for A-T/B-T, see atletec-1t2.8). Measured bias before this fix
- * was consistently short: A-B read ~520-580mm at 0.54m true and
+ * available for M-T/A-T, see atletec-1t2.8). Measured bias before this fix
+ * was consistently short: M-A read ~520-580mm at 0.54m true and
  * ~1540-1620mm at 1.5m true. The two points disagree by more than their
  * own sampling noise (implied offset +41mm at 0.54m vs +71mm at 1.5m),
  * which a 2-point fit can't distinguish from a real inter-radio clock-rate
@@ -420,9 +420,14 @@ int receptec_uwb_radio_init(void)
 	if (receptec_uwb_range_auto_load(&range_auto_enabled) == 0 && range_auto_enabled) {
 		printk("Range auto-responder restored: on\n");
 	}
-	cycle_config_valid = receptec_uwb_cycle_load(&cycle_config) == 0;
+	int cycle_load_ret = receptec_uwb_cycle_load(&cycle_config);
+	cycle_config_valid = cycle_load_ret == 0;
 	range_autostart_set = receptec_uwb_range_autostart_load(&range_autostart) == 0;
 
+	if (cycle_load_ret != 0 && cycle_load_ret != -ENOENT) {
+		printk("Range cycle configuration invalid: %d; autostart blocked\n", cycle_load_ret);
+		range_autostart_set = false;
+	}
 	peer_registry_ready = true;
 
 	k_mutex_unlock(&uwb_peer_mutex);
@@ -1954,7 +1959,7 @@ int receptec_uwb_test_abort(void)
 }
 
 /* ---- Minimal DS-TWR round (contract UWB v1.2 S5-S9), pair_index taken from
- * CONFIG_RECEPTEC_FIXED_ANCHOR_ID (0=A-T, 1=B-T) ----
+ * CONFIG_RECEPTEC_FIXED_ANCHOR_ID (0=M-T, 1=A-T) ----
  *
  * See the scope note on receptec_uwb_range_start() in uwb_radio.h: this is a
  * proof of concept, not the full master state machine. It owns the radio the
@@ -2458,7 +2463,7 @@ static int range_await_result(uint8_t peer_slot, const uint8_t peer_eui64[RECEPT
 /*
  * Passively wait for a RANGE_RESULT from `peer_eui64` for `pair_index`,
  * without having initiated anything this round -- used on the master to
- * see the B-T pair's result, which contract UWB v1.2 S2.1 always
+ * see the A-T pair's result, which contract UWB v1.2 S2.1 always
  * addresses to the master even though B (not A) initiated that pair.
  * Unlike range_await_result(), there is no round_id to match: the master
  * never participated in B's ROUND_ARM/ARM for a pair it did not initiate,
@@ -2533,7 +2538,7 @@ static int range_listen_once(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 		*out_round_id = result.round_id;
 		status = 0;
 #if defined(CONFIG_BT)
-		/* Overheard pair (e.g. B-T uplinked to us): same dashboard feed. */
+		/* Overheard pair (e.g. A-T uplinked to us): same dashboard feed. */
 		receptec_ble_range_publish(pair_index, *out_status,
 					   *out_status == RECEPTEC_UWB_RANGE_OK ?
 					   *out_distance_mm :
@@ -2653,8 +2658,8 @@ static int range_send_ack(const uint8_t destination[RECEPTEC_UWB_EUI64_SIZE],
  *
  * This is the first responder-side implementation in the RECEPTEC codebase:
  * until now only coletec-tag (the COLETEC tag, which is always a responder
- * for A-T and B-T) had this half of the protocol. Pair A-B (pair_index=2,
- * initiator=A, responder=B) needs a RECEPTEC-family board to play
+ * for M-T and A-T) had this half of the protocol. Pair M-A (pair_index=2,
+ * initiator=M, responder=A) needs a RECEPTEC-family board to play
  * responder, which is why this exists. Same proof-of-concept scope as the
  * initiator side: one round, no retry, software deadline instead of the
  * contract's exact per-phase windows.
@@ -3260,7 +3265,7 @@ stopped:
 
 /*
  * Background auto-responder: one listen window per commissioned, enabled
- * peer for the A-B pair (the only pair where a RECEPTEC-family board is the
+ * peer for the M-A pair (the only pair where a RECEPTEC-family board is the
  * responder). Answers rounds without a manual `uwb range respond` per round.
  * poll_running is held across each window so an initiator command fails with
  * -EBUSY instead of fighting for the radio mid-exchange.

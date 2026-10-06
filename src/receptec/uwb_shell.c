@@ -722,8 +722,8 @@ static int cmd_uwb_lna(const struct shell *shell, size_t argc, char **argv)
  * uwb_radio.h: no simultaneous multi-pair scheduling, no retry, in-RAM
  * round_id. Shares the radio with poll/sync/schedule, so it refuses to
  * start while any of those run. pair_index defaults to this board's own
- * CONFIG_RECEPTEC_FIXED_ANCHOR_ID (0=A-T on the master build, 1=B-T on the
- * fixed-anchor build); pass it explicitly to drive A-B (pair_index=2) from
+ * CONFIG_RECEPTEC_FIXED_ANCHOR_ID (0=M-T on the master build, 1=A-T on the
+ * fixed-anchor build); pass it explicitly to drive M-A (pair_index=2) from
  * the master against a base peer.
  */
 static int cmd_uwb_range_start(const struct shell *shell, size_t argc, char **argv)
@@ -1262,7 +1262,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
     SHELL_CMD_ARG(sync, &sub_sync, "Periodic SYNC; `sync <slot>` uses 1000 ms", cmd_uwb_sync, 2, 1),
     SHELL_CMD(peer, &sub_peer, "Manage registered COLETEC peers", NULL),
     SHELL_CMD(schedule, &sub_schedule, "Configure per-peer UWB schedule", NULL),
-    SHELL_CMD(range, &sub_range, "A-T DS-TWR round (proof of concept)", NULL),
+    SHELL_CMD(range, &sub_range, "M-T DS-TWR round (proof of concept)", NULL),
     SHELL_CMD_ARG(stop, NULL, "Send STOP (requires timeout config): stop <slot>", cmd_uwb_stop, 2,
 		  0),
     SHELL_CMD(poll, &sub_poll, "Periodic DATA_REQ polling", NULL),

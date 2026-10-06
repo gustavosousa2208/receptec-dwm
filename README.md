@@ -332,3 +332,52 @@ address.
 
 Qualification evidence and unfinished test results remain outside repository
 tracking until the validation campaign is complete.
+
+
+## Continuous two-pair bench profile
+
+Names are M=MASTER (`receptec-qorvo`), A=BASE A (`fake-coletec-0-anchor`),
+B=the separate BASE B (`receptec-qorvo-anchor`), T=TAG (`prod-coletec-qorvo`).
+Historical three-node logs used A=MASTER and B=BASE A; translate their A-T,
+B-T, A-B as M-T, A-T, M-A. Pair indices remain0=M-T,1=A-T,2=M-A.
+
+The canonical current contract is the1.4 profile in `contracts/`; this bench
+profile performs M-T and M-A once per1000ms, at offsets100 and650ms. A-T and
+the new BASE B are not scheduled. It publishes to the MASTER's BLE service;
+it does not implement full STREAM/AGGREGATE forwarding to the tag.
+
+For commissioned MASTER slots1=TAG and0=BASE A:
+
+```text
+uwb range stop
+uwb range cycle configure 1 0
+uwb range cycle baseline measured
+uwb range cycle autostart on
+uwb range cycle start
+uwb range cycle status
+```
+
+Use `uwb range cycle baseline fixed <millimetres>` to substitute a local
+constant for M-A without radio measurements of that pair. The dashboard
+labels it **Constant**; it is not evidence of a measured/calibrated distance.
+Return with `baseline measured`. Configuration changes apply next round.
+`cycle stop` stops execution until manual start or boot; autostart remains
+persisted. Invalid stored configuration blocks automatic startup.
+
+Legacy BLE0x3101-0x3103 keep status:u8 +distance_mm:u32LE. Metadata0x3104
+READ returns three20-byte records; NOTIFY returns one: version:u8, pair:u8,
+source:u8 (0measured,1constant,2unavailable), status:u8, round:u64LE,
+distance_mm:u32LE, age_ms:u32LE. Unavailable ages are UINT32_MAX.
+The dashboard shows round, origin, age and failures; unchanged values expire
+after3seconds. Unknown age/origin is explicit with older firmware.
+
+Capture a30-minute BLE benchmark with the HIL Python environment:
+
+```sh
+python tools/cycle-benchmark.py --address <MASTER-BLE-address> --mode measured --output <new-evidence-directory>
+```
+
+Acceptance is at least99% success for each pair,99% matched rounds, and no
+duplicates, stale intervals or cadence/sequence errors. BLE arrivals do not
+prove radio exclusion; inspect firmware overruns, slot maxima and counters.
+For fixed-mode capture supply `--mode fixed --baseline-mm <millimetres>`.

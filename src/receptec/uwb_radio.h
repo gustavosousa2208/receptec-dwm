@@ -29,7 +29,7 @@ int receptec_uwb_peer_nickname_set(uint8_t slot, const char *nickname);
 int receptec_uwb_peer_nickname_clear(uint8_t slot);
 /*
  * Background range auto-responder: while set, this board answers DS-TWR
- * rounds addressed to it (pair A-B) from any commissioned, enabled peer,
+ * rounds addressed to it (pair M-A) from any commissioned, enabled peer,
  * without a manual `uwb range respond` per round. Persisted in settings and
  * restored at boot. Initiator commands (`range start`, poll, sync) still take
  * the radio first; an in-progress answer fails them with -EBUSY.
@@ -145,8 +145,8 @@ struct receptec_uwb_range_round_status {
  * peer in `peer_slot`, run one DS-TWR exchange with this RECEPTEC as
  * initiator (POLL -> RESPONSE -> FINAL), and read back the responder's
  * RANGE_RESULT uplink. `pair_index` must match what the responder expects
- * for this peer (0=A-T and 1=B-T are initiated by whichever anchor this
- * board's own CONFIG_RECEPTEC_FIXED_ANCHOR_ID names; 2=A-B is initiated by
+ * for this peer (0=M-T and 1=A-T are initiated by whichever anchor this
+ * board's own CONFIG_RECEPTEC_FIXED_ANCHOR_ID names; 2=M-A is initiated by
  * the master against the base, regardless of the master's own anchor id).
  * Deliberately not the full master state machine in S9: no simultaneous
  * multi-pair scheduling, no retry on a dropped ARM/ACK/result, and round_id
@@ -174,7 +174,7 @@ void receptec_uwb_range_set_quiet(bool quiet);
  * One-shot DS-TWR responder (contract UWB v1.2 S5-S9): listens up to
  * `timeout_ms` for ROUND_ARM, then ARM for `pair_index`, then POLL/FINAL
  * from the registered master in `master_slot`, computes the distance and
- * uplinks RANGE_RESULT to that master. Used today for pair_index=2 (A-B),
+ * uplinks RANGE_RESULT to that master. Used today for pair_index=2 (M-A),
  * the only pair where a RECEPTEC-family board plays responder; returns 0
  * with *out_status==RECEPTEC_UWB_RANGE_OK on a successful measurement, a
  * negative errno otherwise (-EBUSY/-EAGAIN as receptec_uwb_range_start()).
@@ -189,7 +189,7 @@ int receptec_uwb_range_respond(uint8_t master_slot, uint8_t pair_index, uint32_t
  * Passively wait up to `timeout_ms` for a RANGE_RESULT for `pair_index`
  * from the peer in `peer_slot`, without initiating anything. Contract UWB
  * v1.2 S2.1 always addresses RANGE_RESULT to the master, even for pairs
- * the master did not initiate (B-T: B initiates, T reports to the master).
+ * the master did not initiate (A-T: B initiates, T reports to the master).
  * On the master, this is how to see a pair's distance when some other
  * node drove that round -- e.g. `receptec_uwb_range_listen(<T's slot>, 1,
  * ...)` while B runs its own `uwb range start` for pair 1. No round_id is

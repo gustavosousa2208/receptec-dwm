@@ -137,7 +137,9 @@ function render(i) {
   else el.textContent = '—';
   el.classList.toggle('stale', !valid || stale);
   if (record.source === 2) {
-    detail.textContent = i === 1 ? 'Not scheduled / no sample' : 'No sample';
+    detail.textContent = record.round !== '0' ?
+      'Unavailable · round ' + record.round + ' · failed (status ' + record.status + ')' :
+      (i === 1 ? 'Not scheduled / no sample' : 'No sample');
     return;
   }
   const source = record.source === 1 ? 'Constant' : record.source === 0 ? 'Measured' : 'Legacy: source unknown';
