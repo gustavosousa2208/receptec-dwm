@@ -343,8 +343,9 @@ Historical three-node logs used A=MASTER and B=BASE A; translate their A-T,
 B-T, A-B as M-T, A-T, M-A. Pair indices remain0=M-T,1=A-T,2=M-A.
 
 The canonical current contract is the1.5 profile in `contracts/`; this bench
-profile performs M-T and M-A once per1000ms, at offsets100 and650ms. A-T and
-the new BASE B are not scheduled. It publishes to the MASTER's BLE service;
+profile performs M-T, A-T and M-A once per 1000ms, at offsets 100, 375 and
+650ms. The new BASE B is not scheduled. For A-T, M arms T then A and sends
+START to A. T computes and reports one official distance directly to M. It publishes to the MASTER's BLE service;
 it does not implement full STREAM/AGGREGATE forwarding to the tag.
 
 For commissioned MASTER slots1=TAG and0=BASE A:

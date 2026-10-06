@@ -2444,10 +2444,7 @@ static int range_await_result(uint8_t peer_slot, const uint8_t peer_eui64[RECEPT
 			    receptec_uwb_result_decode(frame.payload, frame.payload_length,
 						       &result) != RECEPTEC_UWB_OK ||
 			    result.round_id != round_id || result.record_count != 1U ||
-			    result.records[0].pair_index != pair_index ||
-		    (expected_round && (result.round_id != expected_round ||
-		     memcmp(result.records[0].responder, peer_eui64, 8) != 0 ||
-		     memcmp(result.records[0].initiator, expected_initiator, 8) != 0))) {
+			    result.records[0].pair_index != pair_index) {
 				/* See the same re-arm note in range_run_dstwr_initiator(). */
 				(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 				continue;
@@ -2543,7 +2540,10 @@ static int range_listen_once(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 		    receptec_uwb_result_decode(frame.payload, frame.payload_length,
 					       &result) != RECEPTEC_UWB_OK ||
 		    result.record_count != 1U ||
-		    result.records[0].pair_index != pair_index) {
+		    result.records[0].pair_index != pair_index ||
+		    (expected_round && (result.round_id != expected_round ||
+		     memcmp(result.records[0].responder, peer_eui64, 8) != 0 ||
+		     memcmp(result.records[0].initiator, expected_initiator, 8) != 0))) {
 			(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 			continue;
 		}
