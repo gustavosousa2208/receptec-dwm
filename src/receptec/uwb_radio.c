@@ -2742,7 +2742,8 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 				continue;
 			}
 		}
-		(void)receptec_radio_wait_event(K_MSEC(remaining_ms));
+		if (!(dwt_readsysstatuslo() & DWT_INT_RXFCG_BIT_MASK))
+			(void)receptec_radio_wait_event(K_MSEC(remaining_ms));
 		if (receptec_round_arm_expired(armed, arm_ms, k_uptime_get())) {
 			armed = false;
 		}
@@ -2815,6 +2816,8 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 					}
 					if (action != RECEPTEC_UWB_DELEGATE_IGNORE) {
 						int ret = range_send_ack(master_eui64, frame.sequence, rx_ts, true);
+						cycle_last_error[1] = ret;
+						cycle_last_phase[1] = plan.phase + 10;
 						if (action == RECEPTEC_UWB_DELEGATE_RUN && ret == 0) {
 							delegated = true;
 							cycle_deadline = delegate_arm_ms + 200;
@@ -2829,7 +2832,9 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 						}
 					}
 					(void)receptec_radio_irq_enable(true);
-					(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
+					if (action == RECEPTEC_UWB_DELEGATE_RUN || action == RECEPTEC_UWB_DELEGATE_IGNORE ||
+					    cycle_last_error[1] < 0)
+						(void)dwt_rxenable(DWT_START_RX_IMMEDIATE);
 					continue;
 				}
 			}
