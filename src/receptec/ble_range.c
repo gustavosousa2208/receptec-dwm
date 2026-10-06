@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
 #include "ble_range.h"
+#include <receptec/uwb_protocol.h>
 
 #include <string.h>
 #include <zephyr/bluetooth/bluetooth.h>
@@ -28,19 +29,20 @@
 
 static struct k_spinlock range_lock;
 static uint8_t range_values[BLE_RANGE_PAIR_COUNT][BLE_RANGE_VALUE_LEN] = {
-    {1, 0xff, 0xff, 0xff, 0xff},
-    {1, 0xff, 0xff, 0xff, 0xff},
-    {1, 0xff, 0xff, 0xff, 0xff},
+    {RECEPTEC_UWB_RANGE_NO_RESULT, 0xff, 0xff, 0xff, 0xff},
+    {RECEPTEC_UWB_RANGE_NOT_SCHEDULED, 0xff, 0xff, 0xff, 0xff},
+    {RECEPTEC_UWB_RANGE_NO_RESULT, 0xff, 0xff, 0xff, 0xff},
 };
 static uint8_t range_metadata[BLE_RANGE_PAIR_COUNT][BLE_RANGE_METADATA_LEN] = {
-    {1, 0, RECEPTEC_BLE_RANGE_UNAVAILABLE, 1},
-    {1, 1, RECEPTEC_BLE_RANGE_UNAVAILABLE, 1},
-    {1, 2, RECEPTEC_BLE_RANGE_UNAVAILABLE, 1},
+    {1, 0, RECEPTEC_BLE_RANGE_UNAVAILABLE, RECEPTEC_UWB_RANGE_NO_RESULT},
+    {1, 1, RECEPTEC_BLE_RANGE_UNAVAILABLE, RECEPTEC_UWB_RANGE_NOT_SCHEDULED},
+    {1, 2, RECEPTEC_BLE_RANGE_UNAVAILABLE, RECEPTEC_UWB_RANGE_NO_RESULT},
 };
 static int64_t range_updated_ms[BLE_RANGE_PAIR_COUNT];
 
 static void metadata_snapshot(uint8_t pair, uint8_t *out, int64_t now) {
   memcpy(out, range_metadata[pair], BLE_RANGE_METADATA_LEN);
+  if (out[2] == RECEPTEC_BLE_RANGE_UNAVAILABLE) sys_put_le32(UINT32_MAX, out + 12);
   uint64_t age = (uint64_t)(now - range_updated_ms[pair]);
   sys_put_le32(out[2] == RECEPTEC_BLE_RANGE_UNAVAILABLE
                    ? UINT32_MAX
