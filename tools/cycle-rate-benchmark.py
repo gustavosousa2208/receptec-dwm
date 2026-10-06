@@ -73,7 +73,7 @@ def run(args):
     if not probe.get('connected') or str(probe.get('serial')) != args.probe or probe.get('device') != 'nRF52833_xxAA':
         raise RuntimeError('MASTER probe identity/connection mismatch')
     initial = state(console(args.nick, 'uwb range cycle status'))
-    if not 300 <= int(initial['period']) <= 1000:
+    if not 250 <= int(initial['period']) <= 1000:
         raise RuntimeError('Stored period outside supported profile; leaving it unchanged')
     if initial['configured'] != '1' or initial['running'] != '1' or initial['baseline'] != 'measured':
         raise RuntimeError('Expected configured/running measured cycle; leaving it unchanged')
@@ -105,7 +105,7 @@ if __name__ == '__main__':
     parser.add_argument('--nick', required=True)
     parser.add_argument('--probe', required=True)
     parser.add_argument('--address', required=True)
-    parser.add_argument('--period-ms', type=int, choices=range(300, 1001), required=True)
+    parser.add_argument('--period-ms', type=int, choices=range(250, 1001), required=True)
     parser.add_argument('--seconds', type=int, default=1800)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()

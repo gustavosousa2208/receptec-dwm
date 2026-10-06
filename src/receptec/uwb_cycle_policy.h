@@ -11,18 +11,42 @@
 
 static inline bool receptec_uwb_cycle_period_valid(uint32_t period)
 {
-	return period >= 300U && period <= 1000U;
+	return period >= 250U && period <= 1000U;
+}
+
+/* Preserve the qualified >=300 ms geometry; compact timing is experimental.
+ * Every retry shares the same preparation/slot deadline. */
+static inline int64_t receptec_uwb_cycle_prepare_ms(uint32_t period)
+{
+ return receptec_uwb_cycle_period_valid(period) ? (period < 300U ? 30 : 80) : -1;
+}
+
+static inline int64_t receptec_uwb_cycle_prepare_peer_ms(uint32_t period)
+{
+ return receptec_uwb_cycle_period_valid(period) ? (period < 300U ? 15 : 40) : -1;
+}
+
+static inline int64_t receptec_uwb_cycle_first_slot_ms(uint32_t period)
+{
+ return receptec_uwb_cycle_period_valid(period) ? (period < 300U ? 40 : 100) : -1;
+}
+
+static inline int64_t receptec_uwb_cycle_final_guard_ms(uint32_t period)
+{
+ return receptec_uwb_cycle_period_valid(period) ? (period < 300U ? 30 : 75) : -1;
 }
 
 static inline int64_t receptec_uwb_cycle_slot_ms(uint32_t period)
 {
-	return receptec_uwb_cycle_period_valid(period) ? (int64_t)((period - 175U) / 3U) : -1;
+ if (!receptec_uwb_cycle_period_valid(period)) return -1;
+ return (period - receptec_uwb_cycle_first_slot_ms(period) -
+                  receptec_uwb_cycle_final_guard_ms(period)) / 3;
 }
 
 static inline int64_t receptec_uwb_cycle_offset_for(uint8_t pair, uint32_t period)
 {
-	int64_t slot = receptec_uwb_cycle_slot_ms(period);
-	return pair < 3U && slot > 0 ? 100 + slot * pair : -1;
+ int64_t slot = receptec_uwb_cycle_slot_ms(period);
+ return pair < 3U && slot > 0 ? receptec_uwb_cycle_first_slot_ms(period) + slot * pair : -1;
 }
 
 /* Check at actual TX, after SPI work, not only when the plan was encoded. */

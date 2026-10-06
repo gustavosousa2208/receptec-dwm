@@ -507,8 +507,11 @@ static void test_cycle_integrity_and_validation(void)
 	assert(receptec_uwb_cycle_load(&out) == 0 && out.period_ms == 1000);
 	assert(mock.cycle_len == 12);
 	assert(receptec_uwb_cycle_save(&cfg) == 0);
-	cfg.period_ms = 299;
+	cfg.period_ms = 249;
 	assert(receptec_uwb_cycle_save(&cfg) == -EINVAL);
+	cfg.period_ms = 250;
+	assert(receptec_uwb_cycle_save(&cfg) == 0);
+	assert(receptec_uwb_cycle_load(&out) == 0 && out.period_ms == 250);
 	cfg.period_ms = 500;
 	assert(receptec_uwb_cycle_save(&cfg) == 0);
 	assert(receptec_uwb_cycle_load(&out) == 0 && out.period_ms == 500);

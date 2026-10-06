@@ -8,7 +8,7 @@ The physical BASE B is outside this profile. The STM32 and its bootloader are un
 Use `bench console receptec --transport rtt --send "uwb range cycle stop"`;
 wait until `uwb range cycle status` reports running=0. Set
 `uwb range cycle period 500` (milliseconds), then `uwb range cycle start`.
-Period changes while running fail with EBUSY. Periods 300..1000 are supported
+Period changes while running fail with EBUSY. Periods 250..1000 are supported
 for experiments, not automatically qualified. Settings survive MASTER restart;
 legacy saved configuration loads at 1000 ms. All pairs use one shared round.
 
@@ -110,3 +110,7 @@ bounds, sample skew and velocity can still reject a triplet in the processor.
 Use `uwb range cycle timing` on the MASTER to read RAM-only per-phase diagnostics. Counters reset on `cycle start` (and reboot); shell reads copy RAM and do not access the radio. `prep_t/prep_a` measure ROUND_ARM transactions; `mt_*` and `ma_*` measure ARM, DS-TWR and result reception; `at_arm_t/at_arm_a/at_start/at_result` separate delegated control and result reception. Each row reports samples, failures, last/mean/max duration in microseconds, successful mean/max and last return code. Durations include scheduling, SPI, airtime and retries. A result with remote nonzero status counts as a timing failure even when its report arrived correctly (`last_result=-ENODATA`). A–T result wait includes the delegated exchange and uplink; it does not isolate TAG RESPONSE versus FINAL. No logging is added inside measured phases. Compare complete timing snapshots and BLE success at 350/325/300 ms before changing slot geometry or radio turnaround margins.
 
 The RECEPTEC radio IRQ mask contains RX events only. TX completion therefore uses bounded status polling, preserving pending RX flags and semaphore events; it does not wait on the RX-only semaphore. Interrupts remain enabled. Normal occupancy is the delayed-TX margin plus airtime; faulty TX remains bounded by the slot/20 ms timeout. Qualify phase latency and ranging success on both MASTER and BASE A before changing the schedule.
+
+### Compact four-Hz experiment
+
+The 250..299 ms MASTER-only profile reserves 30 ms for ROUND_ARM preparation (15 ms per peer transaction, including retries), starts slots at +40 ms, and keeps at least 30 ms after the last slot. Each slot is floor((period - 70)/3) ms. At 250 ms the three 60 ms slots start at 40/100/160 and end at 220 ms. Periods >=300 ms retain their previous geometry. Default remains 1000 ms. The existing schema-2 authorization, 10 ms guard and stopped-only persistence remain unchanged. Existing endpoint binaries with bounded authorization can execute the commands; no synchronized endpoint agenda or extra result is introduced. Validate 250 ms first with a short run, then 15 minutes, counting missing/failed rounds and checking preparation and phase failures.

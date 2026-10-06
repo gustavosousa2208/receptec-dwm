@@ -198,8 +198,8 @@ def main():
     parser.add_argument("--minimum-success", type=float, default=99)
     parser.add_argument("--minimum-seconds", type=float, default=1800)
     args = parser.parse_args()
-    if not 300 <= args.period_ms <= 1000:
-        parser.error("--period-ms must be in 300..1000")
+    if not 250 <= args.period_ms <= 1000:
+        parser.error("--period-ms must be in 250..1000")
     if not math.isfinite(args.minimum_success) or not 90 <= args.minimum_success <= 100:
         parser.error("--minimum-success must be in 90..100")
     if not math.isfinite(args.minimum_seconds) or args.minimum_seconds < 60:

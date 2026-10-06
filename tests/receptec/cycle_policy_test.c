@@ -80,14 +80,16 @@ static void test_delegation_authorization_and_duplicates(void)
 
 static void test_accelerated_slots(void)
 {
-	for (uint32_t period = 300; period <= 1000; period++) {
+	for (uint32_t period = 250; period <= 1000; period++) {
 		int64_t slot = receptec_uwb_cycle_slot_ms(period);
 		assert(slot > 0);
-		assert(receptec_uwb_cycle_offset_for(0, period) >= RECEPTEC_UWB_CYCLE_ARM_MS);
+		assert(receptec_uwb_cycle_offset_for(0, period) > receptec_uwb_cycle_prepare_ms(period));
+  assert(2 * receptec_uwb_cycle_prepare_peer_ms(period) == receptec_uwb_cycle_prepare_ms(period));
+  assert(receptec_uwb_cycle_first_slot_ms(period) - receptec_uwb_cycle_prepare_ms(period) >= 10);
 		for (uint8_t pair = 0; pair < 2; pair++)
 			assert(receptec_uwb_cycle_offset_for(pair, period) + slot ==
 			       receptec_uwb_cycle_offset_for(pair + 1, period));
-		assert(receptec_uwb_cycle_offset_for(2, period) + slot <= period - 75);
+		assert(receptec_uwb_cycle_offset_for(2, period) + slot <= period - receptec_uwb_cycle_final_guard_ms(period));
 		bool overrun;
 		assert(receptec_uwb_cycle_next_epoch_for(10000, 10000 + period - 1,
 			period, &overrun) == 10000 + period && !overrun);
@@ -95,7 +97,19 @@ static void test_accelerated_slots(void)
 			period, &overrun) == 10000 + 2 * period + 1 && overrun);
 	}
 	assert(receptec_uwb_cycle_slot_ms(1000) == 275);
-	assert(receptec_uwb_cycle_slot_ms(299) == -1);
+	assert(receptec_uwb_cycle_slot_ms(249) == -1);
+ assert(receptec_uwb_cycle_offset_for(0, 250) == 40);
+ assert(receptec_uwb_cycle_offset_for(1, 250) == 100);
+ assert(receptec_uwb_cycle_offset_for(2, 250) == 160);
+ assert(receptec_uwb_cycle_slot_ms(250) == 60);
+ /* Preparation loss cannot move the first or later slots, or renew a peer's budget. */
+ assert(receptec_uwb_cycle_prepare_peer_ms(250) == 15);
+ assert(receptec_uwb_cycle_prepare_ms(250) == 30);
+ for (uint32_t period = 300; period <= 1000; period++) {
+  assert(receptec_uwb_cycle_offset_for(0, period) == 100);
+  assert(receptec_uwb_cycle_slot_ms(period) == (period - 175) / 3);
+  assert(receptec_uwb_cycle_prepare_ms(period) == 80);
+ }
 	assert(receptec_uwb_cycle_slot_ms(1001) == -1);
 }
 

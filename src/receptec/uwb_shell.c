@@ -1083,7 +1083,7 @@ static int cmd_cycle(const struct shell *shell, size_t argc, char **argv)
 		char *end;
 		errno = 0;
 		unsigned long value = strtoul(argv[2], &end, 10);
-		if (errno || end == argv[2] || *end || value < 300 || value > 1000)
+		if (errno || end == argv[2] || *end || value < 250 || value > 1000)
 			return -EINVAL;
 		cfg.period_ms = (uint32_t)value;
 		ret = receptec_uwb_cycle_configure(&cfg);
@@ -1119,7 +1119,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
     sub_range,
     SHELL_CMD_ARG(cycle, NULL,
 		  "cycle timing|configure <tag_slot> <base_a_slot>|baseline measured|baseline "
-		  "fixed <mm>|period <300..1000 ms> (stopped)|autostart on|off|start|stop|status",
+		  "fixed <mm>|period <250..1000 ms> (stopped)|autostart on|off|start|stop|status",
 		  cmd_cycle, 2, 2),
     SHELL_CMD_ARG(start, NULL,
 		  "Start periodic DS-TWR round: start <slot> [period_ms] "

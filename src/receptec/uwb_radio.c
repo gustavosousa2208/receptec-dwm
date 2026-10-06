@@ -3441,9 +3441,10 @@ static void cycle_execute(void)
 				break;
 		}
 		round = cycle_next_round++;
-		cycle_deadline = start + RECEPTEC_UWB_CYCLE_ARM_MS;
+		cycle_deadline = start + receptec_uwb_cycle_prepare_ms(cfg.period_ms);
 		for (int i = 0; i < 2; i++) {
-			cycle_deadline = MIN(start + RECEPTEC_UWB_CYCLE_ARM_MS, k_uptime_get() + 40);
+			cycle_deadline = MIN(start + receptec_uwb_cycle_prepare_ms(cfg.period_ms),
+				     k_uptime_get() + receptec_uwb_cycle_prepare_peer_ms(cfg.period_ms));
 			if (ready[i])
 				ready[i] = range_send_plan_and_await_ack(
 					       slots[i], peers[i], RECEPTEC_UWB_PLAN_ROUND_ARM,
