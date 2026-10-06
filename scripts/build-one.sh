@@ -30,6 +30,16 @@ if [ -z "$nordic_build_root" ]; then
 	nordic_build_root="$nrf52_dir/build"
 fi
 
+stm32_dir="$workspace_source/stm32n6_bringup_fw"
+stm32_build_dir=${STM32_BUILD_DIR:-}
+if [ -z "$stm32_build_dir" ]; then
+	if [ -n "${ATLETEC_ZEPHYR_WORKSPACE:-}" ]; then
+		stm32_build_dir="$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/stm32n6_bringup_fw/build-prod-coletec"
+	else
+		stm32_build_dir="$stm32_dir/build-prod-coletec"
+	fi
+fi
+
 role=
 test_config=none
 
@@ -38,7 +48,7 @@ usage()
 	cat <<'EOF'
 Usage: scripts/build-one.sh TARGET [--test-conf tests/SCENARIO.conf]
 
-TARGET: fake-coletec-0 | fake-coletec-1 | fake-coletec-0-anchor | receptec | receptec-qorvo | receptec-qorvo-anchor | prod-coletec-qorvo
+TARGET: fake-coletec-0 | fake-coletec-1 | fake-coletec-0-anchor | receptec | receptec-qorvo | receptec-qorvo-anchor | prod-coletec-qorvo | prod-coletec-stm32 | prod-coletec-stm32-prov
 
 Builds one image. Each physical board has one canonical output directory. Output goes to $ATLETEC_BUILD_ROOT, else
 $ATLETEC_ZEPHYR_WORKSPACE/build/atletec/receptec, else build/ in this
@@ -57,30 +67,37 @@ prod-coletec-qorvo is the Nordic Rev4 product image
 the sibling nrf52-bringup-fw checkout. Its output goes to
 $ATLETEC_ZEPHYR_WORKSPACE/build/atletec/nrf52-bringup-fw
 (build-prod-coletec-qorvo); $PROD_COLETEC_QORVO_BUILD_DIR overrides it.
+prod-coletec-stm32 builds the signed A/B application; prod-coletec-stm32-prov
+builds the RAM-only provisioning shell. Both use the COLETEC physical-board
+directory $STM32_BUILD_DIR (override: STM32_BUILD_DIR).
 EOF
 }
 
-[ "$#" -ge 1 ] || { usage >&2; exit 2; }
+[ "$#" -ge 1 ] || { echo "Missing target." >&2; exit 2; }
 case "$1" in
-	fake-coletec-0|fake-coletec-1|fake-coletec-0-anchor|receptec|receptec-qorvo|receptec-qorvo-anchor|prod-coletec-qorvo) role=$1; shift ;;
+	fake-coletec-0|fake-coletec-1|fake-coletec-0-anchor|receptec|receptec-qorvo|receptec-qorvo-anchor|prod-coletec-qorvo|prod-coletec-stm32|prod-coletec-stm32-prov) role=$1; shift ;;
 	-h|--help) usage; exit 0 ;;
-	*) echo "Unknown target: $1" >&2; usage >&2; exit 2 ;;
+	*)
+		echo "Unknown target: $1" >&2
+		echo "Targets: fake-coletec-0, fake-coletec-1, fake-coletec-0-anchor, receptec, receptec-qorvo, receptec-qorvo-anchor, prod-coletec-qorvo, prod-coletec-stm32, prod-coletec-stm32-prov" >&2
+		exit 2
+	;;
 esac
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		--test-conf)
-			[ "$#" -ge 2 ] || { echo "Missing test configuration" >&2; exit 2; }
+			[ "$#" -ge 2 ] || { echo "Missing value for --test-conf." >&2; exit 2; }
 			test_config=$2
 			shift 2
 			;;
 		--source-dir)
-			[ "$#" -ge 2 ] || { echo "Missing source directory" >&2; exit 2; }
+			[ "$#" -ge 2 ] || { echo "Missing value for --source-dir." >&2; exit 2; }
 			source_opt=$2
 			shift 2
 			;;
 		-h|--help) usage; exit 0 ;;
-		*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+		*) echo "Unknown option: $1" >&2; exit 2 ;;
 	esac
 done
 
@@ -155,12 +172,76 @@ case "$role" in
 		identity=
 		metadata_role=PROD-COLETEC-QORVO
 		;;
+	prod-coletec-stm32)
+		build_dir=$stm32_build_dir
+		metadata_role=PROD-COLETEC-STM32-APP
+		;;
+prod-coletec-stm32-prov)
+		build_dir=$stm32_build_dir
+		metadata_role=PROD-COLETEC-STM32-PROV
+		;;
 esac
 
 if [ "$role" = prod-coletec-qorvo ] && [ ! -d "$nrf52_dir" ]; then
 	echo "nrf52 checkout not found beside this repo: $nrf52_dir" >&2
 	exit 1
 fi
+
+case "$role" in
+prod-coletec-stm32|prod-coletec-stm32-prov)
+	[ -d "$stm32_dir/scripts" ] || { echo "STM32 checkout not found: $stm32_dir" >&2; exit 1; }
+	[ "$test_config" = none ] || { echo "--test-conf does not apply to STM32 targets." >&2; exit 2; }
+	mkdir -p "$build_dir"
+	stm32_log_root="${ATLETEC_ZEPHYR_WORKSPACE:-$HOME/zephyrproject}/build/atletec/logs/stm32n6_bringup_fw"
+	mkdir -p "$stm32_log_root"
+	if [ "$role" = prod-coletec-stm32 ]; then
+		log_file="$stm32_log_root/prod-coletec-app-$(date -u +%Y%m%dT%H%M%SZ).log"
+		if ! ATLETEC_BUILD_DIR="$build_dir" "$stm32_dir/scripts/build-main-emmc-image.sh" --pristine >"$log_file" 2>&1; then
+			echo "$role build failed; log: $log_file" >&2
+			tail -n 30 "$log_file" >&2
+			exit 1
+		fi
+		[ -s "$build_dir/zephyr/zephyr.signed.bin" ] || { echo "Missing signed app image in $build_dir" >&2; exit 1; }
+	else
+		log_file="$stm32_log_root/prod-coletec-prov-$(date -u +%Y%m%dT%H%M%SZ).log"
+		if ! ATLETEC_BUILD_DIR="$build_dir" "$stm32_dir/scripts/build-prov-image.sh" >"$log_file" 2>&1; then
+			echo "$role build failed; log: $log_file" >&2
+			tail -n 30 "$log_file" >&2
+			exit 1
+		fi
+		[ -s "$build_dir/zephyr/zephyr.bin" ] || { echo "Missing provisioning shell image in $build_dir" >&2; exit 1; }
+	fi
+	stm32_worktree_hash=$(
+		{
+			git -C "$stm32_dir" diff HEAD --binary -- scripts stm32
+			printf 'contracts=%s\n' "$(git -C "$stm32_dir/contracts" rev-parse HEAD)"
+			git -C "$stm32_dir/contracts" diff HEAD --binary
+			if [ -d "$stm32_dir/contracts/common/.git" ] || git -C "$stm32_dir/contracts/common" rev-parse --git-dir >/dev/null 2>&1; then
+				printf 'common=%s\n' "$(git -C "$stm32_dir/contracts/common" rev-parse HEAD)"
+				git -C "$stm32_dir/contracts/common" diff HEAD --binary
+			fi
+			for repo in "$stm32_dir" "$stm32_dir/contracts" "$stm32_dir/contracts/common"; do
+				if git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+					git -C "$repo" ls-files --others --exclude-standard | while IFS= read -r file; do
+						[ -f "$repo/$file" ] && sha256sum -- "$repo/$file"
+					done
+				fi
+			done
+		} | sha256sum | awk '{print $1}'
+	) || { echo "Could not fingerprint STM32 sources." >&2; exit 1; }
+	{
+		echo "role=$metadata_role"
+		echo "source_commit=$(git -C "$stm32_dir" rev-parse HEAD)"
+		echo "contracts_commit=$(git -C "$stm32_dir/contracts" rev-parse HEAD)"
+		echo "worktree_hash=$stm32_worktree_hash"
+	} >"$build_dir/atletec-stm32-build.txt"
+	if [ "$role" = prod-coletec-stm32 ]; then artifact=zephyr.signed.bin; else artifact=zephyr.bin; fi
+	echo "$role: $build_dir/zephyr/$artifact"
+	echo "Build log: $log_file"
+	echo "Source: $(git -C "$stm32_dir" rev-parse HEAD)"
+	exit 0
+;;
+esac
 
 mkdir -p "$build_dir"
 log_file="$build_dir/build.log"

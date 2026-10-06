@@ -1,3 +1,21 @@
+<!-- BEGIN ATLETEC PROJECT ENTRY -->
+## Entrada compartilhada de ATLETEC
+
+Leia `<share ATLETEC>/AGENTS.md` e a seção "Entrada do projeto inteiro e
+coordenação de agentes" do `<share ATLETEC>/README.md` para regras e mapa.
+O share é `D:/SHARED-DATA/ATLETEC` no desktop e `~/shared-data/ATLETEC`
+no Mac/Dell. Para firmware, leia também `~/source/atletec/AGENTS.md` e as
+instruções do alvo; não presuma que arquivos acima da raiz Git foram carregados.
+
+A base ativa é `~/source/atletec/.beads` no Mac/Dell. Selecione a base atribuída
+explicitamente e siga o protocolo global; não use Seesaw, bancos aposentados
+ou crie outro banco. No desktop, consulte o mapa antes de assumir trabalho
+rastreado: não há réplica ativa configurada nesse caminho.
+O coordenador fornece objetivo, arquivos permitidos, base/tarefa e instruções.
+Placas e builds canônicos exigem um responsável por vez; worktrees não os isolam.
+Esta entrada não amplia autoridade para publicação, hardware ou remoção.
+<!-- END ATLETEC PROJECT ENTRY -->
+
 # receptec (RECEPTEC + fake-COLETEC bench) — agent instructions
 
 Part of the **Atletec EPTS** workspace — read the workspace `../AGENTS.md` and the

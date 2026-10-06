@@ -47,11 +47,20 @@ if [ -z "$nordic_build_root" ]; then
 fi
 prod_coletec_qorvo_build=${PROD_COLETEC_QORVO_BUILD_DIR:-$nordic_build_root/build-prod-coletec-qorvo}
 
+stm32_dir="$workspace_source/stm32n6_bringup_fw"
+if [ -n "${ATLETEC_ZEPHYR_WORKSPACE:-}" ]; then
+	default_stm32_build="$ATLETEC_ZEPHYR_WORKSPACE/build/atletec/stm32n6_bringup_fw/build-prod-coletec"
+else
+	default_stm32_build="$stm32_dir/build-prod-coletec"
+fi
+stm32_build=${STM32_BUILD_DIR:-$default_stm32_build}
+
 probe_opt=
 assume_yes=false
 dry_run=false
 backup=false
 allow_dirty=false
+force_dirty=false
 stlink=false
 mculink=false
 source_opt=
@@ -62,7 +71,7 @@ usage()
 	cat <<'EOF'
 Usage: scripts/flash-one.sh ROLE [options]
 
-ROLE: fake-coletec-0 | fake-coletec-0-anchor | fake-coletec-1 | receptec | receptec-qorvo | receptec-qorvo-anchor | prod-coletec-qorvo
+ROLE: fake-coletec-0 | fake-coletec-0-anchor | fake-coletec-1 | receptec | receptec-qorvo | receptec-qorvo-anchor | prod-coletec-qorvo | prod-coletec-stm32 | prod-coletec-stm32-prov
 
 Flash one board. Probe serial comes from --probe, then JLINK_SN_FAKE_COLETEC_0 /
 JLINK_SN_FAKE_COLETEC_1 / JLINK_SN_RECEPTEC / JLINK_SN_PROD_COLETEC_QORVO, then
@@ -75,13 +84,16 @@ nrf52-bringup-fw checkout; give it an lstty nickname before flashing without
 
 Options:
   --probe SERIAL|NICKNAME
-                   J-Link serial or lstty nickname for this board
+                   Probe serial or lstty nickname for this board (J-Link, or
+                   STM32 ST-Link for prod-coletec-stm32*)
   --yes            skip the interactive confirmation (also automatic when
                    stdin is not a tty, e.g. under an agent, or when
                    ATLETEC_NONINTERACTIVE is set)
   --dry-run        run every check, print the plan, flash nothing
   --backup         read the RECEPTEC flash back to backups/ first (receptec only)
   --allow-dirty    accept uncommitted changes outside the image sources
+  --force-dirty    STM32 only: allow built dirty sources when their fingerprint
+                   still matches the current worktree
   --mculink        flash receptec-qorvo-anchor through MCU-Link (pyOCD);
                    --probe accepts its serial or lstty mculink nickname
   --stlink         flash over SWD through an ST-Link V3 (pyOCD, target nrf52833)
@@ -97,27 +109,174 @@ Options:
 EOF
 }
 
-[ "$#" -ge 1 ] || { usage >&2; exit 2; }
+[ "$#" -ge 1 ] || { echo "Missing role." >&2; exit 2; }
 case "$1" in
-fake-coletec-0|fake-coletec-0-anchor|fake-coletec-1|receptec|receptec-qorvo|receptec-qorvo-anchor|prod-coletec-qorvo) role=$1; shift ;;
+fake-coletec-0|fake-coletec-0-anchor|fake-coletec-1|receptec|receptec-qorvo|receptec-qorvo-anchor|prod-coletec-qorvo|prod-coletec-stm32|prod-coletec-stm32-prov) role=$1; shift ;;
 -h|--help) usage; exit 0 ;;
-*) echo "Unknown role: $1 (want fake-coletec-0, fake-coletec-0-anchor, fake-coletec-1, receptec, receptec-qorvo or prod-coletec-qorvo)" >&2; exit 2 ;;
+*)
+	echo "Unknown role: $1" >&2
+	echo "Roles: fake-coletec-0, fake-coletec-0-anchor, fake-coletec-1, receptec, receptec-qorvo, receptec-qorvo-anchor, prod-coletec-qorvo, prod-coletec-stm32, prod-coletec-stm32-prov" >&2
+	exit 2
+;;
 esac
 
 while [ "$#" -gt 0 ]; do
 	case "$1" in
-	--probe) [ "$#" -ge 2 ] || exit 2; probe_opt=$2; shift 2 ;;
+	--probe) [ "$#" -ge 2 ] || { echo "Missing value for --probe." >&2; exit 2; }; probe_opt=$2; shift 2 ;;
 	--yes) assume_yes=true; shift ;;
 	--dry-run) dry_run=true; shift ;;
 	--backup) backup=true; shift ;;
 	--allow-dirty) allow_dirty=true; shift ;;
+	--force-dirty) force_dirty=true; shift ;;
 	--stlink) stlink=true; shift ;;
 	--mculink) mculink=true; shift ;;
-	--source-dir) [ "$#" -ge 2 ] || exit 2; source_opt=$2; shift 2 ;;
+	--source-dir) [ "$#" -ge 2 ] || { echo "Missing value for --source-dir." >&2; exit 2; }; source_opt=$2; shift 2 ;;
 	-h|--help) usage; exit 0 ;;
-	*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+	*) echo "Unknown option: $1" >&2; exit 2 ;;
 	esac
 done
+
+[ "$role" = prod-coletec-stm32 ] || [ "$role" = prod-coletec-stm32-prov ] || [ "$force_dirty" = false ] || { echo "--force-dirty applies only to STM32 targets." >&2; exit 2; }
+
+if [ "$role" = prod-coletec-stm32 ] || [ "$role" = prod-coletec-stm32-prov ]; then
+	[ -d "$stm32_dir/scripts" ] || { echo "STM32 checkout not found: $stm32_dir" >&2; exit 1; }
+	[ -f "$stm32_build/atletec-stm32-build.txt" ] || { echo "Missing STM32 build metadata; run build-one $role." >&2; exit 1; }
+	stm32_meta="$stm32_build/atletec-stm32-build.txt"
+	stm32_source=$(git -C "$stm32_dir" rev-parse HEAD) || exit 1
+	stm32_contract=$(git -C "$stm32_dir/contracts" rev-parse HEAD) || exit 1
+	stm32_worktree_hash=$(
+		{
+			git -C "$stm32_dir" diff HEAD --binary -- scripts stm32
+			printf 'contracts=%s\n' "$stm32_contract"
+			git -C "$stm32_dir/contracts" diff HEAD --binary
+			if [ -d "$stm32_dir/contracts/common/.git" ] || git -C "$stm32_dir/contracts/common" rev-parse --git-dir >/dev/null 2>&1; then
+				printf 'common=%s\n' "$(git -C "$stm32_dir/contracts/common" rev-parse HEAD)"
+				git -C "$stm32_dir/contracts/common" diff HEAD --binary
+			fi
+			for repo in "$stm32_dir" "$stm32_dir/contracts" "$stm32_dir/contracts/common"; do
+				if git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+					git -C "$repo" ls-files --others --exclude-standard | while IFS= read -r file; do
+						[ -f "$repo/$file" ] && sha256sum -- "$repo/$file"
+					done
+				fi
+			done
+		} | sha256sum | awk '{print $1}'
+	) || { echo "Could not fingerprint STM32 sources." >&2; exit 1; }
+	if [ "$role" = prod-coletec-stm32 ]; then
+		grep -qx 'role=PROD-COLETEC-STM32-APP' "$stm32_meta" &&
+		grep -qx "source_commit=$stm32_source" "$stm32_meta" &&
+		grep -qx "contracts_commit=$stm32_contract" "$stm32_meta" &&
+		grep -qx "worktree_hash=$stm32_worktree_hash" "$stm32_meta" &&
+		[ -s "$stm32_build/zephyr/zephyr.signed.bin" ] || { echo "STM32 app image/metadata is stale; rebuild it." >&2; exit 1; }
+		stm32_image="$stm32_build/zephyr/zephyr.signed.bin"
+	else
+		grep -qx 'role=PROD-COLETEC-STM32-PROV' "$stm32_meta" &&
+		grep -qx "source_commit=$stm32_source" "$stm32_meta" &&
+		grep -qx "contracts_commit=$stm32_contract" "$stm32_meta" &&
+		grep -qx "worktree_hash=$stm32_worktree_hash" "$stm32_meta" &&
+		[ -s "$stm32_build/zephyr/zephyr.bin" ] || { echo "STM32 provisioning image/metadata is stale; rebuild it." >&2; exit 1; }
+		stm32_image="$stm32_build/zephyr/zephyr.bin"
+	fi
+	if ! git -C "$stm32_dir" diff --quiet || ! git -C "$stm32_dir" diff --cached --quiet; then
+		stm32_changes=$(git -C "$stm32_dir" diff HEAD --name-only -- scripts stm32 contracts)
+		if [ -n "$stm32_changes" ] && [ "$force_dirty" != true ]; then
+			echo "STM32 source has tracked changes; rebuild/commit before flashing." >&2
+			[ -z "$stm32_changes" ] || printf 'Changed image sources:\n%s\n' "$stm32_changes" >&2
+			echo "Pass --force-dirty to flash an image built from these exact dirty sources." >&2
+			exit 1
+		fi
+		if [ -z "$stm32_changes" ] && [ "$allow_dirty" != true ]; then
+			echo "STM32 working tree has non-image changes; pass --allow-dirty to continue." >&2
+			exit 1
+		elif [ -n "$stm32_changes" ]; then
+			echo "warning: --force-dirty enabled for image sources; build fingerprint matches." >&2
+			printf 'Dirty image sources included in the build:\n%s\n' "$stm32_changes" >&2
+		else
+			echo "warning: STM32 working tree has non-image changes." >&2
+		fi
+	fi
+	[ "$backup" = false ] || { echo "--backup currently applies only to RECEPTEC." >&2; exit 2; }
+	[ "$stlink" = false ] && [ "$mculink" = false ] || { echo "Use the STM32 ST-Link mapping; --stlink/--mculink select Nordic runners." >&2; exit 2; }
+	[ -z "$source_opt" ] || { echo "--source-dir applies only to prod-coletec-qorvo." >&2; exit 2; }
+	STM32_Programmer_CLI=$(command -v STM32_Programmer_CLI 2>/dev/null || true)
+	[ -n "$STM32_Programmer_CLI" ] || {
+		for cli in "$HOME/STMicroelectronics/STM32/STM32CubeProgrammer/bin/STM32_Programmer_CLI" \
+			"$HOME/STMicroelectronics/STM32Cube/STM32CubeProgrammer/bin/STM32_Programmer_CLI"; do
+			[ -x "$cli" ] && STM32_Programmer_CLI="$cli" && break
+		done
+	}
+	[ -x "$(command -v STM32_Programmer_CLI 2>/dev/null || printf '%s' "${STM32_Programmer_CLI:-}")" ] || {
+		echo "STM32_Programmer_CLI not found; add it to PATH." >&2; exit 1;
+	}
+	STM32_STLINK_NICK=${STM32_STLINK_NICK:-coletec-qorvo-stm32}
+	command -v lstty >/dev/null 2>&1 || { echo "lstty is required to identify the STM32 ST-Link." >&2; exit 1; }
+	if [ -n "$probe_opt" ]; then
+		stm32_probe=$(lstty stlink get "$probe_opt" --field serial 2>/dev/null || printf '%s' "$probe_opt")
+	else
+		stm32_probe=$(lstty stlink get "$STM32_STLINK_NICK" --field serial 2>/dev/null || true)
+	fi
+	[ -n "$stm32_probe" ] || { echo "No STM32 ST-Link; pass --probe or configure lstty stlink nickname $STM32_STLINK_NICK." >&2; exit 1; }
+	stm32_probe_info=$(lstty stlink get --serial "$stm32_probe" --json 2>/dev/null || true)
+	case "$stm32_probe_info" in *'"connected": true'*) ;; *) echo "STM32 ST-Link $stm32_probe is not connected." >&2; exit 1 ;; esac
+	stm32_device=$(lstty stlink get --serial "$stm32_probe" --field device 2>/dev/null || true)
+	stm32_console_nick=$(printf '%s\n' "$stm32_probe_info" | sed -n 's/.*"name": "\([^"]*\)".*/\1/p')
+	[ -n "$stm32_console_nick" ] || stm32_console_nick=$STM32_STLINK_NICK
+	case "$stm32_device" in
+		STM32N6*|STM32N657*|stm32n6*) ;;
+		"")
+			case "$stm32_console_nick" in
+				prod-coletec|coletec-qorvo-stm32)
+					echo "warning: ST-Link $stm32_probe ($stm32_console_nick) is connected, but lstty has no target-device value; trusting the explicit STM32 nickname." >&2
+				;;
+				*) echo "ST-Link $stm32_probe has no target-device value and nickname '$stm32_console_nick' is not a known STM32 probe." >&2; exit 1 ;;
+			esac
+		;;
+		*) echo "ST-Link $stm32_probe is registered as '$stm32_device', expected STM32N657." >&2; exit 1 ;;
+	esac
+	have_lstty=true
+	echo "STM32 flash mapping: $role -> ST-Link $stm32_probe ($stm32_console_nick), build $stm32_build"
+	if [ "$dry_run" = true ]; then
+		echo "Dry run: checks passed; no STM32 image was loaded."
+		exit 0
+	fi
+
+	if [ -t 0 ] && [ "$assume_yes" = false ]; then
+		printf 'Confirm STM32 is in DEV boot and freshly reset, then load the selected image into RAM over SWD? [y/N] '
+		IFS= read -r answer
+		case "$answer" in y|Y|yes|YES) ;; *) echo "Load cancelled."; exit 1 ;; esac
+	fi
+
+	readelf_tool=${READELF:-${ZEPHYR_SDK_INSTALL_DIR:-}/arm-zephyr-eabi/bin/arm-zephyr-eabi-readelf}
+	[ -x "$readelf_tool" ] || readelf_tool=$(command -v arm-zephyr-eabi-readelf 2>/dev/null || true)
+	[ -n "$readelf_tool" ] || { echo "arm-zephyr-eabi-readelf not found." >&2; exit 1; }
+	entry_addr=$("$readelf_tool" -h "$stm32_build/zephyr/zephyr.elf" | awk '/Entry point address:/ {print $4}')
+	case "$entry_addr" in 0x[0-9a-fA-F]*) ;; *) echo "Could not read STM32 ELF entry point." >&2; exit 1 ;; esac
+
+	if [ "$role" = prod-coletec-stm32-prov ]; then
+		load_addr=0x34180400
+		flash_log="$stm32_build/flash-one-stm32-prov.log"
+	else
+		load_addr=0x34000000
+		app_size=$(wc -c <"$stm32_image" | tr -d ' ')
+		[ "$app_size" -le 1572864 ] || { echo "Signed app is too large for the SRAM staging region." >&2; exit 1; }
+		flash_log="$stm32_build/flash-one-stm32-app.log"
+	fi
+
+	if ! "$STM32_Programmer_CLI" -c port=SWD sn="$stm32_probe" mode=UR ap=1 \
+		-w "$stm32_image" "$load_addr" -v -g "$entry_addr" >"$flash_log" 2>&1; then
+		echo "STM32 RAM load failed; log: $flash_log" >&2
+		tail -n 30 "$flash_log" >&2
+		exit 1
+	fi
+	echo "STM32 image loaded and started in RAM; eMMC was not modified. Log: $flash_log"
+	command -v bench >/dev/null 2>&1 || { echo "bench is required to verify the STM32 shell." >&2; exit 1; }
+	if ! bench console "$stm32_console_nick" --stlink --send "help" --listen 1; then
+		echo "Image loaded, but no shell response arrived on ST-Link VCP." >&2
+		exit 1
+	fi
+	lstty stlink use "$stm32_probe" "STM32 RAM image ($role, $stm32_source)" >/dev/null 2>&1 || true
+	exit 0
+fi
 
 if [ "$mculink" = true ] && { [ "$role" != receptec-qorvo-anchor ] || [ "$stlink" = true ]; }; then
 	echo "--mculink applies only to receptec-qorvo-anchor and cannot combine with --stlink." >&2

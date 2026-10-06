@@ -13,6 +13,35 @@ if [ -z "$probe" ]; then
 	exit 2
 fi
 
+# The COLETEC STM32 can use OpenOCD RTT through its ST-Link when the nickname is
+# an online STM32N657 probe. Keep this explicit transport in bench so UART stays
+# the default for ordinary STM32 console access.
+if command -v lstty >/dev/null 2>&1 && case "$probe" in *[!0-9]*) true ;; *) false ;; esac; then
+	stlink_info=$(lstty stlink get "$probe" --json 2>/dev/null || true)
+	case "$stlink_info" in
+	*'"connected": true'*)
+		# Prefer the workspace-local OpenOCD when this checkout has one.
+		script_path=$0
+		while [ -L "$script_path" ]; do
+			script_dir=$(CDPATH= cd -P "$(dirname "$script_path")" && pwd)
+			link_target=$(readlink "$script_path")
+			case "$link_target" in
+				/*) script_path=$link_target ;;
+				*) script_path=$script_dir/$link_target ;;
+			esac
+		done
+		script_dir=$(CDPATH= cd -P "$(dirname "$script_path")" && pwd)
+		atletec_root=$(CDPATH= cd -P "$script_dir/../.." && pwd)
+		if [ -x "$atletec_root/tools/openocd-local" ]; then
+			OPENOCD=$atletec_root/tools/openocd-local
+			OPENOCD_SCRIPTS=$atletec_root/tools/openocd-install/share/openocd/scripts
+			export OPENOCD OPENOCD_SCRIPTS
+		fi
+		exec bench console "$probe" --stlink --transport stlink-rtt --interactive
+		;;
+	esac
+fi
+
 # The production Nordic is currently connected through an MCU-Link CMSIS-DAP
 # probe. RTT itself is probe-independent, but the SEGGER clients below are not;
 # use the CMSIS-DAP backend when that probe is connected.
