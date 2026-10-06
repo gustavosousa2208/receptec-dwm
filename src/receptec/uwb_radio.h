@@ -155,6 +155,7 @@ struct receptec_uwb_range_round_status {
  * while any of those run, and vice versa.
  */
 struct receptec_uwb_cycle_config;
+void receptec_uwb_cycle_errors(int error[3], uint8_t phase[3]);
 int receptec_uwb_cycle_configure(const struct receptec_uwb_cycle_config *cfg);
 int receptec_uwb_cycle_start(void);
 int receptec_uwb_cycle_get(struct receptec_uwb_cycle_config *out, bool *running,

@@ -1038,6 +1038,8 @@ static int cmd_cycle(const struct shell *shell, size_t argc, char **argv)
 	struct receptec_uwb_cycle_config cfg = {0};
 	bool running;
 	uint32_t success[3], failure[3], max_ms[3], overruns;
+	int error[3]; uint8_t phase[3];
+	receptec_uwb_cycle_errors(error, phase);
 	int ret = receptec_uwb_cycle_get(&cfg, &running, success, failure, max_ms, &overruns);
 	if (!strcmp(argv[1], "status")) {
 		shell_print(shell,
@@ -1046,8 +1048,8 @@ static int cmd_cycle(const struct shell *shell, size_t argc, char **argv)
 			    ret == 0, running, cfg.tag_slot, cfg.base_slot, cfg.autostart,
 			    cfg.fixed ? "fixed" : "measured", cfg.baseline_mm, overruns);
 		for (int i = 0; i < 3; i++)
-			shell_print(shell, "pair=%d successes=%u failures=%u max_ms=%u", i,
-				    success[i], failure[i], max_ms[i]);
+			shell_print(shell, "pair=%d successes=%u failures=%u max_ms=%u last_error=%d phase=%u", i,
+				    success[i], failure[i], max_ms[i], error[i], phase[i]);
 		return 0;
 	}
 	if (!strcmp(argv[1], "start") && argc == 2)

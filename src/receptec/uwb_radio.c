@@ -84,6 +84,8 @@ static struct receptec_uwb_cycle_config cycle_config;
 static bool cycle_config_valid, cycle_running;
 static uint64_t cycle_next_round, cycle_round_limit;
 static uint32_t cycle_success[3], cycle_failure[3], cycle_max_ms[3], cycle_overruns;
+static int cycle_last_error[3];
+static uint8_t cycle_last_phase[3];
 
 static uint8_t receptec_eui[RECEPTEC_UWB_EUI64_SIZE];
 
@@ -1993,19 +1995,19 @@ static bool range_log_quiet;
 static K_SEM_DEFINE(range_start_sem, 0, 1);
 static atomic_t range_stop_requested = ATOMIC_INIT(0);
 
-/* Enable TX completion only while waiting for TX; RX waiters retain their
- * existing mask and cannot spin on an uncleared TXFRS level interrupt. */
+/* Preserve RX status while waiting for completion; keep the established IRQ mask. */
 static int range_wait_tx_done(void)
 {
  int64_t deadline = bounded_deadline(k_uptime_get() + 20);
- int ret = -ETIMEDOUT;
- dwt_setinterrupt(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK, 0U, DWT_ENABLE_INT_ONLY);
+ /* RX may complete before this wait: preserve it for the next phase. */
  while (k_uptime_get() < deadline) {
-  if (dwt_readsysstatuslo() & DWT_INT_TXFRS_BIT_MASK) { ret = 0; break; }
-  (void)receptec_radio_wait_event(K_MSEC(MAX(0, deadline - k_uptime_get())));
+  uint32_t status = dwt_readsysstatuslo();
+  if (status & DWT_INT_TXFRS_BIT_MASK) return 0;
+  int64_t remaining = deadline - k_uptime_get();
+  if (remaining <= 0) break;
+  (void)receptec_radio_wait_event(K_MSEC(remaining));
  }
- dwt_setinterrupt(UWB_RADIO_EVENT_MASK, 0U, DWT_ENABLE_INT_ONLY);
- return ret;
+ return dwt_readsysstatuslo() & DWT_INT_TXFRS_BIT_MASK ? 0 : -ETIMEDOUT;
 }
 
 static uint64_t range_timestamp_to_u64(const uint8_t timestamp[5])
@@ -3100,6 +3102,7 @@ static void range_pair(uint8_t peer_slot, const uint8_t peer_eui64[RECEPTEC_UWB_
 	uint32_t distance_mm = RECEPTEC_UWB_DISTANCE_INVALID;
 	bool log_round;
 	int status;
+	uint8_t phase = 1;
 
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 	range_status.round_id = round_id;
@@ -3129,8 +3132,10 @@ static void range_pair(uint8_t peer_slot, const uint8_t peer_eui64[RECEPTEC_UWB_
 		outcome_status = RECEPTEC_UWB_RANGE_PLAN_TIMEOUT;
 		goto publish;
 	}
+	phase = 2;
 	status = range_run_dstwr_initiator(peer_slot, peer_eui64, round_id, pair_index);
 	if (status == 0) {
+		phase = 3;
 		status = range_await_result(peer_slot, peer_eui64, round_id, pair_index,
 					    &outcome_status, &distance_mm);
 	}
@@ -3148,10 +3153,13 @@ static void range_pair(uint8_t peer_slot, const uint8_t peer_eui64[RECEPTEC_UWB_
 	log_round = !range_log_quiet;
 	k_mutex_unlock(&uwb_peer_mutex);
 publish:
+	if (status == -ETIME) outcome_status = RECEPTEC_UWB_RANGE_RADIO_LATE;
+	else if (status < 0 && phase == 2) outcome_status = RECEPTEC_UWB_RANGE_TIMEOUT;
 	if (status < 0 && outcome_status == RECEPTEC_UWB_RANGE_OK)
 		outcome_status = RECEPTEC_UWB_RANGE_NO_RESULT;
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 	if (cycle_running) {
+		cycle_last_error[pair_index] = status; cycle_last_phase[pair_index] = phase;
 		if (status == 0 && outcome_status == 0)
 			cycle_success[pair_index]++;
 		else
@@ -4145,4 +4153,12 @@ int receptec_uwb_cycle_start(void)
 out:
 	k_mutex_unlock(&uwb_peer_mutex);
 	return ret;
+}
+
+void receptec_uwb_cycle_errors(int error[3], uint8_t phase[3])
+{
+ k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+ memcpy(error, cycle_last_error, sizeof(cycle_last_error));
+ memcpy(phase, cycle_last_phase, sizeof(cycle_last_phase));
+ k_mutex_unlock(&uwb_peer_mutex);
 }
