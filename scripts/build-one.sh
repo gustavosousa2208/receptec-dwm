@@ -244,7 +244,9 @@ prod-coletec-stm32|prod-coletec-stm32-prov)
 esac
 
 mkdir -p "$build_dir"
-log_file="$build_dir/build.log"
+log_dir="$build_root/logs"
+mkdir -p "$log_dir"
+log_file="$log_dir/build-$role.log"
 echo "Building $role ($board) -> $build_dir"
 if [ "$test_config" = none ]; then
 	if [ "$role" = fake-coletec-0-anchor ] || [ "$role" = receptec-qorvo-anchor ]; then
