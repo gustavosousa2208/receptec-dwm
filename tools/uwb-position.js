@@ -69,12 +69,13 @@
       for (const id of pending.keys()) if (BigInt(id) <= round) pending.delete(id);
       const raw = [0, 1, 2].map(p => tuple.get(p));
       if (raw.some(r => r.status !== 0 || ![0, 1].includes(r.source))) return reject('failed-range', raw, now);
+      if (raw.some(r => r.source === 1 && r.pair !== 2)) return reject('invalid-source', raw, now);
       if (raw.some(r => !Number.isFinite(r.age) || r.age < 0)) return reject('unknown-age', raw, now);
       const timestamps = raw.map(r => r.received - r.age);
       if (timestamps.some(t => now - t > config.maxAgeMs)) return reject('stale-range', raw, now);
       if (Math.max(...timestamps) - Math.min(...timestamps) > config.maxSkewMs) return reject('sample-skew', raw, now);
       const d = raw.map((r, i) => r.mm + config.offsetsMm[i]);
-      if (raw.some(r => !Number.isFinite(r.mm) || r.mm <= 0) || d.some(v => !Number.isFinite(v) || v < config.minRangeMm || v > config.maxRangeMm))
+      if (raw.some(r => !Number.isFinite(r.mm) || r.mm <= 0 || r.mm === 0xFFFFFFFF) || d.some(v => !Number.isFinite(v) || v < config.minRangeMm || v > config.maxRangeMm))
         return reject('range-bounds', raw, now);
       const [mt, at, ma] = d;
       if (mt + at < ma || mt + ma < at || at + ma < mt) return reject('triangle', raw, now);

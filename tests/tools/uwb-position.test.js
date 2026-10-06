@@ -95,3 +95,29 @@ test('malformed records and lossy numeric round IDs are rejected', () => {
   assert.equal(p.ingest(null, 1000).diagnostic.reason, 'invalid-record');
   assert.equal(p.ingest({ round: 9007199254740992 }, 1000).diagnostic.reason, 'invalid-round');
 });
+
+test('constant provenance is reserved for M-A and rejects before smoothing', () => {
+  const p = createProcessor({ windowSize: 1, motionTauMs: 0 });
+  const first = tuple(p, 1, 1000);
+  const distances = [500, Math.hypot(700, 400), 1000];
+  for (const badPair of [0, 1]) {
+    const round = badPair + 2;
+    distances.forEach((mm, pair) => p.ingest({ round: String(round), pair, mm,
+      source: pair === badPair ? 1 : 0, status: 0, age: 0 }, 1000 + round * 500));
+    const state = p.state(1000 + round * 500);
+    assert.equal(state.diagnostic.reason, 'invalid-source');
+    assert.deepEqual(state.position, first.position);
+    assert.equal(state.counters.accepted, 1);
+  }
+  distances.forEach((mm, pair) => p.ingest({ round: '4', pair, mm,
+    source: pair === 2 ? 1 : 0, status: 0, age: 0 }, 3000));
+  assert.equal(p.state(3000).valid, true);
+});
+
+test('calibration cannot turn UINT32_MAX invalid distance into a position', () => {
+  const p = createProcessor({ offsetsMm: [500 - 0xFFFFFFFF, 0, 0] });
+  [0xFFFFFFFF, Math.hypot(700, 400), 1000].forEach((mm, pair) =>
+    p.ingest({ round: '1', pair, mm, source: 0, status: 0, age: 0 }, 1000));
+  assert.equal(p.state(1000).diagnostic.reason, 'range-bounds');
+  assert.equal(p.state(1000).position, null);
+});
