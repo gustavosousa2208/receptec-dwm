@@ -1041,6 +1041,7 @@ static int cmd_cycle(const struct shell *shell, size_t argc, char **argv)
 	int error[3]; uint8_t phase[3];
 	receptec_uwb_cycle_errors(error, phase);
 	int ret = receptec_uwb_cycle_get(&cfg, &running, success, failure, max_ms, &overruns);
+	if (ret == -ENOENT) cfg.period_ms = 1000U;
 	if (!strcmp(argv[1], "status")) {
 		shell_print(shell,
 			    "cycle configured=%d running=%d period=%u tag=%u base_a=%u "
