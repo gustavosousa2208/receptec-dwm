@@ -29,7 +29,7 @@ elseif(BOARD STREQUAL "receptec_qorvo/nrf52833" AND ATLETEC_FIXED_ANCHOR)
     set(RECEPTEC_QORVO TRUE)
     set(RECEPTEC_FIXED_ANCHOR TRUE)
     set(ATLETEC_FW_TYPE "RECEPTEC fixed UWB anchor")
-    set(ATLETEC_FW_VARIANT "BASE B on RECEPTEC-Qorvo / DWM3001C / nRF52833 / DW3110")
+    set(ATLETEC_FW_VARIANT "BASE A on COLETEC-Qorvo 1 / DWM3001C / nRF52833 / DW3110")
     set(DTC_OVERLAY_FILE
         ${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec_qorvo/receptec_qorvo.overlay)
     set(CONF_FILE
