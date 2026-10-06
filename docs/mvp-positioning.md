@@ -55,3 +55,25 @@ Tests: `node --test tests/tools/uwb-position.test.js`,
 `python3 tests/tools/cycle-benchmark.test.py`, and the normal firmware host suite.
 Physical calibration, fixed-baseline comparison and tuning the movement filter
 remain operator benchmarks in the shared seven-step plan.
+
+## Unattended candidate capture
+
+`tools/cycle-rate-benchmark.py` wraps the existing bench console and BLE capture.
+It checks an explicit live MASTER probe, reads the running/measured cycle,
+and requires the target BLE advertiser before changing the period. It records
+the original configuration, confirms a stopped scheduler before changing it,
+then restores and verifies the original running period even if capture fails.
+Do not use the board from another tool during this wrapper's run.
+
+Example with the HIL Python interpreter:
+
+```sh
+python tools/cycle-rate-benchmark.py --nick receptec --probe 802008564 \
+  --address CC:9B:2A:FA:A1:07 --period-ms 350 --seconds 1800 \
+  --output <new-evidence-directory>
+```
+
+Probe numbers are local bench identities: confirm them with `lstty`.
+`initial-state.json` and `restored-state.json` prove the configuration checks;
+`capture/summary.json` contains the rate acceptance result. These files do not
+prove physical calibration or survive a power loss by themselves.
