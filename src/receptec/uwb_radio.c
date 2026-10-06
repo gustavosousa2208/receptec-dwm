@@ -2668,8 +2668,9 @@ static int range_send_frame(enum receptec_uwb_packet_type type,
  * instrumentation in the path) -- the same symptom, same root cause (not
  * enough margin for decode+validate+encode before the delayed TX arms), as
  * the two prior ACK/FINAL margin bugs fixed earlier in this feature
- * (coletec-tag's range_ack() and this file's own FINAL send). 2000us is the
- * same proven value coletec-tag's range_ack() uses.
+ * (coletec-tag's range_ack() and this file's own FINAL send). The bounded
+ * authorization checks add SPI work on this endpoint, so reserve 3000us
+ * here; the plan ACK wait remains 20/40ms and the slot guard still applies.
  */
 static int range_send_ack(const uint8_t destination[RECEPTEC_UWB_EUI64_SIZE],
 			  uint8_t sequence, uint64_t request_rx_ts,
