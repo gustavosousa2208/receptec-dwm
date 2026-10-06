@@ -12,5 +12,26 @@
 	aliases {
 		boot-power-led = &led0;
 		external-power-led = &external_green_led;
+		/* OTA pilot (atletec-64a): MCUboot serial-recovery entrance. */
+		mcuboot-button0 = &button2;
+	};
+};
+
+/*
+ * OTA pilot (atletec-64a Fase 1): symmetric 224 KB image slots so a
+ * BLE+SMP anchor image (~221 KB) fits both slots with rollback.
+ * Takes 8 KB from storage (24 KB -> 16 KB); NVS keeps 4x 4 KB sectors.
+ */
+&slot1_partition {
+	reg = <0x00044000 0x38000>;
+};
+
+&flash0 {
+	partitions {
+		/delete-node/ partition@7a000;
+		storage_partition: partition@7c000 {
+			label = "storage";
+			reg = <0x0007C000 0x00004000>;
+		};
 	};
 };
