@@ -80,11 +80,6 @@ static int64_t bounded_deadline(int64_t requested)
 {
 	return cycle_deadline && cycle_deadline < requested ? cycle_deadline : requested;
 }
-static int64_t bounded_wait(int64_t requested_ms)
-{
-	return cycle_deadline ? MAX(0, MIN(requested_ms, cycle_deadline - k_uptime_get()))
-			      : requested_ms;
-}
 static struct receptec_uwb_cycle_config cycle_config;
 static bool cycle_config_valid, cycle_running;
 static uint64_t cycle_next_round, cycle_round_limit;
@@ -1993,6 +1988,21 @@ static bool range_log_quiet;
 static K_SEM_DEFINE(range_start_sem, 0, 1);
 static atomic_t range_stop_requested = ATOMIC_INIT(0);
 
+/* Enable TX completion only while waiting for TX; RX waiters retain their
+ * existing mask and cannot spin on an uncleared TXFRS level interrupt. */
+static int range_wait_tx_done(void)
+{
+ int64_t deadline = bounded_deadline(k_uptime_get() + 20);
+ int ret = -ETIMEDOUT;
+ dwt_setinterrupt(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK, 0U, DWT_ENABLE_INT_ONLY);
+ while (k_uptime_get() < deadline) {
+  if (dwt_readsysstatuslo() & DWT_INT_TXFRS_BIT_MASK) { ret = 0; break; }
+  (void)receptec_radio_wait_event(K_MSEC(MAX(0, deadline - k_uptime_get())));
+ }
+ dwt_setinterrupt(UWB_RADIO_EVENT_MASK, 0U, DWT_ENABLE_INT_ONLY);
+ return ret;
+}
+
 static uint64_t range_timestamp_to_u64(const uint8_t timestamp[5])
 {
 	uint64_t value = 0U;
@@ -2311,7 +2321,7 @@ static int range_run_dstwr_initiator(uint8_t peer_slot,
 		(void)receptec_radio_irq_enable(false);
 		return -ETIME;
 	}
-	(void)receptec_radio_wait_event(K_MSEC(bounded_wait(20)));
+	(void)range_wait_tx_done();
 	if ((dwt_readsysstatuslo() & DWT_INT_TXFRS_BIT_MASK) == 0U) {
 		dwt_forcetrxoff();
 		clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
@@ -2358,7 +2368,7 @@ static void range_send_result_ack(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SI
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 	if (dwt_starttx(DWT_START_TX_IMMEDIATE) == DWT_SUCCESS) {
-		(void)receptec_radio_wait_event(K_MSEC(bounded_wait(20)));
+		(void)range_wait_tx_done();
 		clear_radio_events(DWT_INT_TXFRS_BIT_MASK);
 	}
 }
@@ -2590,7 +2600,7 @@ static int range_send_frame(enum receptec_uwb_packet_type type,
 			(response_expected ? DWT_RESPONSE_EXPECTED : 0)) != DWT_SUCCESS) {
 		return -ETIME;
 	}
-	(void)receptec_radio_wait_event(K_MSEC(bounded_wait(20)));
+	(void)range_wait_tx_done();
 	if ((dwt_readsysstatuslo() & DWT_INT_TXFRS_BIT_MASK) == 0U) {
 		dwt_forcetrxoff();
 		clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
