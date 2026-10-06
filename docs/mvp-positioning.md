@@ -77,3 +77,22 @@ Probe numbers are local bench identities: confirm them with `lstty`.
 `initial-state.json` and `restored-state.json` prove the configuration checks;
 `capture/summary.json` contains the rate acceptance result. These files do not
 prove physical calibration or survive a power loss by themselves.
+
+## Replay before a physical filter test
+
+Replay a saved `records.jsonl` through the same processor as the dashboard:
+
+```sh
+node tools/replay-cycle-position.cjs <records.jsonl> > <position-replay.json>
+```
+
+An optional second argument is a JSON settings object, for example
+`'{"windowSize":1,"motionTauMs":0}'` to compare unsmoothed accepted positions.
+The output includes accepted positions, per-pair age-derived timestamps,
+rejection counters and the final held/stale state. Initial snapshots are not
+new measurements. Round IDs retain uint64 precision; older Node releases
+without JSON parse source context require string-encoded large round IDs.
+
+Compare the accepted round sets before comparing smoothing: the mean and
+motion filter should not introduce rejected ranges into the output. Reduced
+spread is not evidence of physical accuracy or acceptable movement latency.
