@@ -2109,7 +2109,8 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 {
 	uint8_t sequence;
 	int status;
-	uint32_t ack_wait_us = phase == RECEPTEC_UWB_PLAN_ROUND_ARM ? 20000U : UWB_RANGE_PLAN_ACK_TIMEOUT_US;
+	uint32_t ack_wait_us = phase == RECEPTEC_UWB_PLAN_ARM ? UWB_RANGE_PLAN_ACK_TIMEOUT_US : 20000U;
+	unsigned int attempts = phase == RECEPTEC_UWB_PLAN_START ? 1 : 2;
 
 	status = receptec_uwb_peer_registry_next_sequence(&peer_registry,
 							   peer_slot, &sequence);
@@ -2124,7 +2125,7 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 	/* Retry the identical frame/sequence once, within the caller's absolute
 	 * deadline. Duplicate ROUND_ARM/ARM ACKs do not renew authorization. */
 	status = -ETIMEDOUT;
-	for (unsigned int attempt = 0; attempt < 2; attempt++) {
+	for (unsigned int attempt = 0; attempt < attempts; attempt++) {
 	if (cycle_deadline && k_uptime_get() >= cycle_deadline) break;
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
@@ -2807,13 +2808,13 @@ static int range_respond_once(uint8_t master_slot, uint8_t pair_index, uint32_t 
 							memcpy(delegate_peer, plan.responder, 8);
 						}
 						if (memcmp(delegate_peer, plan.responder, 8) == 0 &&
-						    k_uptime_get() <= delegate_arm_ms + RECEPTEC_UWB_ARM_WINDOW_MS)
+						    k_uptime_get() <= delegate_arm_ms + 200)
 							(void)range_send_ack(master_eui64, frame.sequence, rx_ts, true);
 					} else if (delegate_armed && memcmp(delegate_peer, plan.responder, 8) == 0 &&
-						   k_uptime_get() <= delegate_arm_ms + RECEPTEC_UWB_ARM_WINDOW_MS) {
+						   k_uptime_get() <= delegate_arm_ms + 150) {
 						if (range_send_ack(master_eui64, frame.sequence, rx_ts, true) == 0 && !delegated) {
 							delegated = true;
-							cycle_deadline = delegate_arm_ms + RECEPTEC_UWB_ARM_WINDOW_MS;
+							cycle_deadline = delegate_arm_ms + 200;
 							(void)range_run_dstwr_initiator(tag_slot, delegate_peer, round_id, 1);
 							cycle_deadline = 0;
 						}
@@ -3307,8 +3308,12 @@ static void cycle_execute(void)
 					RECEPTEC_UWB_PLAN_ARM, 1, peers[1], peers[0], round);
 				if (ret == 0) ret = range_send_plan_and_await_ack(slots[1], peers[1],
 					RECEPTEC_UWB_PLAN_ARM, 1, peers[1], peers[0], round);
-				if (ret == 0) ret = range_send_plan_and_await_ack(slots[1], peers[1],
-					RECEPTEC_UWB_PLAN_START, 1, peers[1], peers[0], round);
+				if (ret == 0) {
+					ret = range_send_plan_and_await_ack(slots[1], peers[1],
+						RECEPTEC_UWB_PLAN_START, 1, peers[1], peers[0], round);
+					/* A may execute even when its START ACK is lost. */
+					if (ret == -ETIMEDOUT) ret = 0;
+				}
 				if (ret == 0) {
 					outcome = RECEPTEC_UWB_RANGE_NO_RESULT;
 					int64_t remaining = cycle_deadline - k_uptime_get();
