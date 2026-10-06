@@ -3554,6 +3554,15 @@ static void range_auto_window(void)
 	bool listened = false;
 
 	for (slot = 0U; slot < RECEPTEC_UWB_MAX_PEERS; ++slot) {
+#if defined(RECEPTEC_FIXED_ANCHOR)
+		/* Fixed anchors commission the controller in slot 0. Other peers
+		 * are ranging participants, not additional controllers. Listening
+		 * to TAG for 700 ms would make us deaf to MASTER every other window.
+		 * Keep TAG enabled so delegated A-T can still use its identity. */
+		if (slot != 0U) {
+			continue;
+		}
+#endif
 		uint8_t eui64[RECEPTEC_UWB_EUI64_SIZE];
 		enum receptec_uwb_range_status out_status;
 		uint32_t out_distance_mm;

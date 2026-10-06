@@ -38,3 +38,7 @@ All three flashes passed and running fw info / identity / peer list were checked
 The remapped 500 ms, 60 second capture completed but FAILED the distance success gate: M-T 2/121, A-T 33/121, M-A 28/121; zero complete successful triplets. There were no duplicate, cadence, deadline or invalid payload errors. Valid ranges were often close to zero; physical separation was not controlled, so proximity remains a hypothesis rather than a proven cause. Do not claim the new bench is qualified.
 
 Evidence directory on Dell: `/home/gusta/source/zephyr-v4.3.0/build/atletec/receptec/mvp-qorvo-remap-500-short/` (records.jsonl and summary.json). Next: separate the commissioned boards, repeat the measured 500 ms capture, then qualify higher common rates. Firmware publication remains pending the hardware gate; do not relax that gate to treat a failed ranging capture as PASS.
+
+## Fixed-anchor controller listening
+
+Fixed-anchor images listen for control only from MASTER commissioned in peer slot 0. Peer slot 1 remains an enabled TAG participant for delegated A-T; it does not create a second 700 ms control-listening window. Non-anchor legacy auto-responder behavior is unchanged. Configurable controller selection is deferred to the remote configuration work.
