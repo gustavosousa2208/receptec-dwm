@@ -2109,6 +2109,7 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 {
 	uint8_t sequence;
 	int status;
+	uint32_t ack_wait_us = phase == RECEPTEC_UWB_PLAN_ROUND_ARM ? 20000U : UWB_RANGE_PLAN_ACK_TIMEOUT_US;
 
 	status = receptec_uwb_peer_registry_next_sequence(&peer_registry,
 							   peer_slot, &sequence);
@@ -2128,7 +2129,7 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 	dwt_setrxaftertxdelay(0U);
-	dwt_setrxtimeout(us_to_rx_timeout(UWB_RANGE_PLAN_ACK_TIMEOUT_US));
+	dwt_setrxtimeout(us_to_rx_timeout(ack_wait_us));
 	status = receptec_radio_irq_enable(true);
 	if (status < 0) {
 		return status;
@@ -2143,7 +2144,7 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 	}
 	status = await_matching_control_response(peer_eui64, sequence,
 						 RECEPTEC_UWB_ACK,
-						 UWB_RANGE_PLAN_ACK_TIMEOUT_US);
+						 ack_wait_us);
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
 	(void)receptec_radio_irq_enable(false);
@@ -3224,6 +3225,7 @@ static void cycle_execute(void)
 		for (int i = 0; i < 2; i++) {
 			if (i == 1 && cfg.fixed)
 				continue;
+			cycle_deadline = MIN(start + RECEPTEC_UWB_CYCLE_ARM_MS, k_uptime_get() + 40);
 			if (ready[i])
 				ready[i] = range_send_plan_and_await_ack(
 					       slots[i], peers[i], RECEPTEC_UWB_PLAN_ROUND_ARM,
