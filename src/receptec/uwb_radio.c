@@ -3108,7 +3108,7 @@ static void range_pair(uint8_t peer_slot, const uint8_t peer_eui64[RECEPTEC_UWB_
 {
 	enum receptec_uwb_range_status outcome_status = RECEPTEC_UWB_RANGE_NO_RESULT;
 	uint32_t distance_mm = RECEPTEC_UWB_DISTANCE_INVALID;
-	bool log_round;
+	bool log_round = false;
 	int status;
 	uint8_t phase = 1;
 
@@ -3207,14 +3207,15 @@ static void cycle_execute(void)
 		struct receptec_uwb_cycle_config cfg;
 		uint8_t peers[2][RECEPTEC_UWB_EUI64_SIZE];
 		bool ready[2] = {false, false};
+		bool enabled[2];
 		uint64_t round;
 		k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 		cfg = cycle_config;
 		uint8_t slots[2] = {cfg.tag_slot, cfg.base_slot};
-		for (int i = 0; i < 2; i++)
-			ready[i] =
-			    peer_enabled[slots[i]] &&
-			    receptec_uwb_peer_registry_get(&peer_registry, slots[i], peers[i]) == 0;
+		for (int i = 0; i < 2; i++) {
+			enabled[i] = peer_enabled[slots[i]];
+			ready[i] = enabled[i] && receptec_uwb_peer_registry_get(&peer_registry, slots[i], peers[i]) == 0;
+		}
 		k_mutex_unlock(&uwb_peer_mutex);
 		if (cycle_next_round == cycle_round_limit) {
 			if (receptec_uwb_round_reserve(&cycle_next_round, &cycle_round_limit) < 0)
@@ -3254,7 +3255,8 @@ static void cycle_execute(void)
 				k_mutex_unlock(&uwb_peer_mutex);
 #if defined(CONFIG_BT)
 				receptec_ble_range_publish_extended(
-				    pair, 2, RECEPTEC_UWB_RANGE_PLAN_TIMEOUT, round,
+				    pair, 2, !enabled[i] ? RECEPTEC_UWB_RANGE_NOT_SCHEDULED :
+				    before >= cycle_deadline ? RECEPTEC_UWB_RANGE_NOT_RUN_DEADLINE : RECEPTEC_UWB_RANGE_PLAN_TIMEOUT, round,
 				    RECEPTEC_UWB_DISTANCE_INVALID);
 #endif
 			}
@@ -4084,6 +4086,7 @@ int receptec_uwb_cycle_get(struct receptec_uwb_cycle_config *out, bool *running,
 			   uint32_t success[3], uint32_t failure[3], uint32_t max_ms[3],
 			   uint32_t *overruns)
 {
+	if (!out || !running || !success || !failure || !max_ms || !overruns) return -EINVAL;
 	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 	*out = cycle_config;
 	*running = cycle_running;

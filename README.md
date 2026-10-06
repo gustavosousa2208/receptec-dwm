@@ -143,12 +143,13 @@ share `build-fake-coletec-0` and must be built sequentially.
 `receptec-qorvo-anchor` builds a separate physical RECEPTEC-Qorvo board as
 BASE B. Its canonical directory is `build-receptec-qorvo-anchor`, its RTT prompt
 is `rtt-receptec-qorvo-anchor:~$`, and its BLE name is `ATL-BASE-B`.
-The default ranging pair is B–T (`CONFIG_RECEPTEC_FIXED_ANCHOR_ID=1`), while
-its network EUI comes from the board's hardware ID or saved identity.
-The anchor ID is a default pair selector, not a shared network address.
-Register and verify the unique EUI before ranging. The current multibase
-schedule still models the master as anchor A, one remote base B, and a tag;
-two external bases under a separate master require a coordinator extension.
+This board does not yet participate in the canonical three-node or two-pair
+bench profile. Its current `CONFIG_RECEPTEC_FIXED_ANCHOR_ID=1` selects the
+legacy pair index 1 (now named A–T), which cannot identify a separate B–T
+operation. Do not start that role against TAG until the four-node coordinator
+extension defines its pair mapping. The network EUI comes from hardware ID or
+saved identity; register and verify it separately. MASTER, BASE A, BASE B and
+TAG are distinct nodes.
 
 After confirming the connected MCU-Link's serial and nRF52833 target with
 `lstty`, flash this board with:
