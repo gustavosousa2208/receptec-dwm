@@ -282,15 +282,21 @@ async function toggleConnection() {
         await metadata.startNotifications();
         showMetadata(await metadata.readValue());
       } else {
+        let stale = 0;
         for (let i = 0; i < 3; i++) {
           const chr = await svc.getCharacteristic(CHR_RANGE[i]);
-          showLegacy(i, await chr.readValue(), true);
+          const v = await chr.readValue();
+          if (v.getUint8(0) !== 0) stale++;
+          showLegacy(i, v, true);
           chr.addEventListener('characteristicvaluechanged', e => showLegacy(i, e.target.value, false));
           await chr.startNotifications();
         }
+        if (stale === 3) {
+          setStatus('No live data — this looks like the ANCHOR, not the master. Reconnect to the other ATL-RANGE.', true);
+        }
       }
     });
-    setStatus((metadataMode ? 'Live — ' : 'Legacy: no round/source metadata — ') + (device.name || 'connected'), true);
+    setStatus((metadataMode ? 'Live — ' : 'Legacy: no round/source metadata — ') + (device.name || 'connected') + ' (' + device.id + ')', true);
   } catch (e) {
     console.error(e);
     setStatus('Error: ' + e.message);
