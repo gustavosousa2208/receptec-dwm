@@ -104,3 +104,7 @@ rounds (including missing rounds). This is separate from `aligned_rounds`,
 which also includes complete failed rounds. Per-pair acceptance is unchanged.
 Triplet success is input availability, not position validity: geometry, range
 bounds, sample skew and velocity can still reject a triplet in the processor.
+
+### Phase timing before higher-rate changes
+
+Use `uwb range cycle timing` on the MASTER to read RAM-only per-phase diagnostics. Counters reset on `cycle start` (and reboot); shell reads copy RAM and do not access the radio. `prep_t/prep_a` measure ROUND_ARM transactions; `mt_*` and `ma_*` measure ARM, DS-TWR and result reception; `at_arm_t/at_arm_a/at_start/at_result` separate delegated control and result reception. Each row reports samples, failures, last/mean/max duration in microseconds, successful mean/max and last return code. Durations include scheduling, SPI, airtime and retries. A result with remote nonzero status counts as a timing failure even when its report arrived correctly (`last_result=-ENODATA`). A–T result wait includes the delegated exchange and uplink; it does not isolate TAG RESPONSE versus FINAL. No logging is added inside measured phases. Compare complete timing snapshots and BLE success at 350/325/300 ms before changing slot geometry or radio turnaround margins.

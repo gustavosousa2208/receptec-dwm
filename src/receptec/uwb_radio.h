@@ -154,6 +154,23 @@ struct receptec_uwb_range_round_status {
  * Shares the single radio-owner thread with poll/sync/schedule: -EBUSY
  * while any of those run, and vice versa.
  */
+/* MASTER-local diagnostics; no logging or wire-format change in the hot path.
+ * Durations include SPI, scheduling, airtime and retries. Reset on cycle start. */
+enum receptec_uwb_cycle_timing_phase {
+ RECEPTEC_TIMING_PREP_T, RECEPTEC_TIMING_PREP_A,
+ RECEPTEC_TIMING_MT_ARM, RECEPTEC_TIMING_MT_TWR, RECEPTEC_TIMING_MT_RESULT,
+ RECEPTEC_TIMING_AT_ARM_T, RECEPTEC_TIMING_AT_ARM_A,
+ RECEPTEC_TIMING_AT_START, RECEPTEC_TIMING_AT_RESULT,
+ RECEPTEC_TIMING_MA_ARM, RECEPTEC_TIMING_MA_TWR, RECEPTEC_TIMING_MA_RESULT,
+ RECEPTEC_TIMING_COUNT
+};
+struct receptec_uwb_cycle_timing {
+ uint64_t total_us, successful_us;
+ uint32_t samples, failures, last_us, max_us, successful_max_us;
+ int last_result;
+};
+void receptec_uwb_cycle_timing_get(struct receptec_uwb_cycle_timing out[RECEPTEC_TIMING_COUNT]);
+
 struct receptec_uwb_cycle_config;
 void receptec_uwb_cycle_errors(int error[3], uint8_t phase[3]);
 int receptec_uwb_cycle_configure(const struct receptec_uwb_cycle_config *cfg);

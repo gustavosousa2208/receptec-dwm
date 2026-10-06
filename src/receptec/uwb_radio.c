@@ -86,6 +86,8 @@ static uint64_t cycle_next_round, cycle_round_limit;
 static uint32_t cycle_success[3], cycle_failure[3], cycle_max_ms[3], cycle_overruns;
 static int cycle_last_error[3];
 static uint8_t cycle_last_phase[3];
+static struct receptec_uwb_cycle_timing cycle_timing[RECEPTEC_TIMING_COUNT];
+
 
 static uint8_t receptec_eui[RECEPTEC_UWB_EUI64_SIZE];
 
@@ -166,6 +168,27 @@ static uint8_t tx_bytes[RECEPTEC_UWB_MAX_LOGICAL_SIZE];
 static uint8_t rx_bytes[RECEPTEC_UWB_MAX_LOGICAL_SIZE];
 
 K_MUTEX_DEFINE(uwb_peer_mutex);
+
+static void cycle_timing_record(enum receptec_uwb_cycle_timing_phase phase,
+                               uint32_t started, int result)
+{
+ uint32_t us = k_cyc_to_us_floor32(k_cycle_get_32() - started);
+ k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+ struct receptec_uwb_cycle_timing *sample = &cycle_timing[phase];
+ sample->samples++;
+ sample->total_us += us;
+ sample->last_us = us;
+ sample->max_us = MAX(sample->max_us, us);
+ sample->last_result = result;
+ if (result) sample->failures++;
+ else {
+  sample->successful_us += us;
+  sample->successful_max_us = MAX(sample->successful_max_us, us);
+ }
+ k_mutex_unlock(&uwb_peer_mutex);
+}
+
+
 
 static uint32_t us_to_rx_timeout(uint32_t us)
 {
@@ -2108,7 +2131,7 @@ static int range_load_plan_frame(enum receptec_uwb_plan_phase phase,
  * ACK is a plain zero-payload ACK exactly like the legacy SYNC/DATA_REQ flow,
  * so the existing control-response matcher applies unchanged.
  */
-static int range_send_plan_and_await_ack(uint8_t peer_slot,
+static int range_send_plan_and_await_ack_raw(uint8_t peer_slot,
 					 const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
 					 enum receptec_uwb_plan_phase phase,
 					 uint8_t pair_index,
@@ -2170,6 +2193,33 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 	if (status == 0 || status != -ETIMEDOUT) break;
 	}
 	return status;
+}
+
+static int range_send_plan_and_await_ack(uint8_t peer_slot,
+ const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SIZE],
+ enum receptec_uwb_plan_phase phase, uint8_t pair_index,
+ const uint8_t initiator[RECEPTEC_UWB_EUI64_SIZE],
+ const uint8_t responder[RECEPTEC_UWB_EUI64_SIZE], uint64_t round_id)
+{
+ k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+ bool profiling = cycle_running;
+ uint8_t tag_slot = cycle_config.tag_slot;
+ k_mutex_unlock(&uwb_peer_mutex);
+ uint32_t started = k_cycle_get_32();
+ int ret = range_send_plan_and_await_ack_raw(peer_slot, peer_eui64, phase,
+                         pair_index, initiator, responder, round_id);
+ if (profiling) {
+  enum receptec_uwb_cycle_timing_phase timing;
+  if (phase == RECEPTEC_UWB_PLAN_ROUND_ARM)
+   timing = peer_slot == tag_slot ? RECEPTEC_TIMING_PREP_T : RECEPTEC_TIMING_PREP_A;
+  else if (pair_index == 0) timing = RECEPTEC_TIMING_MT_ARM;
+  else if (pair_index == 2) timing = RECEPTEC_TIMING_MA_ARM;
+  else if (phase == RECEPTEC_UWB_PLAN_START) timing = RECEPTEC_TIMING_AT_START;
+  else timing = memcmp(peer_eui64, responder, 8) == 0 ?
+                    RECEPTEC_TIMING_AT_ARM_T : RECEPTEC_TIMING_AT_ARM_A;
+  cycle_timing_record(timing, started, ret);
+ }
+ return ret;
 }
 
 /* One DS-TWR exchange with this RECEPTEC as initiator: POLL (delayed TX,
@@ -3303,13 +3353,20 @@ static void range_pair(uint8_t peer_slot, const uint8_t peer_eui64[RECEPTEC_UWB_
 		goto publish;
 	}
 	phase = 2;
-	status = range_run_dstwr_initiator(peer_slot, peer_eui64, round_id, pair_index);
-	if (status == 0) {
+ uint32_t timing_started = k_cycle_get_32();
+ status = range_run_dstwr_initiator(peer_slot, peer_eui64, round_id, pair_index);
+ if (prepared) cycle_timing_record(pair_index == 0 ? RECEPTEC_TIMING_MT_TWR :
+                                 RECEPTEC_TIMING_MA_TWR, timing_started, status);
+ if (status == 0) {
+  timing_started = k_cycle_get_32();
 		phase = 3;
 		status = range_await_result(peer_slot, peer_eui64, round_id, pair_index,
-					    &outcome_status, &distance_mm);
-	}
-	k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+	                    &outcome_status, &distance_mm);
+  if (prepared) cycle_timing_record(pair_index == 0 ? RECEPTEC_TIMING_MT_RESULT :
+           RECEPTEC_TIMING_MA_RESULT, timing_started,
+           status ? status : (outcome_status ? -ENODATA : 0));
+ }
+ k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 	if (status == 0) {
 		range_status.successes++;
 		range_status.last_valid = true;
@@ -3424,8 +3481,11 @@ static void cycle_execute(void)
 				if (ret == 0) {
 					outcome = RECEPTEC_UWB_RANGE_NO_RESULT;
 					int64_t remaining = cycle_deadline - k_uptime_get();
+					uint32_t timing_started = k_cycle_get_32();
 					ret = remaining > 0 ? range_listen_once(peers[0], 1, remaining,
 						&outcome, &distance, &received_round, round, peers[1]) : -ETIMEDOUT;
+					cycle_timing_record(RECEPTEC_TIMING_AT_RESULT, timing_started,
+						ret ? ret : (outcome ? -ENODATA : 0));
 				}
 				k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
 				cycle_last_error[1] = ret;
@@ -4349,6 +4409,7 @@ int receptec_uwb_cycle_start(void)
 	memset(cycle_success, 0, sizeof(cycle_success));
 	memset(cycle_failure, 0, sizeof(cycle_failure));
 	memset(cycle_max_ms, 0, sizeof(cycle_max_ms));
+	memset(cycle_timing, 0, sizeof(cycle_timing));
 	cycle_overruns = 0;
 	cycle_running = true;
 	range_status.running = true;
@@ -4366,5 +4427,12 @@ void receptec_uwb_cycle_errors(int error[3], uint8_t phase[3])
  k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
  memcpy(error, cycle_last_error, sizeof(cycle_last_error));
  memcpy(phase, cycle_last_phase, sizeof(cycle_last_phase));
+ k_mutex_unlock(&uwb_peer_mutex);
+}
+
+void receptec_uwb_cycle_timing_get(struct receptec_uwb_cycle_timing out[RECEPTEC_TIMING_COUNT])
+{
+ k_mutex_lock(&uwb_peer_mutex, K_FOREVER);
+ memcpy(out, cycle_timing, sizeof(cycle_timing));
  k_mutex_unlock(&uwb_peer_mutex);
 }

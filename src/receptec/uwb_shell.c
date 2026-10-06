@@ -1035,6 +1035,23 @@ static int cmd_uwb_range_autostart(const struct shell *shell, size_t argc, char 
 
 static int cmd_cycle(const struct shell *shell, size_t argc, char **argv)
 {
+ if (!strcmp(argv[1], "timing") && argc == 2) {
+  static const char *const names[RECEPTEC_TIMING_COUNT] = {
+   "prep_t", "prep_a", "mt_arm", "mt_twr", "mt_result",
+   "at_arm_t", "at_arm_a", "at_start", "at_result", "ma_arm", "ma_twr", "ma_result"
+  };
+  struct receptec_uwb_cycle_timing timing[RECEPTEC_TIMING_COUNT];
+  receptec_uwb_cycle_timing_get(timing);
+  for (int i = 0; i < RECEPTEC_TIMING_COUNT; i++) {
+   const struct receptec_uwb_cycle_timing *t = &timing[i];
+   uint32_t good = t->samples - t->failures;
+   shell_print(shell, "timing=%s n=%u failures=%u last_us=%u mean_us=%u max_us=%u good_mean_us=%u good_max_us=%u last_result=%d",
+    names[i], t->samples, t->failures, t->last_us,
+    t->samples ? (uint32_t)(t->total_us / t->samples) : 0, t->max_us,
+    good ? (uint32_t)(t->successful_us / good) : 0, t->successful_max_us, t->last_result);
+  }
+  return 0;
+ }
 	struct receptec_uwb_cycle_config cfg = {.period_ms = 1000U};
 	bool running;
 	uint32_t success[3], failure[3], max_ms[3], overruns;
@@ -1101,7 +1118,7 @@ static int cmd_cycle(const struct shell *shell, size_t argc, char **argv)
 SHELL_STATIC_SUBCMD_SET_CREATE(
     sub_range,
     SHELL_CMD_ARG(cycle, NULL,
-		  "cycle configure <tag_slot> <base_a_slot>|baseline measured|baseline "
+		  "cycle timing|configure <tag_slot> <base_a_slot>|baseline measured|baseline "
 		  "fixed <mm>|period <300..1000 ms> (stopped)|autostart on|off|start|stop|status",
 		  cmd_cycle, 2, 2),
     SHELL_CMD_ARG(start, NULL,
