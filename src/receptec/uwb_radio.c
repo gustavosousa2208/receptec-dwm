@@ -2121,6 +2121,9 @@ static int range_send_plan_and_await_ack(uint8_t peer_slot,
 	if (status < 0) {
 		return status;
 	}
+	if (cycle_deadline && k_uptime_get() >= cycle_deadline) {
+		(void)receptec_radio_irq_enable(false); return -ETIMEDOUT;
+	}
 	if (dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED) !=
 	    DWT_SUCCESS) {
 		(void)receptec_radio_irq_enable(false);
@@ -2209,6 +2212,9 @@ static int range_run_dstwr_initiator(uint8_t peer_slot,
 	status = receptec_radio_irq_enable(true);
 	if (status < 0) {
 		return status;
+	}
+	if (cycle_deadline && k_uptime_get() + 4 >= cycle_deadline) {
+		(void)receptec_radio_irq_enable(false); return -ETIMEDOUT;
 	}
 	if (dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED) != DWT_SUCCESS) {
 		(void)receptec_radio_irq_enable(false);
@@ -2317,7 +2323,13 @@ static int range_run_dstwr_initiator(uint8_t peer_slot,
 
 		dwt_setdelayedtrxtime((uint32_t)(final_raw >> 8U));
 	}
-	if (dwt_starttx(DWT_START_TX_DELAYED) != DWT_SUCCESS) {
+	dwt_setrxaftertxdelay(0U);
+	dwt_setrxtimeout(us_to_rx_timeout(UWB_RANGE_RESULT_TIMEOUT_US));
+	if (cycle_deadline && k_uptime_get() + 4 >= cycle_deadline) return -ETIMEDOUT;
+	if (cycle_deadline && k_uptime_get() + 4 >= cycle_deadline) {
+		(void)receptec_radio_irq_enable(false); return -ETIMEDOUT;
+	}
+	if (dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED) != DWT_SUCCESS) {
 		(void)receptec_radio_irq_enable(false);
 		return -ETIME;
 	}
@@ -2367,6 +2379,7 @@ static void range_send_result_ack(const uint8_t peer_eui64[RECEPTEC_UWB_EUI64_SI
 	dwt_writetxfctrl(ack_radio_length, 0U, 0U);
 	dwt_forcetrxoff();
 	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
+	if (cycle_deadline && k_uptime_get() >= cycle_deadline) return;
 	if (dwt_starttx(DWT_START_TX_IMMEDIATE) == DWT_SUCCESS) {
 		(void)range_wait_tx_done();
 		clear_radio_events(DWT_INT_TXFRS_BIT_MASK);
@@ -2383,18 +2396,10 @@ static int range_await_result(uint8_t peer_slot, const uint8_t peer_eui64[RECEPT
 	int64_t deadline = bounded_deadline(k_uptime_get() + UWB_RANGE_RESULT_TIMEOUT_US / 1000);
 	int status = -ETIMEDOUT;
 
-	dwt_forcetrxoff();
-	clear_radio_events(UWB_RADIO_EVENT_MASK | DWT_INT_TXFRS_BIT_MASK);
-	dwt_setrxaftertxdelay(0U);
-	dwt_setrxtimeout(us_to_rx_timeout(UWB_RANGE_RESULT_TIMEOUT_US));
+	/* FINAL armed RX in hardware. Keep an early RESULT and its RX timestamp
+	 * across the handoff instead of clearing a frame that already arrived. */
 	status = receptec_radio_irq_enable(true);
-	if (status < 0) {
-		return status;
-	}
-	if (dwt_rxenable(DWT_START_RX_IMMEDIATE) != DWT_SUCCESS) {
-		(void)receptec_radio_irq_enable(false);
-		return -EIO;
-	}
+	if (status < 0) return status;
 	status = -ETIMEDOUT;
 	for (;;) {
 		int64_t remaining_ms = deadline - k_uptime_get();
