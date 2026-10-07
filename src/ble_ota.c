@@ -16,6 +16,28 @@ static const struct bt_data adv_data[] = {
 		sizeof(CONFIG_BT_DEVICE_NAME) - 1U),
 };
 
+static int ble_ota_adv_start(void)
+{
+	return bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, adv_data,
+			       ARRAY_SIZE(adv_data), NULL, 0);
+}
+
+static void ble_ota_disconnected(struct bt_conn *conn, uint8_t reason)
+{
+	int ret;
+
+	ARG_UNUSED(conn);
+	ARG_UNUSED(reason);
+	ret = ble_ota_adv_start();
+	if (ret < 0) {
+		printk("BLE OTA: re-advertise failed (%d)\n", ret);
+	}
+}
+
+BT_CONN_CB_DEFINE(ble_ota_conn_callbacks) = {
+	.disconnected = ble_ota_disconnected,
+};
+
 static void ble_ota_thread_entry(void *a, void *b, void *c)
 {
 	int ret;
@@ -30,8 +52,7 @@ static void ble_ota_thread_entry(void *a, void *b, void *c)
 		return;
 	}
 	printk("BLE OTA: advertising as '%s'\n", bt_get_name());
-	ret = bt_le_adv_start(BT_LE_ADV_CONN, adv_data,
-			      ARRAY_SIZE(adv_data), NULL, 0);
+	ret = ble_ota_adv_start();
 	if (ret < 0) {
 		printk("BLE OTA: advertise failed (%d); UWB unaffected\n",
 		       ret);
