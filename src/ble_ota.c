@@ -22,16 +22,29 @@ static int ble_ota_adv_start(void)
 			       ARRAY_SIZE(adv_data), NULL, 0);
 }
 
-static void ble_ota_disconnected(struct bt_conn *conn, uint8_t reason)
+static struct k_work_delayable adv_work;
+
+static void adv_worker(struct k_work *work)
 {
 	int ret;
 
-	ARG_UNUSED(conn);
-	ARG_UNUSED(reason);
+	ARG_UNUSED(work);
 	ret = ble_ota_adv_start();
-	if (ret < 0) {
+	if (ret < 0 && ret != -EALREADY) {
 		printk("BLE OTA: re-advertise failed (%d)\n", ret);
 	}
+	/* Self-healing watchdog: BT does not restart advertising on its
+	 * own, and a restart straight from the disconnect callback is
+	 * not reliable. Re-check every 30 s. */
+	k_work_reschedule(&adv_work, K_SECONDS(30));
+}
+
+static void ble_ota_disconnected(struct bt_conn *conn, uint8_t reason)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(reason);
+	k_work_init_delayable(&adv_work, adv_worker);
+	k_work_reschedule(&adv_work, K_MSEC(500));
 }
 
 BT_CONN_CB_DEFINE(ble_ota_conn_callbacks) = {
@@ -59,6 +72,8 @@ static void ble_ota_thread_entry(void *a, void *b, void *c)
 		return;
 	}
 	printk("BLE OTA: SMP service up\n");
+	k_work_init_delayable(&adv_work, adv_worker);
+	k_work_reschedule(&adv_work, K_SECONDS(30));
 }
 
 void atletec_ble_ota_init(void)
