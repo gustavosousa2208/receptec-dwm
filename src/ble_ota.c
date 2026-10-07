@@ -30,7 +30,7 @@ static void ble_ota_thread_entry(void *a, void *b, void *c)
 		return;
 	}
 	printk("BLE OTA: advertising as '%s'\n", bt_get_name());
-	ret = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1, adv_data,
+	ret = bt_le_adv_start(BT_LE_ADV_CONN, adv_data,
 			      ARRAY_SIZE(adv_data), NULL, 0);
 	if (ret < 0) {
 		printk("BLE OTA: advertise failed (%d); UWB unaffected\n",
