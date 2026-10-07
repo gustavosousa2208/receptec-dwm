@@ -409,8 +409,16 @@ source_commit=$(git -C "$fw_src" rev-parse HEAD)
 contracts_commit=$(git -C "$fw_src/contracts" rev-parse HEAD)
 metadata="$build_dir/atletec-dwm-build.txt"
 config="$build_dir/zephyr/.config"
+ota_version=$(sed -n 's/^ota_version=//p' "$metadata" 2>/dev/null)
 
-if [ ! -f "$build_dir/zephyr/zephyr.hex" ] || [ ! -f "$metadata" ] || [ ! -f "$config" ]; then
+if [ -n "$ota_version" ] && [ "$ota_version" != none ]; then
+	config="$build_dir/receptec/zephyr/.config"
+	if [ ! -f "$build_dir/receptec/zephyr/zephyr.signed.hex" ] || [ ! -f "$metadata" ] || [ ! -f "$config" ]; then
+		echo "Missing $role OTA build in $build_dir; run scripts/build-one.sh $role --ota X.Y.Z." >&2
+		exit 1
+	fi
+	echo "$role: OTA image $ota_version (sysbuild + MCUboot + SMP)"
+elif [ ! -f "$build_dir/zephyr/zephyr.hex" ] || [ ! -f "$metadata" ] || [ ! -f "$config" ]; then
 	echo "Missing $role build in $build_dir; run scripts/build-one.sh $role." >&2
 	exit 1
 fi
@@ -467,13 +475,24 @@ else
 	grep -qx "identity=COLETEC-$instance" "$metadata" &&
 	grep -qx "source_commit=$source_commit" "$metadata" &&
 	grep -qx "contracts_commit=$contracts_commit" "$metadata" &&
-	grep -qx "CONFIG_DWM_COLETEC_INSTANCE=$instance" "$config" &&
-	grep -qx 'CONFIG_SHELL_BACKEND_SERIAL=y' "$config" &&
-	grep -qx 'CONFIG_UART_CONSOLE=y' "$config" &&
-	! grep -qx 'CONFIG_SHELL_BACKEND_RTT=y' "$config" || {
+	grep -qx "CONFIG_DWM_COLETEC_INSTANCE=$instance" "$config" || {
 		echo "$role image metadata or configuration is stale." >&2
 		exit 1
 	}
+	if [ -n "$ota_version" ] && [ "$ota_version" != none ]; then
+		grep -qx 'CONFIG_MCUMGR_TRANSPORT_UART=y' "$config" &&
+		grep -qx 'CONFIG_MCUMGR_TRANSPORT_BT=y' "$config" || {
+			echo "$role image is not an OTA build." >&2
+			exit 1
+		}
+	else
+		grep -qx 'CONFIG_SHELL_BACKEND_SERIAL=y' "$config" &&
+		grep -qx 'CONFIG_UART_CONSOLE=y' "$config" &&
+		! grep -qx 'CONFIG_SHELL_BACKEND_RTT=y' "$config" || {
+			echo "$role image metadata or configuration is stale." >&2
+			exit 1
+		}
+	fi
 fi
 
 if [ "$mculink" = true ]; then

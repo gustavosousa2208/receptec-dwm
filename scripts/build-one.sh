@@ -42,11 +42,12 @@ fi
 
 role=
 test_config=none
+ota_version=none
 
 usage()
 {
 	cat <<'EOF'
-Usage: scripts/build-one.sh TARGET [--test-conf tests/SCENARIO.conf]
+Usage: scripts/build-one.sh TARGET [--test-conf tests/SCENARIO.conf] [--ota X.Y.Z]
 
 TARGET: fake-coletec-0 | fake-coletec-1 | fake-coletec-0-anchor | receptec | receptec-qorvo | receptec-qorvo-anchor | prod-coletec-qorvo | prod-coletec-stm32 | prod-coletec-stm32-prov
 
@@ -62,6 +63,11 @@ as an anchor, with RTT and its own build-coletec-qorvo-1 directory.
 $RECEPTEC_QORVO_ANCHOR_BUILD_DIR overrides that directory.
 --source-dir DIR builds prod-coletec-qorvo from that nrf52-bringup-fw
 checkout (for example a codex/* worktree) instead of the sibling one.
+--ota X.Y.Z builds an OTA image (sysbuild + MCUboot + SMP, signed X.Y.Z)
+for fake-coletec-0, receptec-qorvo or receptec-qorvo-anchor. The image runs
+from the board's canonical directory and is flashed with scripts/flash-one.sh
+as usual; upload/test/confirm/rollback go over SMP (BLE, plus UART on
+fake-coletec-0). --ota and --test-conf are mutually exclusive.
 prod-coletec-qorvo is the Nordic Rev4 product image
 (decawave_dwm3001cdk/nrf52833, -DATLETEC_HW=ON -DATLETEC_HW_REV=4), built from
 the sibling nrf52-bringup-fw checkout. Its output goes to
@@ -96,10 +102,30 @@ while [ "$#" -gt 0 ]; do
 			source_opt=$2
 			shift 2
 			;;
+		--ota)
+			[ "$#" -ge 2 ] || { echo "Missing value for --ota." >&2; exit 2; }
+			ota_version=$2
+			shift 2
+			;;
 		-h|--help) usage; exit 0 ;;
 		*) echo "Unknown option: $1" >&2; exit 2 ;;
 	esac
 done
+
+if [ "$ota_version" != none ]; then
+	case "$ota_version" in
+		[0-9]*.[0-9]*.[0-9]*) ;;
+		*) echo "--ota needs X.Y.Z (got: $ota_version)." >&2; exit 2 ;;
+	esac
+	case "$role" in fake-coletec-0|receptec-qorvo|receptec-qorvo-anchor) ;; *)
+		echo "--ota applies only to fake-coletec-0, receptec-qorvo or receptec-qorvo-anchor." >&2
+		exit 2
+	;; esac
+	if [ "$test_config" != none ]; then
+		echo "--ota and --test-conf are mutually exclusive." >&2
+		exit 2
+	fi
+fi
 
 if [ -n "${source_opt:-}" ]; then
 	[ "$role" = prod-coletec-qorvo ] || { echo "--source-dir applies to prod-coletec-qorvo only." >&2; exit 2; }
@@ -248,7 +274,42 @@ log_dir="$build_root/logs"
 mkdir -p "$log_dir"
 log_file="$log_dir/build-$role.log"
 echo "Building $role ($board) -> $build_dir"
-if [ "$test_config" = none ]; then
+if [ "$ota_version" != none ]; then
+	# OTA pilot (atletec-64a): sysbuild + MCUboot swap-move + SMP.
+	# ATLETEC_ROLE carries the role because BOARD is not visible to
+	# sysbuild images (see CMakeLists.txt).
+	case "$role" in
+		fake-coletec-0)
+			ota_role=fake0
+			ota_extra="tests/ota-uart-fake0.conf;tests/ota-ble-fake0-size.conf;tests/ota-ble-fake0.conf"
+			ota_mcuboot="-Dmcuboot_CONFIG_MCUBOOT_SERIAL=y -Dmcuboot_CONFIG_BOOT_SERIAL_ENTRANCE_GPIO=y -Dmcuboot_CONFIG_BOOT_SERIAL_WAIT_FOR_DFU=y -Dmcuboot_CONFIG_UART_CONSOLE=n"
+			;;
+		receptec-qorvo)
+			ota_role=qorvo
+			ota_extra="tests/ota-smp-receptec.conf"
+			ota_mcuboot=""
+			;;
+		receptec-qorvo-anchor)
+			ota_role=qorvo-anchor
+			ota_extra="tests/ota-smp-receptec.conf"
+			ota_mcuboot=""
+			;;
+	esac
+	ota_conf_list=
+	for ota_f in $(printf '%s' "$ota_extra" | tr ';' ' '); do
+		ota_conf_list="$ota_conf_list$app_dir/$ota_f;"
+	done
+	if ! ATLETEC_ROLE="$ota_role" west build -p always -b "$board" -d "$build_dir" --sysbuild "$app_dir" -- \
+		-DBOARD_ROOT="$app_dir" \
+		"-Dreceptec_EXTRA_CONF_FILE=$ota_conf_list" \
+		"-Dreceptec_CONFIG_MCUBOOT_IMGTOOL_SIGN_VERSION=\"$ota_version\"" \
+		-DSB_CONFIG_BOOTLOADER_MCUBOOT=y \
+		-DSB_CONFIG_MCUBOOT_MODE_SWAP_USING_MOVE=y \
+		$ota_mcuboot >"$log_file" 2>&1; then
+		echo "$role OTA build failed; log: $log_file" >&2
+		exit 1
+	fi
+elif [ "$test_config" = none ]; then
 	if [ "$role" = fake-coletec-0-anchor ] || [ "$role" = receptec-qorvo-anchor ]; then
 		if ! west build -p always -b "$board" -d "$build_dir" "$app_dir" -- \
 			-DATLETEC_FIXED_ANCHOR=ON >"$log_file" 2>&1; then
@@ -274,10 +335,46 @@ else
 fi
 
 config="$build_dir/zephyr/.config"
-if [ ! -f "$build_dir/zephyr/zephyr.hex" ] || [ ! -f "$config" ]; then
+if [ "$ota_version" != none ]; then
+	config="$build_dir/receptec/zephyr/.config"
+	if [ ! -f "$build_dir/receptec/zephyr/zephyr.signed.hex" ] || [ ! -f "$config" ]; then
+		echo "Incomplete OTA build output: $build_dir (see $log_file)" >&2
+		exit 1
+	fi
+	case "$role" in
+		fake-coletec-0)
+			grep -qx "CONFIG_DWM_COLETEC_INSTANCE=$identity" "$config" &&
+			grep -qx 'CONFIG_MCUMGR_TRANSPORT_UART=y' "$config" &&
+			grep -qx 'CONFIG_MCUMGR_TRANSPORT_BT=y' "$config" &&
+			grep -qx 'CONFIG_SOC_NRF52833=y' "$config" || {
+				echo "$build_dir is not a fake-COLETEC OTA build (see $log_file)" >&2
+				exit 1
+			}
+			;;
+		receptec-qorvo)
+			grep -qx 'CONFIG_BOARD_RECEPTEC_QORVO=y' "$config" &&
+			grep -qx 'CONFIG_MCUMGR_TRANSPORT_BT=y' "$config" &&
+			grep -qx 'CONFIG_SOC_NRF52833=y' "$config" || {
+				echo "$build_dir is not a RECEPTEC-Qorvo OTA build (see $log_file)" >&2
+				exit 1
+			}
+			;;
+		receptec-qorvo-anchor)
+			grep -qx 'CONFIG_BOARD_RECEPTEC_QORVO=y' "$config" &&
+			grep -qx 'CONFIG_RECEPTEC_UWB_RADIO=y' "$config" &&
+			grep -qx 'CONFIG_RECEPTEC_FIXED_ANCHOR_ID=1' "$config" &&
+			grep -qx 'CONFIG_MCUMGR_TRANSPORT_BT=y' "$config" &&
+			grep -qx 'CONFIG_SOC_NRF52833=y' "$config" || {
+				echo "$build_dir is not a fixed anchor OTA build (see $log_file)" >&2
+				exit 1
+			}
+			;;
+	esac
+elif [ ! -f "$build_dir/zephyr/zephyr.hex" ] || [ ! -f "$config" ]; then
 	echo "Incomplete build output: $build_dir (see $log_file)" >&2
 	exit 1
 fi
+if [ "$ota_version" = none ]; then
 case "$role" in
 	fake-coletec-0|fake-coletec-1)
 		if ! grep -qx "CONFIG_DWM_COLETEC_INSTANCE=$identity" "$config" ||
@@ -316,11 +413,12 @@ case "$role" in
 	prod-coletec-qorvo)
 		grep -qx 'CONFIG_SOC_NRF52833=y' "$config" &&
 		grep -qx 'CONFIG_BT_DIS_HW_REV_STR="Rev4"' "$config" || {
-			echo "$build_dir is not a Rev4 PROD-COLETEC build (see $log_file)" >&2
-			exit 1
-		}
-		;;
+		echo "$build_dir is not a Rev4 PROD-COLETEC build (see $log_file)" >&2
+		exit 1
+	}
+	;;
 esac
+fi
 
 case "$role" in
 prod-coletec-qorvo) fw_src=$nrf52_dir ;;
@@ -341,9 +439,14 @@ contracts_commit=$(git -C "$fw_src/contracts" rev-parse HEAD)
 	echo "source_commit=$source_commit"
 	echo "contracts_commit=$contracts_commit"
 	echo "test_config=$test_config"
+	echo "ota_version=$ota_version"
 } >"$build_dir/atletec-dwm-build.txt"
 
-echo "$role: $build_dir/zephyr/zephyr.hex"
+if [ "$ota_version" != none ]; then
+	echo "$role: $build_dir/receptec/zephyr/zephyr.signed.hex (OTA $ota_version)"
+else
+	echo "$role: $build_dir/zephyr/zephyr.hex"
+fi
 echo "Build log: $log_file"
 echo "Source: $source_commit"
 echo "Contracts: $contracts_commit"

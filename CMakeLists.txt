@@ -11,7 +11,9 @@ set(ATLETEC_FW_VARIANT "${BOARD}")
 # sysbuild callers select the role explicitly, e.g.
 # ATLETEC_ROLE=qorvo-anchor west build --sysbuild ... Legacy
 # (-DATLETEC_FIXED_ANCHOR=ON) paths are unchanged.
-if("$ENV{ATLETEC_ROLE}" STREQUAL "fake0-anchor")
+if("$ENV{ATLETEC_ROLE}" STREQUAL "fake0")
+    set(ATLETEC_ROLE_IS_FAKE0 TRUE)
+elseif("$ENV{ATLETEC_ROLE}" STREQUAL "fake0-anchor")
     set(ATLETEC_ROLE_IS_FAKE0_ANCHOR TRUE)
 elseif("$ENV{ATLETEC_ROLE}" STREQUAL "qorvo")
     set(ATLETEC_ROLE_IS_QORVO TRUE)
@@ -54,7 +56,7 @@ elseif((BOARD STREQUAL "receptec_qorvo/nrf52833" AND NOT ATLETEC_FIXED_ANCHOR) O
         ${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec_qorvo/receptec_qorvo.overlay)
     set(CONF_FILE
         ${CMAKE_CURRENT_SOURCE_DIR}/prj.conf;${CMAKE_CURRENT_SOURCE_DIR}/boards/atletec/receptec_qorvo/receptec_qorvo.conf)
-elseif(BOARD STREQUAL "fake_coletec_0/nrf52833")
+elseif((BOARD STREQUAL "fake_coletec_0/nrf52833") OR ATLETEC_ROLE_IS_FAKE0)
     set(ATLETEC_FW_TYPE "fake-COLETEC responder")
     set(ATLETEC_FW_VARIANT "fake-COLETEC-0 / DWM3001C / nRF52833 / DW3110")
     set(CONF_FILE
