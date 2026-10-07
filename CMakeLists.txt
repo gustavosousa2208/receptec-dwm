@@ -159,6 +159,7 @@ else()
     )
     target_sources(app PRIVATE
         src/main.c
+        src/ble_ota.c
         src/fw_info_shell.c
         src/protocol.c
         src/coletec_sync.c

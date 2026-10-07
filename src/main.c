@@ -9,6 +9,8 @@
 
 #include <receptec/dw3110_radio.h>
 
+#include "ble_ota.h"
+
 #define DEVICE_ID_SIZE 8U
 #define ROLE_LED_NODE DT_ALIAS(role_led)
 
@@ -80,6 +82,10 @@ int main(void)
 		       CONFIG_DWM_COLETEC_INSTANCE);
 	}
 	configure_role_indicator();
+
+	if (!receptec_role) {
+		atletec_ble_ota_init();
+	}
 
 	if (dw3110_radio_init() < 0) {
 		printk("DW3110 bring-up failed\n");
