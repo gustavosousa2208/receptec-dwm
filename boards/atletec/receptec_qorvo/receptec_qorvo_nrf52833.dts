@@ -9,3 +9,36 @@
 	model = "Atletec RECEPTEC-Qorvo DWM3001C receiver";
 	compatible = "atletec,receptec-qorvo-nrf52833";
 };
+
+/*
+ * OTA (atletec-64a Fase 4): 44 KB mcuboot + symmetric 228 KB image slots +
+ * 12 KB storage (3x 4 KB NVS sectors). The shared DWM layout (48/224/216/24)
+ * cannot host the anchor+SMP image (~227 KB). Shared by MASTER
+ * (receptec-qorvo) and BASE A (receptec-qorvo-anchor). No mcuboot-button0
+ * here: button2 is disabled on this carrier, recovery entry is
+ * WAIT_FOR_DFU only (unused: uart0 is the unconnected Pi header).
+ */
+&flash0 {
+	partitions {
+		/delete-node/ partition@0;
+		/delete-node/ partition@c000;
+		/delete-node/ partition@44000;
+		/delete-node/ partition@7a000;
+		boot_partition: partition@0 {
+			label = "mcuboot";
+			reg = <0x00000000 0xB000>;
+		};
+		slot0_partition: partition@b000 {
+			label = "image-0";
+			reg = <0x0000B000 0x39000>;
+		};
+		slot1_partition: partition@44000 {
+			label = "image-1";
+			reg = <0x00044000 0x39000>;
+		};
+		storage_partition: partition@7d000 {
+			label = "storage";
+			reg = <0x0007D000 0x00003000>;
+		};
+	};
+};
